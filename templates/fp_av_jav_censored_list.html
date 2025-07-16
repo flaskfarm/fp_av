@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div>
+  <form id="form_search" class="form-inline" style="text-align:left">
+    <div class="container-fluid">
+      <div class="row show-grid">
+        <span class="col-md-6">
+          <select id="order" name="order" class="form-control form-control-sm">
+            <option value="desc">최근순</option>
+            <option value="asc">오래된순</option>
+          </select>
+          <select id="option" name="option" class="form-control form-control-sm">
+            <option value="all">전체</option>
+            <option value="normal">일반 (메타검색 사용 안함)</option>
+            <option value="dvd">DVD</option>
+            <option value="ama">AMA</option>
+            <option value="no_meta">메타 검색 실패</option>
+            <option value="already_exist">중복삭제</option>
+          </select>
+        </span>
+        <span class="col-md-6">
+          <input id="search_word" name="search_word" class="form-control form-control-sm w-75" type="text" placeholder="원본파일명" aria-label="Search">
+          <button id="search" class="btn btn-sm btn-outline-success">검색</button>
+          <button id="reset_btn" class="btn btn-sm btn-outline-success">리셋</button>
+        </span>
+      </div>
+    </div>
+  </form>
+  <div id='page1'></div>
+  {{ macros.m_hr_head_top() }}
+  {{ macros.m_row_start('0') }}
+  {{ macros.m_col(2,  macros.m_strong('Created Time')) }}
+  {{ macros.m_col(2,  macros.m_strong('Move')) }}
+  {{ macros.m_col(8,  macros.m_strong('Info')) }}
+  {{ macros.m_row_end() }}
+  {{ macros.m_hr_head_bottom() }}
+  <div id="list_div"></div>
+  <div id='page2'></div>
+</div>
+
+
+<script type="text/javascript">
+var package_name = "{{arg['package_name'] }}";
+var sub = "{{arg['sub']}}";
+var current_data = null;
+var last_list_option = "{{arg['jav_censored_last_list_option']}}";
+
+$(document).ready(function(){
+  make_list(null);
+  tmp = last_list_option.split('|');
+  console.log(last_list_option)
+  if (tmp.length == 5) {
+    $("#order").val(tmp[0]);
+    $("#keyword").val(tmp[2]);
+    $("#option1").val(tmp[3]);
+    $("#option2").val(tmp[4]);
+    globalRequestSearch(tmp[1]);
+  } else {
+    globalRequestSearch('1');
+  }
+
+  /*
+  tmp = last_list_option.split('|');
+  console.log(tmp);
+  if (tmp.length == 4) {
+    document.getElementById("option").value = tmp[0];
+    document.getElementById("order").value = tmp[1];
+    document.getElementById("search_word").value = tmp[2];
+    global_sub_request_search(tmp[3]);
+  } else {
+    global_sub_request_search('1');
+  }
+    */
+});
+
+$("#search").click(function(e) {
+  e.preventDefault();
+  global_sub_request_search('1');
+});
+
+$("body").on('click', '#page', function(e){
+  e.preventDefault();
+  global_sub_request_search($(this).data('page'));
+});
+
+$("body").on('click', '#reset_btn', function(e){
+  e.preventDefault();
+  document.getElementById("order").value = 'desc';
+  document.getElementById("option").value = 'all';
+  document.getElementById("search_word").value = '';
+  global_sub_request_search('1')
+});
+
+$("body").on('change', '#order', function(e){
+  global_sub_request_search('1');
+});
+
+
+function make_list(data) {
+  str = ''
+  for (i in data) {
+    console.log(data[i]);
+    str += j_row_start();
+    tmp = data[i].id + '<br>' + data[i].created_time;
+    str += j_col(2, tmp);
+   
+    if (data[i].move_type == 'normal') {
+      tmp = '일반'
+    } else if (data[i].move_type == 'dvd') {
+      tmp = 'DVD'
+    } else if (data[i].move_type == 'ama') {
+      tmp = 'AMA'
+    } else if (data[i].move_type == 'no_meta') {
+      tmp = '메타검색실패'
+    } else if (data[i].move_type != null && data[i].move_type.indexOf('already_exist') != -1) {
+      tmp = '중복삭제'
+    } else {
+      tmp = '--'
+    }
+    str += j_col(2, tmp);
+
+    tmp = '소스 파일 : ' + data[i].source_filename + '<br>';
+    tmp += '타겟 파일 : ' + data[i].target_filename + '<br>';
+    tmp += '타겟 폴더 : ' + data[i].target_dir;
+    str += j_col(8, tmp);
+
+    str += j_row_end();
+    if (i != data.length -1) str += j_hr();
+  }
+  document.getElementById("list_div").innerHTML = str;
+}
+</script> 
+
+{% endblock %}

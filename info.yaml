@@ -1,0 +1,6 @@
+title: "AV 파일처리"
+version: "1.2.2"
+package_name: "fp_av"
+developer: "flaskfarm"
+description: "AV 파일처리"
+home: "https://github.com/flaskfarm/fp_av"
