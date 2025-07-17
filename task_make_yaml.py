@@ -15,7 +15,7 @@ config = {
         "fanart.jpg",
         "trailer.mp4",
     ],
-    "proxy_url": "http://192.168.0.206:3128"
+    #"proxy_url": "http://192.168.0.206:3128"
 }
 
 class Task:
@@ -79,20 +79,25 @@ class Task:
                 f.writelines(data['path_code']+ "\n")
                 return
         
+        check = config['check_file']
+
         # 메타 검색
-        for site in ["dmm", "mgstage"]:
+        for site in ["dmm", "mgstage", "jav321"]:
             data['search'] = Task.meta_module.search2(data['code'], site, manual=False)
             if data['search'] == None:
                logger.error(f"검색결과({site}): NONE")
                continue
-            if len(data['search']) > 0 and data['search'][0]["score"] > 95:
+            if len(data['search']) > 0 and data['search'][0]["score"] >= 80:
                 data['info'] = Task.meta_module.info(data['search'][0]["code"])
                 if data['info'] is not None:
+                    logger.info(f"메타 정보({site}): {data['info']['code']} {len(data['info']['extras'])}")
+                    if len(data['info']['extras']) == 0:
+                        check = config['check_file'][:-1]
                     Task.make_files(data['info'], data['path_code'])
                     break
         
-        cnt = 0
-        for file in config['check_file']:
+        
+        for file in check:
             if os.path.exists(os.path.join(data['path_code'], file)) == False:
                 break
         else:
@@ -182,7 +187,7 @@ class Task:
                     make_art = Task.file_save(thumb['value'], filepath_fanart)
             for extra in info.get('extras', []):
                 if os.path.exists(filepath_trailer) == False and extra.get('content_type', '') == 'trailer':
-                    make_trailer = Task.file_save(extra['content_url'], filepath_trailer, proxy_url=config.get('proxy_url'))
+                    make_trailer = Task.file_save(extra['content_url'], filepath_trailer)
 
         if make_nfo and os.path.exists(filepath_nfo) == False:
             info['thumb'] = []

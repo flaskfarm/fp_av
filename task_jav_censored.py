@@ -34,6 +34,7 @@ class TaskBase:
                 "메타매칭제외레이블": ModelSetting.get_list("jav_censored_meta_dvd_labels_exclude", ","),
                 "메타매칭포함레이블": ModelSetting.get_list("jav_censored_meta_dvd_labels_include", ','),
                 "배우조건매칭시이동폴더포맷": ModelSetting.get("jav_censored_folder_format_actor").strip(),
+                "메타매칭실패시이동": False,
 
                 "재시도": True
             }
@@ -94,6 +95,8 @@ class Task:
             logger.debug("[%03d/%03d] %s", idx + 1, len(files), file.name)
             try:
                 entity = Task.__task(file)
+                if entity is None:
+                    continue
             except Exception:
                 logger.exception("개별 파일 처리 중 예외: %s", file)
             else:
@@ -143,6 +146,9 @@ class Task:
             except Exception:
                 logger.exception("메타를 이용한 타겟 폴더 결정 중 예외:")
         logger.debug("target_dir: %s", target_dir)
+
+        if move_type == "no_meta" and Task.config.get('메타매칭실패시이동', True) == False:
+            return
 
         # 2021-04-30
         try:
@@ -233,7 +239,7 @@ class Task:
         else:
             data = meta_module.search(search_name, manual=False)
 
-        if len(data) > 0 and data[0]["score"] > 95:
+        if (len(data) > 0 and data[0]["score"] > 95) or (len(data) > 1 and data[0]["score"] >= 80):
             meta_info = meta_module.info(data[0]["code"])
             if meta_info is not None:
                 folders = Task.process_folder_format("dvd", meta_info)
