@@ -13,6 +13,7 @@ class TaskBase:
         if args[0] == 'default':
             config = {
                 "이름": "default",
+                "사용": True,
                 "처리실패이동폴더": ModelSetting.get("jav_censored_temp_path").strip(),
                 "다운로드폴더": ModelSetting.get("jav_censored_download_path").splitlines(),
                 "라이브러리폴더": ModelSetting.get("jav_censored_target_path").splitlines(),
@@ -26,7 +27,7 @@ class TaskBase:
                 "원본파일명포함여부": ModelSetting.get_bool("jav_censored_include_original_filename"),
                 "원본파일명처리옵션": ModelSetting.get("jav_censored_include_original_filename_option"),
 
-                "메타검색에공식사이트만사용": ModelSetting.get_bool("jav_censored_meta_dvd_use_dmm_only"),
+                #"메타검색에공식사이트만사용": ModelSetting.get_bool("jav_censored_meta_dvd_use_dmm_only"),
                 "메타매칭시이동폴더": ModelSetting.get("jav_censored_meta_dvd_path").strip(),
                 "VR영상이동폴더": ModelSetting.get("jav_censored_meta_dvd_vr_path").strip(),
                 "메타매칭실패시이동폴더": ModelSetting.get("jav_censored_meta_no_path").strip(),
@@ -43,6 +44,8 @@ class TaskBase:
             try:
                 yaml_data = SupportYaml.read_yaml(ModelSetting.get('jav_censored_yaml_filepath'))
                 for job in yaml_data.get('작업', []):
+                    if job.get('사용', True) == False:
+                        continue
                     job['재시도'] = False
                     Task.start(job)
             except Exception as e:
@@ -58,13 +61,13 @@ class Task:
         Task.config = config
         logger.error(d(config))
         no_censored_path = Task.config['처리실패이동폴더'].strip()
-        if not no_censored_path:
-            logger.warning("'처리 실패시 이동 폴더'가 지정되지 않음. 작업 중단!")
-            return
-        no_censored_path = Path(no_censored_path)
-        if not no_censored_path.is_dir():
-            logger.warning("'처리 실패시 이동 폴더'가 존재하지 않음. 작업 중단: %s", no_censored_path)
-            return
+        #if not no_censored_path:
+        #    logger.warning("'처리 실패시 이동 폴더'가 지정되지 않음. 작업 중단!")
+        #    return
+        #no_censored_path = Path(no_censored_path)
+        #if not no_censored_path.is_dir():
+        #    logger.warning("'처리 실패시 이동 폴더'가 존재하지 않음. 작업 중단: %s", no_censored_path)
+        #    return
 
         src_list = Task.get_path_list(Task.config['다운로드폴더'])
         if config['재시도']:
@@ -78,14 +81,14 @@ class Task:
         for src in src_list:
             ToolExpandFileProcess.preprocess_cleanup(
                 src, 
-                min_size = Task.config['최소크기'],
-                max_age = Task.config['최대기간'],
+                min_size = Task.config.get('최소크기', 0),
+                max_age = Task.config.get('최대기간', 0),
             )
             _f = ToolExpandFileProcess.preprocess_listdir(
                 src, 
                 no_censored_path, 
-                min_size = Task.config['최소크기'], 
-                disallowed_keys = Task.config['파일처리하지않을파일명']
+                min_size = Task.config.get('최소크기', 0), 
+                disallowed_keys = Task.config.get('파일처리하지않을파일명', [])
             )
             files += _f or []
         logger.info(f"처리할 파일 {len(files)}개")
@@ -111,7 +114,7 @@ class Task:
         # 검색용 키워드
         search_name = ToolExpandFileProcess.change_filename_censored(newfilename)
         search_name = search_name.split(".")[0]
-        search_name = os.path.splitext(search_name)[0].replace("-", " ")
+        #search_name = os.path.splitext(search_name)[0].replace("-", " ")
         search_name = re.sub(r"\s*\[.*?\]", "", search_name).strip()
         match = re.search(r"(?P<cd>cd\d{1,2})$", search_name)
         if match:
@@ -122,7 +125,7 @@ class Task:
         # target_dir를 결정하라!
         #
         target_dir, move_type, meta_info = None, None, None
-        if Task.config['메타사용'] == "not_using":
+        if Task.config.get('메타사용', "not_using") == "not_using":
             move_type = "normal"
             target = Task.get_path_list(Task.config['라이브러리폴더'])
             folders = Task.process_folder_format(move_type, search_name)
@@ -174,6 +177,9 @@ class Task:
 
         if not target_dir.exists():
             target_dir.mkdir(parents=True)
+        else:
+            #logger.error("타겟 폴더가 이미 존재함: %s", target_dir)
+            pass
 
         if move_type == "no_meta":
             newfile = target_dir.joinpath(file.name)  # 원본 파일명 그대로
@@ -197,7 +203,7 @@ class Task:
             move_type += "_already_exist"
 
         if file.exists():
-            if Task.config['파일명변경']:
+            if Task.config.get('파일명변경', False):
                 shutil.move(file, newfile)
             else:
                 shutil.move(file, newfile.parent)
@@ -206,9 +212,9 @@ class Task:
                 TaskMakeYaml.make_files(
                     meta_info,
                     str(newfile.parent),
-                    make_yaml=Task.config['부가파일생성_YAML'],
-                    make_nfo=Task.config['부가파일생성_NFO'],
-                    make_image=Task.config['부가파일생성_IMAGE'],
+                    make_yaml=Task.config.get('부가파일생성_YAML', False),
+                    make_nfo=Task.config.get('부가파일생성_NFO', False),
+                    make_image=Task.config.get('부가파일생성_IMAGE', False),
                 )
 
         return entity.set_target(newfile).set_move_type(move_type)
@@ -216,47 +222,60 @@ class Task:
 
     def __get_target_with_meta_dvd(search_name):
         meta_module = Task.get_meta_module()
-        label = search_name.split(" ")[0]
-        meta_dvd_labels_exclude = map(str.strip, Task.config['메타매칭제외레이블'])
+        label = search_name.split("-")[0]
+        meta_dvd_labels_exclude = map(str.strip, Task.config.get('메타매칭제외레이블', []))
         if label in map(str.lower, meta_dvd_labels_exclude):
             logger.info("'정식발매 영상 제외 레이블'에 포함: %s", label)
             return None, None
 
         target_root = Task.config['메타매칭시이동폴더'].strip()
-        if target_root is None:
-            raise NotADirectoryError("'정식발매 영상 매칭시 이동 경로'가 지정되지 않음")
+        #if target_root is None:
+        #    raise NotADirectoryError("'정식발매 영상 매칭시 이동 경로'가 지정되지 않음")
         target_root = Path(target_root)
         if not target_root.is_dir():
             raise NotADirectoryError("'정식발매 영상 매칭시 이동 경로'가 존재하지 않음")
 
-        if Task.config['메타검색에공식사이트만사용']:
-            logger.info("정식발매 영상 판단에 DMM+MGS만 사용")
-            data = (
-                meta_module.search2(search_name, "dmm", manual=False)
-                or meta_module.search2(search_name, "mgstage", manual=False)
-                or []
-            )
-        else:
-            data = meta_module.search(search_name, manual=False)
+        
+        #if Task.config['메타검색에공식사이트만사용']:
+        #    logger.info("정식발매 영상 판단에 DMM+MGS만 사용")
+        #    data = (
+        #        meta_module.search2(search_name, "dmm", manual=False)
+        #        or meta_module.search2(search_name, "mgstage", manual=False)
+        #        or []
+        #    )
+        #else:
+        #    data = meta_module.search(search_name, manual=False)
 
-        if (len(data) > 0 and data[0]["score"] > 95) or (len(data) > 1 and data[0]["score"] >= 80):
-            meta_info = meta_module.info(data[0]["code"])
-            if meta_info is not None:
-                folders = Task.process_folder_format("dvd", meta_info)
-                if any(x in (meta_info["genre"] or []) for x in ["고품질VR", "VR전용"]) or any(
-                    x in (meta_info["title"] or "") for x in ["[VR]", "[ VR ]", "【VR】"]
-                ):
-                    vr_path = Task.config['VR영상이동폴더'].strip()
-                    if vr_path != "":
-                        vr_path = Path(vr_path)
-                        if vr_path.is_dir():
-                            target_root = vr_path
-                        else:
-                            logger.warning("'정식발매 VR영상 이동 경로'가 존재하지 않음")
-                logger.info("정식발매 영상 매칭 성공")
-                return target_root.joinpath(*folders), meta_info
+        site_list = Task.config.get('메타검색에사용할사이트', ["dmm", "mgstage"])
+        for site in site_list:
+            try:
+                logger.info(f"메타매칭 시작: {site['사이트']}   {search_name}")
+                tmp = search_name
+                #if site == "javdb":
+                #    tmp = search_name.replace(" ", "-").upper()
+                data = meta_module.search2(tmp, site['사이트'], manual=False)
 
-        meta_dvd_labels_include = map(str.strip, Task.config['메타매칭포함레이블'])
+                if data and len(data) > 0 and data[0]["score"] >= site['점수']:
+                    meta_info = meta_module.info(data[0]["code"])
+                    if meta_info is not None:
+                        folders = Task.process_folder_format("dvd", meta_info)
+                        if any(x in (meta_info["genre"] or []) for x in ["고품질VR", "VR전용"]) or any(
+                            x in (meta_info["title"] or "") for x in ["[VR]", "[ VR ]", "【VR】"]
+                        ):
+                            vr_path = Task.config.get('VR영상이동폴더', '').strip()
+                            if vr_path != "":
+                                vr_path = Path(vr_path)
+                                if vr_path.is_dir():
+                                    target_root = vr_path
+                                else:
+                                    logger.warning("'정식발매 VR영상 이동 경로'가 존재하지 않음")
+                        logger.info(f"메타매칭 성고: {meta_info['code']}")
+                        return target_root.joinpath(*folders), meta_info
+            except Exception as e:
+                logger.debug(f"메타매칭 중 예외 발생: {site}\n{e}")
+                logger.debug(traceback.format_exc())
+
+        meta_dvd_labels_include = map(str.strip, Task.config.get('메타매칭포함레이블', []))
         if label in map(str.lower, meta_dvd_labels_include):
             folders = Task.process_folder_format("normal", search_name)
             logger.info("정식발매 영상 매칭 실패하였지만 '정식발매 영상 포함 레이블'에 포함: %s", label)
@@ -309,6 +328,8 @@ class Task:
                 "actor_3": "",
                 "studio": "NO_STUDIO",
             }
+            if data['label_1'].isdigit():
+                data['label_1'] = "#"
             folders = folder_format.format(**data)
         elif meta_type == "dvd":
             if meta_info['actor'] == None:
@@ -328,9 +349,11 @@ class Task:
             if match:
                 data['label'] = "ID"
             data['label_1'] = data['label'][0]
+            if data['label_1'].isdigit():
+                data['label_1'] = "#"
 
 
-            folder_format_actor = Task.config['배우조건매칭시이동폴더포맷']
+            folder_format_actor = Task.config.get('배우조건매칭시이동폴더포맷', '')
             if (
                 folder_format_actor
                 and meta_info["actor"] is not None
@@ -382,7 +405,7 @@ class Task:
     def change_filename_censored_by_save_original(original_filename, new_filename, original_filepath):
         """원본파일명 보존 옵션에 의해 파일명을 변경한다."""
         try:
-            if not Task.config['원본파일명포함여부']:
+            if not Task.config.get('원본파일명포함여부', True):
                 return new_filename
 
             new_name, new_ext = os.path.splitext(new_filename)
@@ -401,7 +424,7 @@ class Task:
                 # 안씀
                 return f"{new_name} [{ori_name}] {part}{new_ext}"
 
-            option = Task.config['원본파일명포함옵션']
+            option = Task.config.get('원본파일명포함옵션', 'original')
             if option == "original" or original_filepath is None:
                 return f"{new_name} [{ori_name}]{new_ext}"
             if option == "originale_bytes":
@@ -448,11 +471,5 @@ class Task:
         except Exception as exception:
             logger.debug("Exception:%s", exception)
             logger.debug(traceback.format_exc())
-
-
-
-
-
-
 
 

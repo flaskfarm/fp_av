@@ -64,9 +64,9 @@ class ToolExpandFileProcess:
         source = Path(source)
         if not source.is_dir():
             return
-        errpath = Path(errpath)
-        if not errpath.is_dir():
-            return
+        #errpath = Path(errpath)
+        #if not errpath.is_dir():
+        #    return
         if disallowed_keys is None:
             disallowed_keys = []
         files = []

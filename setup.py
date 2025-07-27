@@ -42,6 +42,16 @@ setting = {
                 ]
             },
             {
+                'uri': 'jav_uncensored',
+                'name': 'Jav Uncensored',
+                'list': [
+                    {
+                        'uri': 'setting',
+                        'name': '설정',
+                    },
+                ]
+            },
+            {
                 'uri': 'manual',
                 'name': 'ChangeLog',
                 'list': [
@@ -64,7 +74,8 @@ PLUGIN_ROOT = os.path.dirname(__file__)
 try:
     from .mod_jav_censored import ModuleJavCensored
     from .mod_jav_censored_yaml import ModuleJavCensoredYaml
-    P.set_module_list([ModuleJavCensored, ModuleJavCensoredYaml])
+    from .mod_jav_uncensored import ModuleJavUncensored
+    P.set_module_list([ModuleJavCensored, ModuleJavCensoredYaml, ModuleJavUncensored])
 except Exception as e:
     P.logger.error(f'Exception:{str(e)}')
     P.logger.error(traceback.format_exc())
