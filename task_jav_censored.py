@@ -1,9 +1,10 @@
 from .setup import *
 from pathlib import Path
+import base64, json
 ModelSetting = P.ModelSetting
 from .tool import ToolExpandFileProcess, UtilFunc
 from .model_jav_censored import ModelJavCensoredItem
-from support import SupportYaml, SupportUtil
+from support import SupportYaml, SupportUtil, SupportDiscord
 from .task_make_yaml import Task as TaskMakeYaml
 
 class TaskBase:
@@ -37,7 +38,8 @@ class TaskBase:
                 "배우조건매칭시이동폴더포맷": ModelSetting.get("jav_censored_folder_format_actor").strip(),
                 "메타매칭실패시이동": False,
 
-                "재시도": True
+                "재시도": True,
+                "방송": False,
             }
             Task.start(config)
         else:
@@ -216,6 +218,20 @@ class Task:
                     make_nfo=Task.config.get('부가파일생성_NFO', False),
                     make_image=Task.config.get('부가파일생성_IMAGE', False),
                 )
+            try:
+                if Task.config.get('방송', False):
+                    bot = {
+                        't1': 'gds_tool',
+                        't2': 'fp',
+                        't3': 'av',
+                        'data': {
+                            'gds_path': str(newfile).replace('/mnt/AV/MP/GDS', '/ROOT/GDRIVE/VIDEO/AV'),
+                        }
+                    }
+                    hook = base64.b64decode(b'aHR0cHM6Ly9kaXNjb3JkLmNvbS9hcGkvd2ViaG9va3MvMTM5OTkxMDg4MDE4NzEyNTgxMS84SFY0bk93cGpXdHhIdk5TUHNnTGhRbDhrR3lGOXk4THFQQTdQVTBZSXVvcFBNN21PWHhkSVJSNkVmcmIxV21UdFhENw==').decode('utf-8')
+                    SupportDiscord.send_discord_bot_message(json.dumps(bot), hook)
+            except Exception as e:
+                logger.error("방송 메시지 전송 실패: %s", e)
 
         return entity.set_target(newfile).set_move_type(move_type)
     

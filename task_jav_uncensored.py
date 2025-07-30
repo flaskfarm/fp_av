@@ -1,9 +1,8 @@
 from .setup import *
 from pathlib import Path
+import json, base64
 ModelSetting = P.ModelSetting
-from .tool import ToolExpandFileProcess, UtilFunc
-from .model_jav_censored import ModelJavCensoredItem
-from support import SupportYaml, SupportUtil
+from support import SupportYaml, SupportDiscord
 from .task_make_yaml import Task as TaskMakeYaml
 
 class Task:
@@ -97,6 +96,21 @@ class Task:
                     make_image=True,
                 )
 
+                try:
+                    if Task.config.get('방송', False):
+                        bot = {
+                            't1': 'gds_tool',
+                            't2': 'fp',
+                            't3': 'av',
+                            'data': {
+                                'gds_path': target_dir.replace('/mnt/AV/MP/GDS', '/ROOT/GDRIVE/VIDEO/AV') + "/" + filename,
+                            }
+                        }
+                        hook = base64.b64decode(b'aHR0cHM6Ly9kaXNjb3JkLmNvbS9hcGkvd2ViaG9va3MvMTM5OTkxMDg4MDE4NzEyNTgxMS84SFY0bk93cGpXdHhIdk5TUHNnTGhRbDhrR3lGOXk4THFQQTdQVTBZSXVvcFBNN21PWHhkSVJSNkVmcmIxV21UdFhENw==').decode('utf-8')
+                        SupportDiscord.send_discord_bot_message(json.dumps(bot), hook)
+                except Exception as e:
+                    logger.error("방송 메시지 전송 실패: %s", e)
+            
                 return
 
 
