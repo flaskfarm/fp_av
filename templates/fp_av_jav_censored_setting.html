@@ -36,7 +36,7 @@
     {{ macros.setting_checkbox('jav_censored_change_filename', '파일명 변경', value=arg['jav_censored_change_filename'], desc=['On : 파일명 변경', 'Off: 원본파일명 유지']) }}
     {{ macros.setting_checkbox('jav_censored_include_original_filename', '파일명 변경시 원본 파일명 처리', value=arg['jav_censored_include_original_filename'], desc=['On : 파일명 변경시 원본파일명을 포함합니다.', '내용은 같으나 품질이 다른 영상 처리시 유용합니다.', '변경파일명 [원본파일명처리].확장자', 'Off: 원본파일명은 지워짐']) }}
     <div id="jav_censored_include_original_filename_div" class="collapse">
-    {{ macros.setting_radio_with_value('jav_censored_include_original_filename_option', '원본 파일명 형식', [['original', '원본파일명'], ['originale_bytes', '원본파일명(파일크기-byte숫자)'], ['original_giga', '원본파일명(파일크기-GB)'], ['bytes', '파일크기-byte숫자']], value=arg['jav_censored_include_original_filename_option']) }}
+    {{ macros.setting_radio_with_value('jav_censored_include_original_filename_option', '원본 파일명 형식', [['original', '원본파일명'], ['original_bytes', '원본파일명(파일크기-byte숫자)'], ['original_giga', '원본파일명(파일크기-GB)'], ['bytes', '파일크기-byte숫자']], value=arg['jav_censored_include_original_filename_option']) }}
 
     </div>
     {{ macros.m_hr() }}

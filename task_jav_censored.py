@@ -285,7 +285,7 @@ class Task:
                                     target_root = vr_path
                                 else:
                                     logger.warning("'정식발매 VR영상 이동 경로'가 존재하지 않음")
-                        logger.info(f"메타매칭 성고: {meta_info['code']}")
+                        logger.info(f"메타매칭 성공: {meta_info['code']}")
                         return target_root.joinpath(*folders), meta_info
             except Exception as e:
                 logger.debug(f"메타매칭 중 예외 발생: {site}\n{e}")
@@ -440,10 +440,10 @@ class Task:
                 # 안씀
                 return f"{new_name} [{ori_name}] {part}{new_ext}"
 
-            option = Task.config.get('원본파일명포함옵션', 'original')
+            option = Task.config.get('원본파일명처리옵션', 'original')
             if option == "original" or original_filepath is None:
                 return f"{new_name} [{ori_name}]{new_ext}"
-            if option == "originale_bytes":
+            if option == "original_bytes":
                 str_size = os.stat(original_filepath).st_size
                 return f"{new_name} [{ori_name}({str_size})]{new_ext}"
             if option == "original_giga":
