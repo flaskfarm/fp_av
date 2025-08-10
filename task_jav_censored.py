@@ -54,8 +54,6 @@ class TaskBase:
                 logger.error(f"YAML 파일 처리 중 오류 발생: {str(e)}")
                 
 
-       
-
 
 class Task:
     config = None
@@ -196,13 +194,20 @@ class Task:
         if UtilFunc.is_duplicate(file, newfile):
             logger.debug("동일 파일(크기, 이름 기준)이 존재함: %s -> %s", file, newfile.parent)
             remove_path = Task.config['처리실패이동폴더']
+            move_type += "_already_exist"
+            
+            if not file.exists():
+                logger.warning(f"파일이 처리 도중 사라졌습니다 (다른 프로세스가 먼저 처리한 것으로 추정): {file.name}")
+                return entity.set_move_type("already_processed_by_other") # DB에 기록할 상태 변경
+
             if remove_path == "":
                 file.unlink()
                 logger.debug("Deleted: %s", file)
+                return entity.set_move_type(move_type)
             else:
                 dup = Path(remove_path).joinpath(file.name)
                 UtilFunc.move(file, dup)
-            move_type += "_already_exist"
+                return entity.set_target(dup).set_move_type(move_type)
 
         if file.exists():
             if Task.config.get('파일명변경', False):
@@ -262,7 +267,13 @@ class Task:
         #else:
         #    data = meta_module.search(search_name, manual=False)
 
-        site_list = Task.config.get('메타검색에사용할사이트', ["dmm", "mgstage"])
+        default_site_list = [
+            {'사이트': 'dmm', '점수': 95},
+            {'사이트': 'mgstage', '점수': 95}
+        ]
+
+        site_list = Task.config.get('메타검색에사용할사이트', default_site_list)
+
         for site in site_list:
             try:
                 logger.info(f"메타매칭 시작: {site['사이트']}   {search_name}")
@@ -288,7 +299,7 @@ class Task:
                         logger.info(f"메타매칭 성공: {meta_info['code']}")
                         return target_root.joinpath(*folders), meta_info
             except Exception as e:
-                logger.debug(f"메타매칭 중 예외 발생: {site}\n{e}")
+                logger.debug(f"메타매칭 중 예외 발생: {site['사이트']}\n{e}")
                 logger.debug(traceback.format_exc())
 
         meta_dvd_labels_include = map(str.strip, Task.config.get('메타매칭포함레이블', []))
