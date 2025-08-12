@@ -45,6 +45,7 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_make_nfo": "False",
             f"{self.name}_make_image": "False",
             # etc
+            f"{self.name}_delay_per_file": "0",
             #f"{self.name}_last_list_option": "",
         }
         self.web_list_model = ModelJavCensoredItem
