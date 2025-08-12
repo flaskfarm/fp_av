@@ -1,11 +1,12 @@
 from .setup import *
 from pathlib import Path
 import base64, json
-import traceback  # traceback import 추가
-import re # re import 추가
-import os # os import 추가
-import shutil # shutil import 추가
-from datetime import datetime # datetime import 추가
+import traceback
+import re
+import os
+import shutil
+import time
+from datetime import datetime
 
 ModelSetting = P.ModelSetting
 from .tool import ToolExpandFileProcess, UtilFunc
@@ -57,6 +58,9 @@ class TaskBase:
                 "부가파일생성_YAML": ModelSetting.get_bool("jav_censored_make_yaml"),
                 "부가파일생성_NFO": ModelSetting.get_bool("jav_censored_make_nfo"),
                 "부가파일생성_IMAGE": ModelSetting.get_bool("jav_censored_make_image"),
+
+                # etc
+                "파일당딜레이": ModelSetting.get_int("jav_censored_delay_per_file"),
             }
             # 2. 공통 실행 헬퍼 호출
             TaskBase.__run_task(config)
@@ -145,6 +149,10 @@ class Task:
             logger.warning("'다운로드 폴더'가 지정되지 않음. 작업을 중단합니다!")
             return
 
+        delay_seconds = Task.config.get('파일당딜레이', 0)
+        if delay_seconds > 0:
+            logger.debug(f"파일당 처리 딜레이가 {delay_seconds}초로 설정되었습니다.")
+
         files = []
         for src_item in src_list:
             src = Path(src_item)
@@ -166,6 +174,9 @@ class Task:
         logger.info(f"처리할 파일 {len(files)}개")
 
         for idx, file in enumerate(files):
+            if delay_seconds > 0 and idx > 0: # 첫 번째 파일은 바로 처리
+                # logger.debug(f"{delay_seconds}초 대기...")
+                time.sleep(delay_seconds)
             logger.debug("[%03d/%03d] %s", idx + 1, len(files), file.name)
             try:
                 entity = Task.__task(file)
@@ -389,7 +400,7 @@ class Task:
                 if best_match:
                     logger.info(f"매칭 성공! 사이트=[{site}], 코드=[{best_match['code']}], 점수=[{best_match['score']}]")
                     # metadata 플러그인의 info 메소드 직접 호출
-                    meta_info = meta_module.info(best_match["code"])
+                    meta_info = meta_module.info(best_match["code"], fp_meta_mode=True)
                     if meta_info:
                         folders = Task.process_folder_format("dvd", meta_info)
                         current_target_root = target_root_path
