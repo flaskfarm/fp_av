@@ -59,15 +59,17 @@
 
     {{ macros.m_hr() }}
 
-    {{ macros.setting_input_text('jav_censored_meta_no_path', '메타 없는 영상 이동 경로', desc=['메타 없는 영상 파일이 이동할 루트 폴더입니다.', '비워두면 실패시 폴더 아래에 [NO META] 폴더를 만들고 그 아래로 이동합니다'], value=arg['jav_censored_meta_no_path']) }}
-    {{ macros.setting_input_int('jav_censored_meta_no_retry_every', '메타 없는 영상 재시도 주기', value=arg['jav_censored_meta_no_retry_every'], min='0', placeholder='0', desc='메타 없는 것으로 분류된 영상 파일을 재시도 합니다. 0이면 재시도 하지 않음. 주기: 일') }}
-    
-    
+    {{ macros.setting_checkbox('jav_censored_meta_no_move', '메타 없는 영상 이동', value=arg['jav_censored_meta_no_move'], desc=['On: 메타 검색에 실패한 파일을 아래 경로로 이동시킵니다.', 'Off: 이동시키지 않고 원본 위치에 둡니다. (다음 스캔 시 다시 검색)']) }}
+    <div id="jav_censored_meta_no_move_div" class="collapse">
+      {{ macros.setting_checkbox('jav_censored_meta_no_change_filename', '메타 없는 영상 이동 시 파일명 변경', value=arg['jav_censored_meta_no_change_filename'], desc=['On: 품번 기반으로 파일명을 변경하여 이동합니다.', 'Off: 원본 파일명 그대로 이동합니다.']) }}
+      {{ macros.setting_input_text('jav_censored_meta_no_path', '메타 없는 영상 이동 경로', desc=['메타 없는 영상 파일이 이동할 루트 폴더입니다.', '비워두면 처리 실패시 폴더 아래에 [NO META] 폴더를 만들고 그 아래로 이동합니다'], value=arg['jav_censored_meta_no_path']) }}
+      {{ macros.setting_input_int('jav_censored_meta_no_retry_every', '메타 없는 영상 재시도 주기', value=arg['jav_censored_meta_no_retry_every'], min='0', placeholder='0', desc='메타 없는 것으로 분류된 영상 파일을 재시도 합니다. 0이면 재시도 하지 않음. 주기: 일') }}
+    </div>
+
     {{ macros.m_hr() }}
     {{ macros.setting_checkbox('jav_censored_make_yaml', 'YAML 파일 생성', value=arg['jav_censored_make_yaml'], desc=['On: 메타가 있을 경우 YAML 파일을 생성합니다.', '품번 폴더를 생성할 수 있게 폴더 구조가 {code}로 끝나야 합니다.']) }}
     {{ macros.setting_checkbox('jav_censored_make_nfo', 'NFO 파일 생성', value=arg['jav_censored_make_nfo'], desc=None) }}
     {{ macros.setting_checkbox('jav_censored_make_image', '이미지 파일 생성', value=arg['jav_censored_make_image'], desc=None) }}
-    
 
 
 
@@ -96,6 +98,8 @@
 $(document).ready(function(){
   use_collapse("jav_censored_include_original_filename");
   use_meta("{{arg['jav_censored_use_meta']}}");
+
+  use_collapse("jav_censored_meta_no_move");
 });
 
 $('#jav_censored_include_original_filename').change(function() {
@@ -106,6 +110,7 @@ $('input[type=radio][name=jav_censored_use_meta]').change(function() {
   use_meta(this.value);
 });
 
+
 function use_meta(value) {
   if (value == 'not_using') {
     $('#jav_censored_use_meta_on_div').collapse('hide');
@@ -115,6 +120,11 @@ function use_meta(value) {
     $('#jav_censored_use_meta_off_div').collapse('hide');
   }
 }
+
+
+$('#jav_censored_meta_no_move').change(function() {
+  use_collapse('jav_censored_meta_no_move');
+});
 
 
 $("body").on('click', '#jav_censored_filename_test_btn', function(e){

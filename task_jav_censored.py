@@ -26,8 +26,10 @@ class TaskBase:
                 "이름": "default",
                 "사용": True,
                 "처리실패이동폴더": ModelSetting.get("jav_censored_temp_path").strip(),
+                "중복파일이동폴더": ModelSetting.get("jav_censored_remove_path").strip(),
                 "다운로드폴더": ModelSetting.get("jav_censored_download_path").splitlines(),
                 "라이브러리폴더": ModelSetting.get("jav_censored_target_path").splitlines(),
+
                 "최소크기": ModelSetting.get_int("jav_censored_min_size"),
                 "최대기간": ModelSetting.get_int("jav_censored_max_age"),
                 "파일처리하지않을파일명": ModelSetting.get_list("jav_censored_filename_not_allowed_list", "|"),
@@ -46,7 +48,8 @@ class TaskBase:
                 "메타매칭제외레이블": ModelSetting.get_list("jav_censored_meta_dvd_labels_exclude", ","),
                 "메타매칭포함레이블": ModelSetting.get_list("jav_censored_meta_dvd_labels_include", ','),
                 "배우조건매칭시이동폴더포맷": ModelSetting.get("jav_censored_folder_format_actor").strip(),
-                "메타매칭실패시이동": False,
+                "메타매칭실패시이동": ModelSetting.get_bool("jav_censored_meta_no_move"),
+                "메타매칭실패시파일명변경": ModelSetting.get_bool("jav_censored_meta_no_change_filename"),
 
                 "재시도": True,
                 "방송": False,
@@ -220,15 +223,6 @@ class Task:
                 logger.error(f"파일 '{file.name}' 처리 중 메타 검색 단계에서 오류가 발생하여 건너뜁니다.")
                 target_dir, move_type, meta_info = None, None, None
 
-        # target_dir이 결정된 후, None이 아니고 str 타입이라면 즉시 Path 객체로 변환
-        if target_dir is not None and isinstance(target_dir, str):
-            # logger.debug(f"target_dir이 문자열 타입({target_dir})이므로 Path 객체로 변환합니다.")
-            target_dir = Path(target_dir)
-
-        logger.debug("target_dir: %s", target_dir)
-
-        if move_type == "no_meta" and Task.config.get('메타매칭실패시이동', True) == False:
-            return
 
         # 2021-04-30
         try:
@@ -244,13 +238,11 @@ class Task:
             logger.debug("Exception:%s", e)
             logger.debug(traceback.format_exc())
 
-        #
-        # 실제 이동
-        #
-        entity = ModelJavCensoredItem(Task.config['이름'], str(file.parent), file.name)
-        if move_type is None or target_dir is None:
-            logger.warning("타겟 폴더를 결정할 수 없음")
-            return entity.set_move_type(None)
+
+        # target_dir이 결정된 후, None이 아니고 str 타입이라면 즉시 Path 객체로 변환
+        if target_dir is not None and isinstance(target_dir, str):
+            # logger.debug(f"target_dir이 문자열 타입({target_dir})이므로 Path 객체로 변환합니다.")
+            target_dir = Path(target_dir)
 
         if not target_dir.exists():
             target_dir.mkdir(parents=True)
@@ -258,39 +250,75 @@ class Task:
             #logger.error("타겟 폴더가 이미 존재함: %s", target_dir)
             pass
 
-        if move_type == "no_meta":
-            newfile = target_dir.joinpath(file.name)  # 원본 파일명 그대로
-            if file == newfile:
-                # 처리한 폴더를 다시 처리했을 때 중복으로 삭제되지 않아야 함
-                return entity.set_move_type(None)
-            UtilFunc.move(file, newfile)
-            return entity.set_target(newfile).set_move_type(move_type)
+        logger.debug("target_dir: %s", target_dir)
 
+        entity = ModelJavCensoredItem(Task.config['이름'], str(file.parent), file.name)
+
+        # 이동/중복/삭제 처리 로직 재설계
+        if move_type is None or target_dir is None:
+            logger.warning("타겟 폴더를 결정할 수 없어 처리를 중단합니다.")
+            return entity.set_move_type(None)
+
+        if not target_dir.exists():
+            target_dir.mkdir(parents=True)
+
+        # 매칭 실패 (no_meta) 케이스 처리
+        if move_type == "no_meta":
+            if not Task.config.get('메타매칭실패시이동', False):
+                logger.info(f"메타 검색 실패: '{file.name}' 파일 이동 안함 설정에 따라 처리를 중단합니다.")
+                return entity.set_move_type(None) # DB에 기록하지 않음
+
+            # 사용할 파일명 결정 (옵션에 따라 품번 또는 원본명)
+            final_filename = newfilename if Task.config.get('메타매칭실패시파일명변경', False) else file.name
+            newfile = target_dir.joinpath(final_filename)
+
+            # '메타 없는 영상 이동 경로'에 중복 파일이 있으면, 새 파일 삭제
+            if newfile.exists():
+                logger.warning(f"메타 없는 영상 이동 경로에 동일한 파일이 존재하여 새 파일을 삭제합니다: {newfile}")
+                file.unlink()
+                entity.set_move_type("no_meta_deleted_due_to_duplication")
+            else:
+                UtilFunc.move(file, newfile)
+                entity.set_target(newfile).set_move_type(move_type)
+            return entity
+
+
+        # 정상 처리 (dvd, normal) 케이스 처리
         newfile = target_dir.joinpath(newfilename)
 
+        # 라이브러리에 중복 파일이 있는지 확인
         if UtilFunc.is_duplicate(file, newfile):
-            logger.debug("동일 파일(크기, 이름 기준)이 존재함: %s -> %s", file, newfile.parent)
-            remove_path = Task.config['처리실패이동폴더']
-            move_type += "_already_exist"
+            logger.info(f"라이브러리에 동일 파일이 존재합니다: {newfile}")
+            remove_path_str = Task.config.get('중복파일이동폴더', '').strip() # config 키 확인 필요
             
             if not file.exists():
-                logger.warning(f"파일이 처리 도중 사라졌습니다 (다른 프로세스가 먼저 처리한 것으로 추정): {file.name}")
-                return entity.set_move_type("already_processed_by_other") # DB에 기록할 상태 변경
-
-            if remove_path == "":
+                logger.warning(f"파일이 처리 도중 사라졌습니다: {file.name}")
+                return entity.set_move_type("already_processed_by_other")
+            
+            if not remove_path_str:
+                # '중복인 경우 이동 폴더'가 설정되지 않았으면 삭제
+                logger.info("'중복인 경우 이동 폴더'가 설정되지 않아 파일을 삭제합니다.")
                 file.unlink()
-                logger.debug("Deleted: %s", file)
-                return entity.set_move_type(move_type)
+                entity.set_move_type(move_type + "_deleted_due_to_duplication")
             else:
-                dup = Path(remove_path).joinpath(file.name)
-                UtilFunc.move(file, dup)
-                return entity.set_target(dup).set_move_type(move_type)
+                # '중복인 경우 이동 폴더'로 이동
+                remove_path = Path(remove_path_str)
+                if not remove_path.exists():
+                    remove_path.mkdir(parents=True)
+                
+                # 타임스탬프 접두사를 붙인 고유한 파일명 생성
+                timestamp = int(datetime.now().timestamp())
+                unique_filename = f"[{timestamp}] {newfilename}"
+                final_dup_path = remove_path.joinpath(unique_filename)
+                
+                UtilFunc.move(file, final_dup_path)
+                logger.info(f"중복 파일을 다음 경로로 이동했습니다: {final_dup_path}")
+                entity.set_target(final_dup_path).set_move_type(move_type + "_already_exist")
+            return entity
 
+        # 중복이 아닌 경우, 최종 라이브러리로 이동
         if file.exists():
-            if Task.config.get('파일명변경', False):
-                shutil.move(file, newfile)
-            else:
-                shutil.move(file, newfile.parent)
+            shutil.move(file, newfile)
             
             if meta_info is not None:
                 TaskMakeYaml.make_files(
@@ -300,6 +328,7 @@ class Task:
                     make_nfo=Task.config.get('부가파일생성_NFO', False),
                     make_image=Task.config.get('부가파일생성_IMAGE', False),
                 )
+
             try:
                 if Task.config.get('방송', False):
                     bot = {
