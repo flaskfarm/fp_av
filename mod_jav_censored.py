@@ -39,6 +39,8 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_meta_no_path": "",
             f"{self.name}_meta_no_retry_every": "0",
             f"{self.name}_meta_no_last_retry": "1970-01-01T00:00:00",
+            f"{self.name}_meta_no_move": "False",
+            f"{self.name}_meta_no_change_filename": "False",
             f"{self.name}_make_yaml": "False",
             f"{self.name}_make_nfo": "False",
             f"{self.name}_make_image": "False",
