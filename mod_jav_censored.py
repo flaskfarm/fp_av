@@ -19,8 +19,10 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_min_size": "300",
             f"{self.name}_max_age": "0",
             f"{self.name}_filename_not_allowed_list": "",
+            f"{self.name}_filename_cleanup_list": "3xplanet|boy999|javonly|xplanet|ddr91|konoha57|dioguitar23|dioguitar|love69|sis001|bo99|u3c3|nodrm|nomatch-2023|javsubs91|fengniao151|fengniao|javplayer200a|javplayer|im520|mosaic removed uncensored|4k-archive|a-mosaic-archive|giogio99",
             # filename
             f"{self.name}_include_original_filename": "True",
+            f"{self.name}_process_part_files": "True",
             f"{self.name}_include_original_filename_option": "0",
             f"{self.name}_filename_test": "",
             # folders
