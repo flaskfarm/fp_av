@@ -29,7 +29,7 @@
     {{ macros.m_hr() }}
     {{ macros.info_text('preprocess_2', '전처리 2단계', value='', desc=['예외 파일들을 검사하여 실패시 이동 폴더 아래에 분류.', ' - [FILENAME HASHED]: 40자리 토렌트 해시', ' - [FILENAME TOO LONG]: 200자 이상 파일명', ' - [FILENAME CANT CHANGE]: 처리하지 못하는 파일명', ]) }}
 
-    {{ macros.setting_input_textarea('jav_censored_filename_cleanup_list', '품번 파싱 제외 키워드', desc=['품번 파싱시 파일명에서 제외할 키워드 목록입니다.', '대소문자를 구분하지 않습니다. 너무 짧거나 레이블과 겹칠 수 있는 단어는 피하시고', '파일명 예외 키워드' 옵션 활용 또한 고려하시기 바랍니다.', '구분자: 바(|)'], value=arg['jav_censored_filename_cleanup_list'], row='5') }}
+    {{ macros.setting_input_textarea('jav_censored_filename_cleanup_list', '품번 파싱 제외 키워드', desc=['품번 파싱시 파일명에서 제외할 키워드 목록입니다.', '대소문자를 구분하지 않습니다. 너무 짧거나 레이블과 겹칠 수 있는 단어는 피하시고', '파일명 예외 키워드 옵션 활용 또한 고려하시기 바랍니다.', '구분자: 바(|)'], value=arg['jav_censored_filename_cleanup_list'], row='5') }}
 
     {{ macros.setting_input_textarea('jav_censored_filename_not_allowed_list', '파일명 예외 키워드', desc=['파일명에 위와 같은 키워드가 포함된 경우 [FILENAME NOT ALLOWED] 폴더 아래에 분류', '대소문자 구분 없음. 구분자 바(|)'], value=arg['jav_censored_filename_not_allowed_list'], row='3') }}
 
