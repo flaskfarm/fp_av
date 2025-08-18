@@ -33,11 +33,13 @@ class TaskBase:
 
                 "최소크기": ModelSetting.get_int("jav_censored_min_size"),
                 "최대기간": ModelSetting.get_int("jav_censored_max_age"),
+                "품번파싱제외키워드": ModelSetting.get_list("jav_censored_filename_cleanup_list", "|"),
                 "파일처리하지않을파일명": ModelSetting.get_list("jav_censored_filename_not_allowed_list", "|"),
 
                 "이동폴더포맷": ModelSetting.get("jav_censored_folder_format"),
                 "메타사용": ModelSetting.get("jav_censored_use_meta"),
                 "파일명변경": ModelSetting.get_bool("jav_censored_change_filename"),
+                "분할파일처리": ModelSetting.get_bool("jav_censored_process_part_files"),
                 "원본파일명포함여부": ModelSetting.get_bool("jav_censored_include_original_filename"),
                 "원본파일명처리옵션": ModelSetting.get("jav_censored_include_original_filename_option"),
 
@@ -100,7 +102,7 @@ class TaskBase:
             logger.info(f"작업 [{config.get('이름', 'N/A')}] : DMM+MGS만 사용하도록 설정됨.")
             site_list_to_search = ['dmm', 'mgstage']
         else:
-            logger.info(f"작업 [{config.get('이름', 'N/A')}] : 메타데이터 플러그인 설정을 따르도록 설정됨.")
+            # logger.info(f"작업 [{config.get('이름', 'N/A')}] : 메타데이터 플러그인 설정을 따르도록 설정됨.")
             try:
                 meta_module = F.PluginManager.get_plugin_instance("metadata").get_module("jav_censored")
                 if meta_module:
@@ -118,6 +120,35 @@ class TaskBase:
         # 2. 로드한 사이트 목록을 config에 추가
         config['사이트목록'] = site_list_to_search
 
+        # 특수 파서 규칙을 config에 추가
+        try:
+            meta_module = Task.get_meta_module()
+            if meta_module:
+                # YAML에 있으면 그 값을 사용
+                custom_rules_str = config.get('레이블특수처리규칙')
+
+                if custom_rules_str is None:
+                    # YAML에 없으면 metadata 플러그인의 전역 설정에서 로드
+                    custom_rules_str = meta_module.P.ModelSetting.get("jav_censored_special_parser_custom_rules")
+
+                if custom_rules_str is None:
+                    custom_rules_str = ""
+
+                custom_rules_list = [line.strip() for line in custom_rules_str.splitlines() if line.strip()]
+
+                config['레이블특수처리규칙'] = {
+                    'custom_rules': custom_rules_list
+                }
+
+            else:
+                config['레이블특수처리규칙'] = {}
+                logger.warning("메타데이터 플러그인을 찾을 수 없어 특수 규칙을 로드하지 못했습니다.")
+
+        except Exception as e:
+            logger.error(f"특수 처리 규칙을 로드하는 중 치명적인 오류가 발생했습니다.")
+            logger.error(f"오류: {e}")
+            raise e
+
         # 3. 실제 Task 실행
         Task.start(config)
 
@@ -129,234 +160,301 @@ class Task:
     @staticmethod
     def start(config):
         Task.config = config
-        logger.error(d(config))
 
-        no_censored_path = Task.config['처리실패이동폴더'].strip()
-        if not no_censored_path:
-            logger.warning("'처리 실패시 이동 폴더'가 지정되지 않음. 작업을 중단합니다!")
+        # 1-1. [Extract] 파일 목록 수집
+        logger.debug(f"처리 파일 목록 생성")
+        files = Task.__collect_initial_files()
+        if not files:
+            logger.warning("처리할 파일이 없습니다.")
             return
 
-        no_censored_path_obj = Path(no_censored_path)
-        if not no_censored_path_obj.is_dir():
-            logger.warning(f"'처리 실패시 이동 폴더'가 존재하지 않는 디렉토리입니다. 작업을 중단합니다: {no_censored_path}")
-            return
+        # 1-2. [Transform] 파싱 및 기본 정보 추출
+        logger.debug(f"파싱 및 기본 정보 추출")
+        execution_plan = []
+        for file in files:
+            info = Task.__prepare_initial_info(file)
+            if info:
+                execution_plan.append(info)
+        
+        # 1-3. [Enrichment] -c 파트 모호성 해결
+        logger.debug(f"'-C' 파트 처리")
+        Task.__resolve_c_part_ambiguity(execution_plan)
+
+        # 1-4. [Assemble] 최종 파일명 및 경로 조립
+        for info in execution_plan:
+            Task.__assemble_final_plan(info)
+            
+        # 1-5. [Load] 메타데이터 처리 및 실제 파일 이동
+        Task.__execute_plan(execution_plan)
+
+
+    # ====================================================================
+    # --- 헬퍼 함수들 (Helper Functions) ---
+    # ====================================================================
+
+    @staticmethod
+    def __collect_initial_files():
+        """파일 시스템에서 처리할 초기 파일 목록을 수집합니다."""
+        no_censored_path = Path(Task.config['처리실패이동폴더'].strip())
+        if not no_censored_path.is_dir():
+            logger.warning("'처리 실패시 이동 폴더'가 유효하지 않아 작업을 중단합니다.")
+            return []
 
         src_list = Task.get_path_list(Task.config['다운로드폴더'])
-        if config.get('재시도', False):
-            src_list += Task.__add_meta_no_path()
+        # 재시도 로직은 메타 검색 단계에서 별도로 처리하는 것이 더 좋으므로 여기서는 제외.
 
-        if not src_list:
-            logger.warning("'다운로드 폴더'가 지정되지 않음. 작업을 중단합니다!")
-            return
+        all_files = []
+        for src in src_list:
+            ToolExpandFileProcess.preprocess_cleanup(src, Task.config.get('최소크기', 0), Task.config.get('최대기간', 0))
+            _f = ToolExpandFileProcess.preprocess_listdir(src, no_censored_path, Task.config)
+            all_files.extend(_f or [])
 
-        delay_seconds = Task.config.get('파일당딜레이', 0)
-        if delay_seconds > 0:
-            logger.debug(f"파일당 처리 딜레이가 {delay_seconds}초로 설정되었습니다.")
+        # 파일 목록을 반환하기 전에 자연수 정렬
+        if all_files:
+            # logger.debug(f"총 {len(all_files)}개의 파일을 자연수 기준으로 정렬합니다.")
+            all_files.sort(key=lambda p: [int(c) if c.isdigit() else c.lower() for c in re.split('([0-9]+)', p.name)])
 
-        files = []
-        for src_item in src_list:
-            src = Path(src_item)
-
-            ToolExpandFileProcess.preprocess_cleanup(
-                src,
-                min_size=Task.config.get('최소크기', 0),
-                max_age=Task.config.get('최대기간', 0),
-            )
-
-            _f = ToolExpandFileProcess.preprocess_listdir(
-                src,
-                no_censored_path_obj,
-                min_size=Task.config.get('최소크기', 0),
-                disallowed_keys=Task.config.get('파일처리하지않을파일명', [])
-            )
-            files += _f or []
-
-        logger.info(f"처리할 파일 {len(files)}개")
-
-        for idx, file in enumerate(files):
-            if delay_seconds > 0 and idx > 0: # 첫 번째 파일은 바로 처리
-                # logger.debug(f"{delay_seconds}초 대기...")
-                time.sleep(delay_seconds)
-            logger.debug("[%03d/%03d] %s", idx + 1, len(files), file.name)
-            try:
-                entity = Task.__task(file)
-                if entity is None:
-                    continue
-            except Exception:
-                logger.exception("개별 파일 처리 중 예외: %s", file)
-            else:
-                if entity.move_type is not None:
-                    entity.save()
+        return all_files
 
 
     @staticmethod
-    def __task(file):
-        newfilename = ToolExpandFileProcess.change_filename_censored(file.name)
-        newfilename = Task.check_newfilename(file.name, newfilename, str(file))
+    def __prepare_initial_info(file):
+        """파일을 파싱하여 메타 검색 이전에 가능한 모든 정보를 추출합니다."""
+        special_parser_rules = Task.config.get('레이블특수처리규칙')
+        cleanup_list = Task.config.get('품번파싱제외키워드')
 
-        # 검색용 키워드
-        search_name = ToolExpandFileProcess.change_filename_censored(newfilename)
-        search_name = search_name.split(".")[0]
-        #search_name = os.path.splitext(search_name)[0].replace("-", " ")
-        search_name = re.sub(r"\s*\[.*?\]", "", search_name).strip()
-        match = re.search(r"(?P<cd>cd\d{1,2})$", search_name)
-        if match:
-            search_name = search_name.replace(match.group("cd"), "")
-        logger.debug("search_name=%s", search_name)
+        parsed = ToolExpandFileProcess.change_filename_censored(file.name, special_parser_rules, cleanup_list)
+        if not parsed:
+            logger.warning(f"파싱 실패: {file.name}")
+            return None
 
-        #
-        # target_dir를 결정하라!
-        #
-        target_dir, move_type, meta_info = None, None, None
-        if Task.config.get('메타사용', "not_using") == "not_using":
-            move_type = "normal"
-            target = Task.get_path_list(Task.config['라이브러리폴더'])
-            folders = Task.process_folder_format(move_type, search_name)
-            # 2025.07.12 by soju6jan
-            # 아래 로직 의미를 모르겠음
+        # 파트 넘버를 미리 해석하여 저장
+        parsed_part_type = ToolExpandFileProcess._parse_part_number(parsed['part'])
 
-            ## 첫번째 자식폴더만 타겟에서 찾는다.
-            #for tmp in target:
-            #    tmp_dir = Path(tmp).joinpath(folders[0])
-            #    if tmp_dir.exists():
-            #        target_dir = tmp_dir
-            #        break
-            ## 없으면 첫번째 타겟으로
-            #if target_dir is None and target:
-            #    target_dir = Path(target[0]).joinpath(*folders)
-            target_dir = Path(target[0]).joinpath(*folders)
-        else:
-            # 메타 처리
-            try:
-                target_dir, move_type, meta_info = Task.__get_target_with_meta(search_name)
-            except Exception:
-                logger.exception("메타를 이용한 타겟 폴더 결정 중 예외:")
-                logger.error(f"파일 '{file.name}' 처리 중 메타 검색 단계에서 오류가 발생하여 건너뜁니다.")
-                target_dir, move_type, meta_info = None, None, None
+        info = {
+            'original_file': file,
+            'file_size': file.stat().st_size,
+            'pure_code': parsed['code'],
+            'raw_part': parsed['part'],
+
+            'parsed_part_type': parsed_part_type,
+            'ext': parsed['ext'],
+            'meta_info': None,
+        }
+
+        logger.debug(
+            f"- Parsed Code: '{info['pure_code']}', Part: '{info['parsed_part_type']}'"
+        )
+
+        return info
 
 
-        # 2021-04-30
-        try:
-            match = re.compile(r"\d+\-?c(\.|\].)|\(").search(file.stem.lower())
-            if match:
-                for cd in ["1", "2", "4"]:
-                    cd_name = f'{search_name.replace(" ", "-")}cd{cd}{file.suffix}'
-                    cd_file = Path(target_dir).joinpath(cd_name)
-                    if cd_file.exists():
-                        newfilename = f'{search_name.replace(" ", "-")}cd3{file.suffix}'
+    @staticmethod
+    def __resolve_c_part_ambiguity(plan_list):
+        """전체 목록의 문맥을 사용하여 '-c' 파트의 모호성을 해결합니다."""
+        # 품번별로 파일 인덱스를 그룹화하여 검색 속도 향상
+        code_map = {}
+        for i, info in enumerate(plan_list):
+            code = info['pure_code']
+            if code not in code_map:
+                code_map[code] = []
+            code_map[code].append(i)
+
+        for i, info in enumerate(plan_list):
+            # 'c' 파트이고, 아직 해석되지 않은 경우에만('cd3') 검사
+            if info['raw_part'].strip(' ._-').lower() == 'c' and info['parsed_part_type'] == 'cd3':
+                is_series = False
+                # 동일 품번 그룹 내에서만 다른 파트를 찾음
+                for other_index in code_map.get(info['pure_code'], []):
+                    if i == other_index: continue
+                    other_info = plan_list[other_index]
+                    other_part = other_info['raw_part'].strip(' ._-').lower()
+                    if other_part in ['a', 'b', 'd']:
+                        is_series = True
+                        logger.debug(f"{info['pure_code']}-c: 멀티 파트로 처리(cd3)")
                         break
-        except Exception as e:
-            logger.debug("Exception:%s", e)
-            logger.debug(traceback.format_exc())
+
+                # 시리즈가 아닌 것으로 판명되면, 해석된 파트를 무효화
+                if not is_series:
+                    info['parsed_part_type'] = "" # 자막 등으로 간주하고 파트 정보 제거
+                    logger.debug(f"{info['pure_code']}-c: 멀티 파트가 아닌 것으로 처리")
 
 
-        # target_dir이 결정된 후, None이 아니고 str 타입이라면 즉시 Path 객체로 변환
-        if target_dir is not None and isinstance(target_dir, str):
-            # logger.debug(f"target_dir이 문자열 타입({target_dir})이므로 Path 객체로 변환합니다.")
-            target_dir = Path(target_dir)
+    @staticmethod
+    def __assemble_final_plan(info):
+        """최종 search_name, newfilename, target_dir을 조립합니다."""
+        config = Task.config
+        info['search_name'] = info['pure_code'] # search_name은 항상 순수 품번
+        
+        part_to_use = info['parsed_part_type'] if config.get('분할파일처리', True) else ""
 
-        if not target_dir.exists():
-            target_dir.mkdir(parents=True)
+        if not config.get('파일명변경', True):
+            info['newfilename'] = info['original_file'].name
+        elif part_to_use:
+            info['newfilename'] = f"{info['search_name']}{part_to_use}{info['ext']}"
         else:
-            #logger.error("타겟 폴더가 이미 존재함: %s", target_dir)
-            pass
+            base_filename = f"{info['search_name']}{info['ext']}"
+            info['newfilename'] = Task.check_newfilename(
+                info['original_file'].name, base_filename, str(info['original_file']), info['file_size']
+            )
 
-        logger.debug("target_dir: %s", target_dir)
 
-        entity = ModelJavCensoredItem(Task.config['이름'], str(file.parent), file.name)
+    @staticmethod
+    def __execute_plan(execution_plan):
+        """메타 검색 및 실제 파일 처리를 실행합니다."""
+        config = Task.config
 
-        # 이동/중복/삭제 처리 로직 재설계
+        # 품번 그룹화
+        code_groups = {}
+        for info in execution_plan:
+            code = info['search_name']
+            if code not in code_groups: code_groups[code] = []
+            code_groups[code].append(info)
+
+        logger.info(f"처리할 품번 그룹 {len(code_groups)}개 (총 파일 {len(execution_plan)}개)")
+        delay_seconds = config.get('파일당딜레이', 0)
+
+        total_files = len(execution_plan)
+        processed_count = 0
+
+        for idx, (pure_code, group_infos) in enumerate(code_groups.items()):
+            if delay_seconds > 0 and idx > 0:
+                time.sleep(delay_seconds)
+
+            try:
+                # 그룹당 1회 메타 검색
+                meta_target_dir, meta_move_type, meta_info = None, None, None
+                if config.get('메타사용') == 'using':
+                    meta_target_dir, meta_move_type, meta_info = Task.__get_target_with_meta(pure_code)
+
+                # 그룹 내 각 파일 처리
+                for info in group_infos:
+                    processed_count += 1
+                    logger.info(f"[{processed_count:03d}/{total_files:03d}] {info['original_file'].name}")
+
+                    # 메타 사용 여부에 따라 최종 이동 경로와 타입을 결정
+                    if config.get('메타사용') == 'using':
+                        target_dir = meta_target_dir
+                        move_type = meta_move_type
+                    else: # 메타 미사용 시
+                        move_type = "normal"
+                        target_paths = Task.get_path_list(config['라이브러리폴더'])
+                        folders = Task.process_folder_format(move_type, pure_code)
+                        target_dir = Path(target_paths[0]).joinpath(*folders)
+
+                    # 실제 파일 이동/중복 처리 로직 호출
+                    entity = Task.__file_move_logic(info, info['newfilename'], target_dir, move_type, meta_info)
+                    if entity and entity.move_type is not None:
+                        entity.save()
+
+            except Exception as e:
+                logger.error(f"'{pure_code}' 그룹 처리 중 예외 발생: {e}")
+                logger.error(traceback.format_exc())
+
+
+    @staticmethod
+    def __file_move_logic(info, newfilename, target_dir, move_type, meta_info):
+        """실제 파일 이동, 중복 처리, DB 기록, 방송 등을 담당합니다."""
+        config = Task.config
+        file = info['original_file'] # 원본 파일 객체
+
+        entity = ModelJavCensoredItem(config['이름'], str(file.parent), file.name)
+
         if move_type is None or target_dir is None:
-            logger.warning("타겟 폴더를 결정할 수 없어 처리를 중단합니다.")
+            logger.warning(f"'{file.name}'의 최종 이동 경로를 결정할 수 없어 건너<binary data, 2 bytes>니다.")
             return entity.set_move_type(None)
 
         if not target_dir.exists():
             target_dir.mkdir(parents=True)
 
-        # 매칭 실패 (no_meta) 케이스 처리
-        if move_type == "no_meta":
-            if not Task.config.get('메타매칭실패시이동', False):
-                logger.info(f"메타 검색 실패: '{file.name}' 파일 이동 안함 설정에 따라 처리를 중단합니다.")
-                return entity.set_move_type(None) # DB에 기록하지 않음
-
-            # 사용할 파일명 결정 (옵션에 따라 품번 또는 원본명)
-            final_filename = newfilename if Task.config.get('메타매칭실패시파일명변경', False) else file.name
-            newfile = target_dir.joinpath(final_filename)
-
-            # '메타 없는 영상 이동 경로'에 중복 파일이 있으면, 새 파일 삭제
-            if newfile.exists():
-                logger.warning(f"메타 없는 영상 이동 경로에 동일한 파일이 존재하여 새 파일을 삭제합니다: {newfile}")
-                file.unlink()
-                entity.set_move_type("no_meta_deleted_due_to_duplication")
-            else:
-                UtilFunc.move(file, newfile)
-                entity.set_target(newfile).set_move_type(move_type)
-            return entity
-
-
-        # 정상 처리 (dvd, normal) 케이스 처리
         newfile = target_dir.joinpath(newfilename)
 
-        # 라이브러리에 중복 파일이 있는지 확인
-        if UtilFunc.is_duplicate(file, newfile):
-            logger.info(f"라이브러리에 동일 파일이 존재합니다: {newfile}")
-            remove_path_str = Task.config.get('중복파일이동폴더', '').strip() # config 키 확인 필요
-            
-            if not file.exists():
-                logger.warning(f"파일이 처리 도중 사라졌습니다: {file.name}")
-                return entity.set_move_type("already_processed_by_other")
-            
-            if not remove_path_str:
-                # '중복인 경우 이동 폴더'가 설정되지 않았으면 삭제
-                logger.info("'중복인 경우 이동 폴더'가 설정되지 않아 파일을 삭제합니다.")
+        # 1. 매칭 실패 (no_meta) 케이스 처리
+        if move_type == "no_meta":
+            if not config.get('메타매칭실패시이동', False):
+                return entity.set_move_type(None)
+
+            # no_meta의 경우 newfilename은 조립된 이름/원본명 중 하나.
+            if newfile.exists():
+                logger.warning(f"메타 없는 영상 이동 경로에 동일 파일이 존재하여 삭제합니다: {newfile}")
                 file.unlink()
-                entity.set_move_type(move_type + "_deleted_due_to_duplication")
+                return entity.set_move_type("no_meta_deleted_due_to_duplication")
             else:
-                # '중복인 경우 이동 폴더'로 이동
+                shutil.move(file, newfile)
+                return entity.set_target(newfile).set_move_type(move_type)
+
+        # 2. 타겟 경로 내 중복 처리
+        if UtilFunc.is_duplicate(file, newfile):
+            logger.info(f"타겟 경로에 동일 파일이 존재합니다: {newfile}")
+            remove_path_str = config.get('중복파일이동폴더', '').strip()
+
+            if not file.exists():
+                return entity.set_move_type("already_processed_by_other")
+
+            if not remove_path_str:
+                file.unlink()
+                logger.info("중복 파일을 삭제했습니다.")
+                return entity.set_move_type(move_type + "_deleted_due_to_duplication")
+            else:
                 remove_path = Path(remove_path_str)
-                if not remove_path.exists():
-                    remove_path.mkdir(parents=True)
-                
-                # 타임스탬프 접두사를 붙인 고유한 파일명 생성
-                timestamp = int(datetime.now().timestamp())
-                unique_filename = f"[{timestamp}] {newfilename}"
-                final_dup_path = remove_path.joinpath(unique_filename)
-                
-                UtilFunc.move(file, final_dup_path)
+                if not remove_path.exists(): remove_path.mkdir(parents=True)
+
+                final_dup_path = remove_path.joinpath(newfilename)
+                if final_dup_path.exists():
+                    timestamp = int(datetime.now().timestamp())
+                    unique_filename = f"[{timestamp}] {newfilename}"
+                    final_dup_path = remove_path.joinpath(unique_filename)
+
+                shutil.move(file, final_dup_path)
                 logger.info(f"중복 파일을 다음 경로로 이동했습니다: {final_dup_path}")
-                entity.set_target(final_dup_path).set_move_type(move_type + "_already_exist")
-            return entity
+                return entity.set_target(final_dup_path).set_move_type(move_type + "_already_exist")
 
-        # 중복이 아닌 경우, 최종 라이브러리로 이동
+        # 3. 최종 라이브러리로 이동
         if file.exists():
-            shutil.move(file, newfile)
-            
-            if meta_info is not None:
-                TaskMakeYaml.make_files(
-                    meta_info,
-                    str(newfile.parent),
-                    make_yaml=Task.config.get('부가파일생성_YAML', False),
-                    make_nfo=Task.config.get('부가파일생성_NFO', False),
-                    make_image=Task.config.get('부가파일생성_IMAGE', False),
-                )
-
+            move_success = False
             try:
-                if Task.config.get('방송', False):
-                    bot = {
-                        't1': 'gds_tool',
-                        't2': 'fp',
-                        't3': 'av',
-                        'data': {
-                            'gds_path': str(newfile).replace('/mnt/AV/MP/GDS', '/ROOT/GDRIVE/VIDEO/AV'),
-                        }
-                    }
-                    hook = base64.b64decode(b'aHR0cHM6Ly9kaXNjb3JkLmNvbS9hcGkvd2ViaG9va3MvMTM5OTkxMDg4MDE4NzEyNTgxMS84SFY0bk93cGpXdHhIdk5TUHNnTGhRbDhrR3lGOXk4THFQQTdQVTBZSXVvcFBNN21PWHhkSVJSNkVmcmIxV21UdFhENw==').decode('utf-8')
-                    SupportDiscord.send_discord_bot_message(json.dumps(bot), hook)
+                # 3a. shutil.move만 단독으로 예외 처리
+                shutil.move(file, newfile)
+                logger.info(f"파일 이동 성공: {file.name} -> {newfile}")
+                move_success = True
             except Exception as e:
-                logger.error("방송 메시지 전송 실패: %s", e)
+                logger.error(f"최종 파일 이동 중 오류 발생: {file} -> {newfile}")
+                logger.error(f"오류: {e}")
+                logger.error(traceback.format_exc())
+                return entity.set_move_type("move_fail")
 
-        return entity.set_target(newfile).set_move_type(move_type)
+            # 3b. 파일 이동이 성공했을 경우에만 후속 작업 실행
+            if move_success:
+                # 부가 파일 (NFO, YAML, 이미지) 생성
+                if meta_info:
+                    TaskMakeYaml.make_files(
+                        meta_info,
+                        str(newfile.parent),
+                        make_yaml=config.get('부가파일생성_YAML', False),
+                        make_nfo=config.get('부가파일생성_NFO', False),
+                        make_image=config.get('부가파일생성_IMAGE', False),
+                    )
 
+                # 방송 처리
+                try:
+                    if config.get('방송', False):
+                        bot = {
+                            't1': 'gds_tool', 't2': 'fp', 't3': 'av',
+                            'data': {'gds_path': str(newfile).replace('/mnt/AV/MP/GDS', '/ROOT/GDRIVE/VIDEO/AV')}
+                        }
+                        hook = base64.b64decode(b'aHR0cHM6Ly9kaXNjb3JkLmNvbS9hcGkvd2ViaG9va3MvMTM5OTkxMDg4MDE4NzEyNTgxMS84SFY0bk93cGpXdHhIdk5TUHNnTGhRbDhrR3lGOXk4THFQQTdQVTBZSXVvcFBNN21PWHhkSVJSNkVmcmIxV21UdFhENw==').decode('utf-8')
+                        SupportDiscord.send_discord_bot_message(json.dumps(bot), hook)
+                except Exception as e:
+                    logger.error(f"방송 메시지 전송 실패: {e}")
+
+                return entity.set_target(newfile).set_move_type(move_type)
+
+        return entity.set_move_type(None) # 파일이 중간에 사라진 경우 등
+
+
+    # ====================================================================
+    # --- Legacy functions ---
+    # ====================================================================
 
     @staticmethod
     def __get_target_with_meta_dvd(search_name):
@@ -388,7 +486,7 @@ class Task:
         # 순차적으로 사이트 검색 및 조기 탈출
         for site in site_list_to_search:
             try:
-                logger.debug(f"메타 검색 시도: 사이트=[{site}], 검색어=[{search_name}]")
+                #logger.debug(f"메타 검색 시도: 사이트=[{site}], 검색어=[{search_name}]")
                 search_result_list = meta_module.search2(search_name, site, manual=False)
 
                 if not search_result_list:
@@ -398,9 +496,10 @@ class Task:
                 best_match = next((item for item in search_result_list if item.get('score', 0) >= 95), None)
 
                 if best_match:
-                    logger.info(f"매칭 성공! 사이트=[{site}], 코드=[{best_match['code']}], 점수=[{best_match['score']}]")
+                    logger.info(f"매칭 성공! 사이트=[{site}], 검색어=[{search_name}], 코드=[{best_match['code']}], 점수=[{best_match['score']}]")
                     # metadata 플러그인의 info 메소드 직접 호출
-                    meta_info = meta_module.info(best_match["code"], fp_meta_mode=True)
+                    meta_info = meta_module.info(best_match["code"], keyword=search_name, fp_meta_mode=True)
+
                     if meta_info:
                         folders = Task.process_folder_format("dvd", meta_info)
                         current_target_root = target_root_path
@@ -419,10 +518,11 @@ class Task:
                                 else:
                                     logger.warning("'VR영상 이동 경로'가 존재하지 않음: %s. 기본 경로를 사용합니다.", vr_path_str)
 
-                        logger.info(f"메타매칭 최종 성공: {meta_info['code']}")
+                        #logger.info(f"메타매칭 최종 성공: {meta_info['code']}")
                         return current_target_root.joinpath(*folders), meta_info
                     else:
                         logger.warning(f"검색은 성공했으나 메타 정보({best_match['code']})를 가져오지 못했습니다. 다음 사이트를 검색합니다.")
+                        pass
 
             except Exception as e:
                 logger.error(f"'{site}' 사이트 검색 중 예외 발생: {e}")
@@ -467,32 +567,6 @@ class Task:
             logger.info(f"메타 없음: 기본 [NO META] 폴더로 이동합니다 - {final_path_obj}")
 
         return final_path_obj, move_type, None
-
-
-    @staticmethod
-    def __add_meta_no_path():
-        meta_no_path_str = Task.config.get('메타매칭실패시이동폴더', '').strip()
-        if not meta_no_path_str:
-            temp_path_str = Task.config.get('처리실패이동폴더', '').strip()
-            # temp_path_str는 start에서 유효성 검증됨
-            meta_no_path = Path(temp_path_str).joinpath("[NO META]")
-        else:
-            meta_no_path = Path(meta_no_path_str)
-        
-        if not meta_no_path.is_dir():
-            return []
-
-        meta_no_retry_every = ModelSetting.get_int("jav_censored_meta_no_retry_every")
-        if meta_no_retry_every <= 0:
-            return []
-        
-        meta_no_last_retry = datetime.fromisoformat(ModelSetting.get("jav_censored_meta_no_last_retry"))
-        if (datetime.now() - meta_no_last_retry).days < meta_no_retry_every:
-            return []
-        
-        ModelSetting.set("jav_censored_meta_no_last_retry", datetime.now().isoformat())
-        # Path 객체를 리스트에 담아 반환
-        return [meta_no_path]
 
 
     @staticmethod
@@ -555,7 +629,7 @@ class Task:
 
 
     @staticmethod
-    def check_newfilename(filename, newfilename, file_path):
+    def check_newfilename(filename, newfilename, file_path, file_size=None):
         # 이미 파일처리를 한거라면..
         # newfilename 과 filename 이 [] 제외하고 같다면 처리한파일로 보자
         # 그런 파일은 다시 원본파일명 옵션을 적용하지 않아야한다.
@@ -581,12 +655,12 @@ class Task:
             if match:
                 newfilename = newfilename.replace(match.group("remove"), "")
 
-        logger.debug("%s => %s", filename, newfilename)
+        #logger.debug("%s => %s", filename, newfilename)
         return newfilename
 
 
     @staticmethod
-    def change_filename_censored_by_save_original(original_filename, new_filename, original_filepath):
+    def change_filename_censored_by_save_original(original_filename, new_filename, original_filepath, file_size=None):
         """원본파일명 보존 옵션에 의해 파일명을 변경한다."""
         try:
             if not Task.config.get('원본파일명포함여부', True):
@@ -607,6 +681,9 @@ class Task:
             if part is not None:
                 # 안씀
                 return f"{new_name} [{ori_name}] {part}{new_ext}"
+
+            if file_size is None:
+                file_size = os.stat(original_filepath).st_size
 
             option = Task.config.get('원본파일명처리옵션', 'original')
             if option == "original" or original_filepath is None:
@@ -659,3 +736,238 @@ class Task:
             logger.debug("Exception:%s", exception)
             logger.debug(traceback.format_exc())
             return None # 모듈 로딩 실패 시 None 반환
+
+
+    # ====================================================================
+    # --- To be deleted ---
+    # ====================================================================
+
+    @staticmethod
+    def __task(file, all_files=None):
+        special_parser_rules = Task.config.get('레이블특수처리규칙')
+        cleanup_list = Task.config.get('품번파싱제외키워드')
+        change_filename = Task.config.get('파일명변경', True)
+        process_parts = Task.config.get('분할파일처리', True)
+
+        parsed_info = ToolExpandFileProcess.change_filename_censored(
+            file.name, 
+            special_parser_rules=special_parser_rules,
+            cleanup_list=cleanup_list
+        )
+
+        if parsed_info is None:
+            logger.error(f"FATAL: 파일의 품번을 추출할 수 없습니다: {file.name}")
+            return None
+
+        search_name = parsed_info['code']
+
+        if not change_filename:
+            # === 파일명 변경 OFF ===
+            # newfilename은 원본 파일명과 동일
+            newfilename = file.name
+        else:
+            # === 파일명 변경 ON ===
+            # 파트 넘버 해석을 시도
+            part_num_part = ""
+            if process_parts:
+                part_num_part = ToolExpandFileProcess._parse_part_number(parsed_info['part'])
+
+            # 해석된 파트 넘버의 존재 여부에 따라 분기
+            if part_num_part:
+                # 유효한 파트 넘버가 발견된 경우 (명백한 분할 파일)
+                newfilename = f"{search_name}{part_num_part}{parsed_info['ext']}"
+            else:
+                # 유효한 파트 넘버가 없거나, '분할 파일 처리'가 OFF인 경우
+                base_processed_filename = f"{search_name}{parsed_info['ext']}"
+                # '원본 파일명 포함' 옵션을 적용하여 최종 파일명을 생성
+                newfilename = Task.check_newfilename(file.name, base_processed_filename, str(file))
+
+        logger.debug(f"최종 search_name={search_name}, 최종 newfilename={newfilename}")
+
+
+        #
+        # target_dir를 결정하라!
+        #
+        target_dir, move_type, meta_info = None, None, None
+        if Task.config.get('메타사용', "not_using") == "not_using":
+            move_type = "normal"
+            target = Task.get_path_list(Task.config['라이브러리폴더'])
+            folders = Task.process_folder_format(move_type, search_name)
+            # 2025.07.12 by soju6jan
+            # 아래 로직 의미를 모르겠음
+
+            ## 첫번째 자식폴더만 타겟에서 찾는다.
+            #for tmp in target:
+            #    tmp_dir = Path(tmp).joinpath(folders[0])
+            #    if tmp_dir.exists():
+            #        target_dir = tmp_dir
+            #        break
+            ## 없으면 첫번째 타겟으로
+            #if target_dir is None and target:
+            #    target_dir = Path(target[0]).joinpath(*folders)
+            target_dir = Path(target[0]).joinpath(*folders)
+        else:
+            # 메타 처리
+            try:
+                target_dir, move_type, meta_info = Task.__get_target_with_meta(search_name)
+            except Exception:
+                logger.exception("메타를 이용한 타겟 폴더 결정 중 예외:")
+                logger.error(f"파일 '{file.name}' 처리 중 메타 검색 단계에서 오류가 발생하여 건너뜁니다.")
+                target_dir, move_type, meta_info = None, None, None
+
+
+        # 2021-04-30
+        #try:
+        #    match = re.compile(r"\d+\-?c(\.|\].)|\(").search(file.stem.lower())
+        #    if match:
+        #        for cd in ["1", "2", "4"]:
+        #            cd_name = f'{search_name.replace(" ", "-")}cd{cd}{file.suffix}'
+        #            cd_file = Path(target_dir).joinpath(cd_name)
+        #            if cd_file.exists():
+        #                newfilename = f'{search_name.replace(" ", "-")}cd3{file.suffix}'
+        #                break
+        #except Exception as e:
+        #    logger.debug("Exception:%s", e)
+        #    logger.debug(traceback.format_exc())
+
+
+        # target_dir이 결정된 후, None이 아니고 str 타입이라면 즉시 Path 객체로 변환
+        if target_dir is not None and isinstance(target_dir, str):
+            # logger.debug(f"target_dir이 문자열 타입({target_dir})이므로 Path 객체로 변환합니다.")
+            target_dir = Path(target_dir)
+
+        if not target_dir.exists():
+            target_dir.mkdir(parents=True)
+        else:
+            #logger.error("타겟 폴더가 이미 존재함: %s", target_dir)
+            pass
+
+        logger.debug("target_dir: %s", target_dir)
+
+        entity = ModelJavCensoredItem(Task.config['이름'], str(file.parent), file.name)
+
+        # 이동/중복/삭제 처리 로직 재설계
+        if move_type is None or target_dir is None:
+            logger.warning("타겟 폴더를 결정할 수 없어 처리를 중단합니다.")
+            return entity.set_move_type(None)
+
+        if not target_dir.exists():
+            target_dir.mkdir(parents=True)
+
+        # 매칭 실패 (no_meta) 케이스 처리
+        if move_type == "no_meta":
+            if not Task.config.get('메타매칭실패시이동', False):
+                logger.info(f"메타 검색 실패: '{file.name}' 파일 이동 안함 설정에 따라 처리를 중단합니다.")
+                return entity.set_move_type(None) # DB에 기록하지 않음
+
+            # 사용할 파일명 결정 (옵션에 따라 품번 또는 원본명)
+            final_filename = newfilename if Task.config.get('메타매칭실패시파일명변경', False) else file.name
+            newfile = target_dir.joinpath(final_filename)
+
+            # '메타 없는 영상 이동 경로'에 중복 파일이 있으면, 새 파일 삭제
+            if newfile.exists():
+                logger.warning(f"메타 없는 영상 이동 경로에 동일한 파일이 존재하여 새 파일을 삭제합니다: {newfile}")
+                file.unlink()
+                entity.set_move_type("no_meta_deleted_due_to_duplication")
+            else:
+                UtilFunc.move(file, newfile)
+                entity.set_target(newfile).set_move_type(move_type)
+            return entity
+
+
+        # 정상 처리 (dvd, normal) 케이스 처리
+        newfile = target_dir.joinpath(newfilename)
+
+        # 타겟 경로에 중복 파일이 있는지 확인
+        if UtilFunc.is_duplicate(file, newfile):
+            logger.info(f"타겟 경로에 동일 파일이 존재합니다: {newfile}")
+            remove_path_str = Task.config.get('중복파일이동폴더', '').strip() # config 키 확인 필요
+
+            if not file.exists():
+                logger.warning(f"파일이 처리 도중 사라졌습니다: {file.name}")
+                return entity.set_move_type("already_processed_by_other")
+
+            if not remove_path_str:
+                # '중복인 경우 이동 폴더'가 설정되지 않았으면 삭제
+                logger.info("'중복인 경우 이동 폴더'가 설정되지 않아 파일을 삭제합니다.")
+                file.unlink()
+                entity.set_move_type(move_type + "_deleted_due_to_duplication")
+            else:
+                # '중복인 경우 이동 폴더'로 이동
+                remove_path = Path(remove_path_str)
+                if not remove_path.exists():
+                    remove_path.mkdir(parents=True)
+
+                # 먼저, 타임스탬프 없이 이동할 경로를 결정
+                final_dup_path = remove_path.joinpath(newfilename)
+
+                # '중복 폴더'에도 동일한 이름의 파일이 있는지 확인
+                if final_dup_path.exists():
+                    # 존재할 경우에만, 타임스탬프를 붙인 고유한 이름으로 경로를 다시 생성
+                    timestamp = int(datetime.now().timestamp())
+                    unique_filename = f"[{timestamp}] {newfilename}"
+                    final_dup_path = remove_path.joinpath(unique_filename)
+                    logger.debug(f"중복 폴더에도 동일 파일이 있어 타임스탬프를 추가합니다: {unique_filename}")
+
+                UtilFunc.move(file, final_dup_path)
+                logger.info(f"중복 파일을 다음 경로로 이동했습니다: {final_dup_path}")
+                entity.set_target(final_dup_path).set_move_type(move_type + "_already_exist")
+            return entity
+
+        # 중복이 아닌 경우, 최종 라이브러리로 이동
+        if file.exists():
+            shutil.move(file, newfile)
+
+            if meta_info is not None:
+                TaskMakeYaml.make_files(
+                    meta_info,
+                    str(newfile.parent),
+                    make_yaml=Task.config.get('부가파일생성_YAML', False),
+                    make_nfo=Task.config.get('부가파일생성_NFO', False),
+                    make_image=Task.config.get('부가파일생성_IMAGE', False),
+                )
+
+            try:
+                if Task.config.get('방송', False):
+                    bot = {
+                        't1': 'gds_tool',
+                        't2': 'fp',
+                        't3': 'av',
+                        'data': {
+                            'gds_path': str(newfile).replace('/mnt/AV/MP/GDS', '/ROOT/GDRIVE/VIDEO/AV'),
+                        }
+                    }
+                    hook = base64.b64decode(b'aHR0cHM6Ly9kaXNjb3JkLmNvbS9hcGkvd2ViaG9va3MvMTM5OTkxMDg4MDE4NzEyNTgxMS84SFY0bk93cGpXdHhIdk5TUHNnTGhRbDhrR3lGOXk4THFQQTdQVTBZSXVvcFBNN21PWHhkSVJSNkVmcmIxV21UdFhENw==').decode('utf-8')
+                    SupportDiscord.send_discord_bot_message(json.dumps(bot), hook)
+            except Exception as e:
+                logger.error("방송 메시지 전송 실패: %s", e)
+
+        return entity.set_target(newfile).set_move_type(move_type)
+
+
+    @staticmethod
+    def __add_meta_no_path():
+        meta_no_path_str = Task.config.get('메타매칭실패시이동폴더', '').strip()
+        if not meta_no_path_str:
+            temp_path_str = Task.config.get('처리실패이동폴더', '').strip()
+            # temp_path_str는 start에서 유효성 검증됨
+            meta_no_path = Path(temp_path_str).joinpath("[NO META]")
+        else:
+            meta_no_path = Path(meta_no_path_str)
+        
+        if not meta_no_path.is_dir():
+            return []
+
+        meta_no_retry_every = ModelSetting.get_int("jav_censored_meta_no_retry_every")
+        if meta_no_retry_every <= 0:
+            return []
+        
+        meta_no_last_retry = datetime.fromisoformat(ModelSetting.get("jav_censored_meta_no_last_retry"))
+        if (datetime.now() - meta_no_last_retry).days < meta_no_retry_every:
+            return []
+        
+        ModelSetting.set("jav_censored_meta_no_last_retry", datetime.now().isoformat())
+        # Path 객체를 리스트에 담아 반환
+        return [meta_no_path]
+
+

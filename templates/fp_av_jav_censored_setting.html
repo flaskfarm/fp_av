@@ -19,7 +19,7 @@
   {{ macros.m_tab_content_start('basic', true) }}
     {{ macros.setting_input_textarea('jav_censored_download_path', '다운로드 폴더', desc=['Censored 영상을 다운받은 폴더. 필수', '2개 이상일 경우 구분자 Enter, #으로 시작하여 주석처리'], value=arg['jav_censored_download_path'], row='3') }}
     {{ macros.setting_input_text('jav_censored_temp_path', '처리 실패시 이동 폴더', desc=['처리 실패시 영상 파일이 이동할 폴더입니다. 필수'], value=arg['jav_censored_temp_path']) }}
-    {{ macros.setting_input_text('jav_censored_remove_path', '중복인 경우 이동 폴더', desc=['파일명이나 파일크기 기준 중복인 경우 이동할 폴더입니다', '빈값이면 파일을 삭제합니다.'], value=arg['jav_censored_remove_path']) }}
+    {{ macros.setting_input_text('jav_censored_remove_path', '중복인 경우 이동 폴더', desc=['파일명이나 파일크기 기준 중복인 경우 이동할 폴더입니다', '빈값이거나, 폴더를 지정해도 정상 경로 이외의 중복 파일은 삭제합니다.'], value=arg['jav_censored_remove_path']) }}
     {{ macros.m_hr() }}
 
     {{ macros.info_text('preprocess_1', '전처리 1단계', value='', desc=['다운로드 폴더의 depth=1인 자식들을 탐색하여 유효한 파일이 아니거나 그것을 포함하지 않은 폴더를 삭제. 유효한 파일은 아래 조건에 의해 결정.']) }}
@@ -29,6 +29,8 @@
     {{ macros.m_hr() }}
     {{ macros.info_text('preprocess_2', '전처리 2단계', value='', desc=['예외 파일들을 검사하여 실패시 이동 폴더 아래에 분류.', ' - [FILENAME HASHED]: 40자리 토렌트 해시', ' - [FILENAME TOO LONG]: 200자 이상 파일명', ' - [FILENAME CANT CHANGE]: 처리하지 못하는 파일명', ]) }}
 
+    {{ macros.setting_input_textarea('jav_censored_filename_cleanup_list', '품번 파싱 제외 키워드', desc=['품번 파싱시 파일명에서 제외할 키워드 목록입니다.', '대소문자를 구분하지 않습니다. 너무 짧거나 레이블과 겹칠 수 있는 단어는 피하시고', `파일명 예외 키워드` 옵션 활용 또한 고려하시기 바랍니다.', '구분자: 바(|)'], value=arg['jav_censored_filename_cleanup_list'], row='5') }}
+
     {{ macros.setting_input_textarea('jav_censored_filename_not_allowed_list', '파일명 예외 키워드', desc=['파일명에 위와 같은 키워드가 포함된 경우 [FILENAME NOT ALLOWED] 폴더 아래에 분류', '대소문자 구분 없음. 구분자 바(|)'], value=arg['jav_censored_filename_not_allowed_list'], row='3') }}
 
     {{ macros.setting_input_int('jav_censored_delay_per_file', '파일당 처리 딜레이', value=arg['jav_censored_delay_per_file'], placeholder='0', min='0', desc=['개별 파일을 처리하기 전 대기하는 시간입니다.', '메타데이터 사이트의 과도한 연속 호출을 방지합니다. 단위: 초(second)']) }}
@@ -36,6 +38,7 @@
 
   {{ macros.m_tab_content_start('filename', false) }}
     {{ macros.setting_checkbox('jav_censored_change_filename', '파일명 변경', value=arg['jav_censored_change_filename'], desc=['On : 파일명 변경', 'Off: 원본파일명 유지']) }}
+    {{ macros.setting_checkbox('jav_censored_process_part_files', '분할 파일 처리', value=arg['jav_censored_process_part_files'], desc=['On: 분할 파일명을 품번cd1(cd8 까지) 형태로 변환합니다. 원본 파일명은 제거됩니다.', 'Off: 분할파일 처리 없이 아래 원본파일명 처리 옵션을 따릅니다.']) }}
     {{ macros.setting_checkbox('jav_censored_include_original_filename', '파일명 변경시 원본 파일명 처리', value=arg['jav_censored_include_original_filename'], desc=['On : 파일명 변경시 원본파일명을 포함합니다.', '내용은 같으나 품질이 다른 영상 처리시 유용합니다.', '변경파일명 [원본파일명처리].확장자', 'Off: 원본파일명은 지워짐']) }}
     <div id="jav_censored_include_original_filename_div" class="collapse">
     {{ macros.setting_radio_with_value('jav_censored_include_original_filename_option', '원본 파일명 형식', [['original', '원본파일명'], ['original_bytes', '원본파일명(파일크기-byte숫자)'], ['original_giga', '원본파일명(파일크기-GB)'], ['bytes', '파일크기-byte숫자']], value=arg['jav_censored_include_original_filename_option']) }}
