@@ -118,23 +118,8 @@ class TaskBase:
                 logger.warning("기본 검색 순서(dmm, mgstage)를 사용합니다.")
                 site_list_to_search = ['dmm', 'mgstage']
 
-        # 2. 로드한 사이트 목록을 config에 추가
-        config['사이트목록'] = site_list_to_search
-
-        # 특수 파서 규칙을 config에 추가
-        try:
-            meta_module = F.PluginManager.get_plugin_instance("metadata").get_module("jav_censored")
-            if meta_module and hasattr(meta_module, 'get_jav_settings'):
-                jav_settings = meta_module.get_jav_settings()
-                parsing_rules = jav_settings.get('jav_parsing_rules', {})
-                config['파싱규칙'] = parsing_rules
-                logger.debug(f"메타데이터 플러그인에서 통합 파싱 규칙을 로드했습니다.")
-            else:
-                logger.warning("메타데이터 플러그인에서 파싱 규칙을 가져올 수 없습니다. (get_jav_settings 메서드 없음)")
-                config['파싱규칙'] = {}
-        except Exception as e:
-            logger.error(f"파싱 규칙 로드 중 오류: {e}")
-            config['파싱규칙'] = {}
+        # 2. 파싱 규칙을 config에 추가
+        Task._load_parsing_rules(config)
 
         # 3. 실제 Task 실행
         Task.start(config)
@@ -189,6 +174,29 @@ class Task:
     # ====================================================================
     # --- 헬퍼 함수들 (Helper Functions) ---
     # ====================================================================
+
+    @staticmethod
+    def _load_parsing_rules(config):
+        """ metadata 플러그인에서 통합 파싱 규칙을 로드하여 config에 추가합니다."""
+        try:
+            meta_module = F.PluginManager.get_plugin_instance("metadata").get_module("jav_censored")
+            if meta_module and hasattr(meta_module, 'get_jav_settings'):
+                jav_settings = meta_module.get_jav_settings()
+                parsing_rules = jav_settings.get('jav_parsing_rules', {})
+                config['파싱규칙'] = parsing_rules
+                if parsing_rules:
+                    # 각 규칙 리스트의 길이를 계산하여 로그 메시지 생성
+                    rule_counts = [f"{key}: {len(value)}개" for key, value in parsing_rules.items() if isinstance(value, list)]
+                    logger.debug(f"메타데이터 플러그인에서 통합 파싱 규칙을 로드했습니다. (규칙 수: {', '.join(rule_counts)})")
+                else:
+                    logger.debug("메타데이터 플러그인에서 통합 파싱 규칙을 로드했으나, 규칙이 비어있습니다.")
+            else:
+                logger.warning("메타데이터 플러그인 또는 get_jav_settings 메서드를 찾을 수 없어 파싱 규칙을 로드하지 못했습니다.")
+                config['파싱규칙'] = {}
+        except Exception as e:
+            logger.error(f"파싱 규칙 로드 중 오류: {e}")
+            config['파싱규칙'] = {}
+
 
     @staticmethod
     def __collect_initial_files():

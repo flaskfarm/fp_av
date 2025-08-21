@@ -183,8 +183,7 @@ class ToolExpandFileProcess:
         tlds = 'cc|cn|com|net|me|org|xyz|vip|tv|la'
         base = re.sub(r'[\w.-]+\.(%s)[-@_ ]' % tlds, '', base).strip()
 
-        # 숫자 접두사, DMM 접두사 제거
-        base = re.sub(r'^\d{3,}[-_]', '', base)
+        # DMM 접두사 제거
         base = re.sub(r'^[hn]_\d', '', base, flags=re.I)
 
         # 화질/코덱 등 '명백한' 접미사 제거
