@@ -88,7 +88,7 @@ class ToolExpandFileProcess:
                 newdir = errpath.joinpath("[FILENAME TOO LONG]")
             elif any(p in file.name.lower() for p in map(str.lower, disallowed_keys)):
                 newdir = errpath.joinpath("[FILENAME NOT ALLOWED]")
-            elif cls.change_filename_censored(file.name, special_parser_rules, cleanup_list) is None:
+            elif cls.parse_jav_filename(file.name, special_parser_rules, cleanup_list) is None:
                 newdir = errpath.joinpath("[FILENAME CANT CHANGE]")
             else:
                 #try:
@@ -112,7 +112,7 @@ class ToolExpandFileProcess:
     # --- 처리 메인 함수 ---
 
     @classmethod
-    def change_filename_censored(cls, original_filename, special_parser_rules=None, cleanup_list=None):
+    def parse_jav_filename(cls, original_filename, parsing_rules=None, cleanup_list=None, mode='censored'):
         if not original_filename or not isinstance(original_filename, str):
             return None
         logger.debug(f"filename: '{original_filename}'")
@@ -123,35 +123,37 @@ class ToolExpandFileProcess:
             # 전처리
             cleaned_base = cls._preprocess_base(base, cleanup_list=cleanup_list)
             code_part, remaining_part = None, ""
-            
-            # 품번 추출
-            if special_parser_rules:
-                code_part, remaining_part = cls._apply_special_parser_rules(cleaned_base, special_parser_rules)
 
-            if not code_part:
-                code_part, remaining_part = cls._apply_generic_rules(cleaned_base)
+            # 품번 추출
+            if parsing_rules:
+                # 1. 모드에 맞는 특수 규칙 목록을 가져옴
+                special_key = f"{mode}_special_rules"
+                special_rules = parsing_rules.get(special_key, [])
+
+                # 2. 범용 규칙 목록을 가져옴
+                generic_rules = parsing_rules.get('generic_rules', [])
+
+                # 3. 두 규칙 리스트를 합쳐서 하나의 통합된 파서 함수를 호출
+                all_rules = special_rules + generic_rules
+                if all_rules:
+                    code_part, remaining_part = cls._apply_parsing_rules(cleaned_base, all_rules)
 
             if not code_part:
                 code_part, remaining_part = cls._apply_fallback_rules(original_filename)
 
-            # --- 결과 조합 ---
             if code_part:
-                # zfill 처리는 순수한 code_part에만 적용합니다.
-                tmps = code_part.split("-")
-                if len(tmps) > 1 and tmps[1].isdigit():
-                    code_part = f"{tmps[0]}-{str(int(tmps[1])).zfill(3)}"
+                # 패딩(zfill) 처리는 Censored 모드일 때만 적용
+                if mode == 'censored' and '-' in code_part:
+                    parts = code_part.rsplit('-', 1)
+                    if len(parts) == 2 and parts[1].isdigit():
+                        code_part = f"{parts[0]}-{str(int(parts[1])).zfill(3)}"
 
-                return {
-                    'code': code_part.lower(),
-                    'part': remaining_part,
-                    'ext': ext
-                }
+                return { 'code': code_part.lower(), 'part': remaining_part, 'ext': ext }
 
-        except Exception as exception:
-            logger.error(f"파일명 파싱 중 치명적인 오류 발생: {original_filename}")
-            logger.error(f"오류: {exception}")
+        except Exception as e:
+            logger.error(f"파일명 파싱 중 오류 발생: {original_filename} - {e}")
             logger.error(traceback.format_exc())
-            raise exception
+            raise e
 
         return None
 
@@ -202,61 +204,64 @@ class ToolExpandFileProcess:
 
 
     @classmethod
-    def _apply_special_parser_rules(cls, base, special_parser_rules):
-        """[헬퍼 2/5] 메타데이터의 특수 파서 규칙을 적용합니다."""
+    def _apply_parsing_rules(cls, base, rules_list):
+        """주어진 규칙 리스트를 순서대로 적용하여 품번을 파싱합니다."""
+        # logger.debug(f"  - 파싱 규칙 적용 시작. 총 {len(rules_list)}개 규칙, 대상: '{base}'")
 
-        # custom_rules
-        if special_parser_rules and (custom_rules := special_parser_rules.get('custom_rules')):
-            for line in custom_rules:
-                line = line.strip()
-                if not line or line.startswith('#'): continue
+        for i, line in enumerate(rules_list):
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
 
-                parts = line.split('=>')
-                if len(parts) != 2: continue
+            parts = line.split('=>')
+            if len(parts) != 2:
+                logger.warning(f"    - 규칙 {i+1}: 형식 오류 (건너뜀) - '{line}'")
+                continue
 
-                pattern, template = parts[0].strip(), parts[1].strip()
-                try:
-                    match = re.match(pattern, base, re.I)
-                    if match:
-                        # 템플릿을 사용하여 최종 품번 생성
-                        template_parts = template.split('|')
-                        if len(template_parts) == 2: # label|number 형식
-                            label_template, num_template = template_parts
-                            groups = match.groups()
+            pattern, template = parts[0].strip(), parts[1].strip()
+            # logger.debug(f"    - 규칙 {i+1} 시도: 패턴='{pattern}'")
+
+            try:
+                match = re.match(pattern, base, re.I)
+                if match:
+                    # logger.debug(f"      - 매칭 성공! 그룹: {match.groups()}")
+
+                    result_code = ""
+                    template_parts = template.split('|')
+                    groups = match.groups()
+
+                    if len(template_parts) == 2: # label|number 형식
+                        label_template, num_template = template_parts
+                        try:
                             label_part = label_template.format(*groups)
-                            number_part = num_template.format(*groups)
-                            result_code = f"{label_part}-{number_part}"
-                        else: # 단일 템플릿 형식
-                            result_code = template.format(*match.groups())
+                            num_part = num_template.format(*groups)
+                            result_code = f"{label_part}-{num_part}"
+                            logger.debug(f"        - pattern='{pattern}'")
+                        except IndexError as e:
+                            logger.error(f"        - 템플릿 적용 오류 (그룹 인덱스): {e}. 그룹 수: {len(groups)}, 템플릿: '{template}'")
+                            continue
 
-                        # 나머지 부분(part) 추출
-                        matched_string = match.group(0)
-                        start_index = base.find(matched_string)
-                        remaining_part = base[start_index + len(matched_string):]
+                    else: # 단일 템플릿 형식
+                        try:
+                            result_code = template.format(*groups)
+                            logger.debug(f"        - 템플릿 적용 (단일): -> '{result_code}'")
+                        except IndexError as e:
+                            logger.error(f"        - 템플릿 적용 오류 (그룹 인덱스): {e}. 그룹 수: {len(groups)}, 템플릿: '{template}'")
+                            continue
 
-                        logger.debug(f"  - 레이블 특수처리 성공: {line} -> code='{result_code.lower()}', part='{remaining_part}'")
-                        return result_code.lower(), remaining_part
-                except (IndexError, re.error) as e:
-                    logger.error(f"Custom Rule 적용 오류: {line} - {e}")
+                    matched_string = match.group(0)
+                    start_index = base.find(matched_string)
+                    remaining_part = base[start_index + len(matched_string):]
 
-        # logger.debug("  - Special Parser 규칙 매칭 실패")
-        return None, ""
+                    logger.debug(f"  - Parsed: {base} > label='{label_part}', num='{num_part}', part='{remaining_part}'")
+                    return result_code.lower(), remaining_part
+                # else:
+                #    logger.debug(f"      - 매칭 실패") # 로그가 너무 많아질 수 있어 주석 처리
 
+            except (IndexError, re.error) as e:
+                logger.error(f"    - 규칙 {i+1} 적용 중 예외 발생: {e} - '{line}'")
 
-    @classmethod
-    def _apply_generic_rules(cls, base):
-        """[헬퍼 3/5] 범용 규칙을 적용하여 품번과 파트 넘버를 분리합니다."""
-        # logger.debug(f"[일반 규칙 시도] 입력 base: '{base}'")
-
-        # 범용 규칙
-        match = re.match(r"^(?P<code>[a-z]+\d*)[-_]?(?P<no>\d+)(?P<part>.*)", base, re.I)
-        if match:
-            code = f"{match.group('code')}-{match.group('no')}"
-            part = match.group('part')
-            logger.debug(f"  - 범용 규칙 매칭 성공: code='{code}', part='{part}'")
-            return code, part
-
-        # logger.debug("  - 일반 규칙 매칭 실패")
+        # logger.debug("  - 모든 파싱 규칙 매칭 실패.")
         return None, ""
 
 
