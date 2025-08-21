@@ -57,35 +57,6 @@ class TaskBase:
                 "부가파일생성_IMAGE": ModelSetting.get_bool("jav_uncensored_make_image"),
             }
 
-            try:
-                meta_module = Task.get_meta_module()
-                if meta_module and hasattr(meta_module, 'site_map'):
-                    # site_map의 각 항목에서 keyword 리스트의 첫 번째 요소를 레이블로 추출
-                    supported_labels = [
-                        v['keyword'][0] for v in meta_module.site_map.values() if v.get('keyword')
-                    ]
-                    config['메타검색지원레이블'] = supported_labels
-                    logger.debug(f"메타데이터 모듈에서 지원 레이블 목록 로드: {supported_labels}")
-                else:
-                    logger.warning("메타데이터 모듈 또는 site_map을 찾을 수 없어 지원 레이블 목록을 로드하지 못했습니다.")
-                    config['메타검색지원레이블'] = []
-            except Exception as e:
-                logger.error(f"메타데이터 모듈에서 지원 레이블 목록을 가져오는 데 실패했습니다: {e}")
-                config['메타검색지원레이블'] = []
-
-            if '파싱규칙' not in config:
-                try:
-                    # jav_censored 메타 모듈을 통해 통합 규칙을 가져옴
-                    meta_module = F.PluginManager.get_plugin_instance("metadata").get_module("jav_censored")
-                    if meta_module and hasattr(meta_module, 'get_parsing_rules'):
-                        parsing_rules = meta_module.get_parsing_rules()
-                        config['파싱규칙'] = parsing_rules # 키 이름을 '파싱규칙'으로 통일
-                        logger.debug(f"메타데이터 플러그인에서 통합 파싱 규칙을 로드했습니다.")
-                    else:
-                        config['파싱규칙'] = {}
-                except Exception as e:
-                    config['파싱규칙'] = {}
-
             TaskBase.__task(config)
 
         elif job_type == 'yaml':
@@ -110,18 +81,22 @@ class TaskBase:
 
     @staticmethod
     def __task(config):
+        # 1. 공용 헬퍼 함수를 호출하여 파싱 규칙 로드
+        CensoredTask._load_parsing_rules(config)
+        
+        # 2. Uncensored 전용 설정 로드 (메타 검색 지원 레이블)
         try:
-            meta_module = F.PluginManager.get_plugin_instance("metadata").get_module("jav_censored")
-            if meta_module and hasattr(meta_module, 'get_parsing_rules'):
-                parsing_rules = meta_module.get_parsing_rules()
-                config['파싱규칙'] = parsing_rules
-                logger.debug(f"메타데이터 플러그인에서 통합 파싱 규칙을 로드했습니다.")
+            meta_module = Task.get_meta_module() # jav_uncensored 메타 모듈
+            if meta_module and hasattr(meta_module, 'site_map'):
+                supported_labels = [
+                    v['keyword'][0] for v in meta_module.site_map.values() if v.get('keyword')
+                ]
+                config['메타검색지원레이블'] = supported_labels
             else:
-                logger.warning("메타데이터 플러그인에서 파싱 규칙을 가져올 수 없습니다.")
-                config['파싱규칙'] = {}
+                config['메타검색지원레이블'] = []
         except Exception as e:
-            logger.error(f"파싱 규칙 로드 중 오류: {e}")
-            config['파싱규칙'] = {}
+            logger.error(f"메타데이터 모듈에서 지원 레이블 목록을 가져오는 데 실패했습니다: {e}")
+            config['메타검색지원레이블'] = []
 
         Task.start(config)
 
