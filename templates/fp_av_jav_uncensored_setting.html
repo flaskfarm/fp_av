@@ -8,39 +8,131 @@
 <nav>
   {{ macros.m_tab_head_start() }}
     {{ macros.m_tab_head('basic', '기본', true) }}
+    {{ macros.m_tab_head('filename', '파일명', false) }}
+    {{ macros.m_tab_head('folders', '폴더구조', false) }}
     {{ macros.m_tab_head('auto', '자동 & 기타', false) }}
-    {{ macros.m_tab_head('tool', 'Tool', false) }}
   {{ macros.m_tab_head_end() }}
 </nav>
 
 <form id='setting' name='setting'>
   <div class="tab-content mb-4" id="nav-tabContent">
-  {{ macros.m_tab_content_start('basic', true) }}
-    {{ macros.setting_input_text('jav_uncensored_filepath', '설정파일 경로', desc=None, value=arg['jav_uncensored_filepath']) }}
+    {{ macros.m_tab_content_start('basic', true) }}
+    {{ macros.setting_input_textarea('jav_uncensored_download_path', '다운로드 폴더', value=arg['jav_uncensored_download_path'], row='3', desc=['Uncensored 영상을 다운받은 폴더. 필수', '2개 이상일 경우 구분자 Enter, #으로 시작하여 주석처리']) }}
+
+    {{ macros.info_text('preprocess_1', '전처리 1단계', value='', desc=['다운로드 폴더의 depth=1인 자식들을 탐색하여 유효한 파일이 아니거나 그것을 포함하지 않은 폴더를 삭제. 유효한 파일은 아래 조건에 의해 결정.']) }}
+    {{ macros.setting_input_int('jav_uncensored_min_size', '최소 크기', value=arg['jav_uncensored_min_size'], placeholder='300', min='0', desc=['이보다 작은 파일은 삭제 대상. 단위: MiB']) }}
+    {{ macros.setting_input_int('jav_uncensored_max_age', '최대 기간', value=arg['jav_uncensored_max_age'], placeholder='300', min='0', desc=['이보다 오래된 파일/폴더는 삭제 대상. 단위: 초']) }}
+
+    {{ macros.m_hr() }}
+    {{ macros.info_text('preprocess_2', '전처리 2단계', value='', desc=['예외 파일들을 검사하여 실패시 이동 폴더 아래에 분류.', ' - [FILENAME HASHED]: 40자리 토렌트 해시', ' - [FILENAME TOO LONG]: 200자 이상 파일명', ' - [FILENAME CANT CHANGE]: 처리하지 못하는 파일명', ]) }}
+
+    {{ macros.setting_input_textarea('jav_uncensored_filename_cleanup_list', '품번 파싱 제외 키워드', value=arg['jav_uncensored_filename_cleanup_list'], row='5', desc=['품번 파싱시 파일명에서 제외할 키워드 목록입니다.', '대소문자를 구분하지 않습니다. 너무 짧거나 레이블과 겹칠 수 있는 단어는 피하시고', '파일명 예외 키워드 옵션 활용 또한 고려하시기 바랍니다.', '구분자: 바(|)']) }}
+
+    {{ macros.setting_input_textarea('jav_uncensored_filename_not_allowed_list', '파일명 예외 키워드', value=arg['jav_uncensored_filename_not_allowed_list'], row='3', desc=['파일명에 위와 같은 키워드가 포함된 경우 [FILENAME NOT ALLOWED] 폴더 아래에 분류', '대소문자 구분 없음. 구분자 바(|)']) }}
+
+    {{ macros.setting_input_int('jav_uncensored_delay_per_file', '파일당 처리 딜레이', value=arg['jav_uncensored_delay_per_file'], placeholder='0', min='0', desc=['개별 파일을 처리하기 전 대기하는 시간입니다.', '메타데이터 사이트의 과도한 연속 호출을 방지합니다. 단위: 초(second)']) }}
+  {{ macros.m_tab_content_end() }}  
+
+  {{ macros.m_tab_content_start('filename', false) }}
+    {{ macros.setting_checkbox('jav_uncensored_change_filename', '파일명 변경', value=arg['jav_uncensored_change_filename'], desc=['On : 파일명 변경', 'Off: 원본파일명 유지']) }}
+    {{ macros.setting_checkbox('jav_uncensored_process_part_files', '분할 파일 처리', value=arg['jav_uncensored_process_part_files'], desc=['On: 분할 파일명을 품번cd1(cd8 까지) 형태로 변환합니다. 원본 파일명은 제거됩니다.', 'Off: 분할파일 처리 없이 아래 원본파일명 처리 옵션을 따릅니다.']) }}
+    {{ macros.setting_checkbox('jav_uncensored_include_original_filename', '파일명 변경시 원본 파일명 처리', value=arg['jav_uncensored_include_original_filename'], desc=['On : 파일명 변경시 원본파일명을 포함합니다.', '내용은 같으나 품질이 다른 영상 처리시 유용합니다.', '변경파일명 [원본파일명처리].확장자', 'Off: 원본파일명은 지워짐']) }}
+    <div id="jav_uncensored_include_original_filename_div" class="collapse">
+    {{ macros.setting_radio_with_value('jav_uncensored_include_original_filename_option', '원본 파일명 형식', [['original', '원본파일명'], ['original_bytes', '원본파일명(파일크기-byte숫자)'], ['original_giga', '원본파일명(파일크기-GB)'], ['bytes', '파일크기-byte숫자']], value=arg['jav_uncensored_include_original_filename_option']) }}
+    </div>
+    {{ macros.m_hr() }}
+    {{ macros.setting_input_text_and_buttons('jav_uncensored_filename_test', '파일명 변경 테스트', [['jav_uncensored_filename_test_btn', '테스트']], value=arg['jav_uncensored_filename_test'], desc=None) }}
+  {{ macros.m_tab_content_end() }}  
+
+  {{ macros.m_tab_content_start('folders', false) }}
+    {{ macros.setting_input_text('jav_uncensored_folder_format', '기본 폴더 구조', value=arg['jav_uncensored_folder_format'], desc=['예) {label}/{code} : 레이블폴더/품번폴더 생성 후 이동', '{studio}: 제작사 / {label_1}: 레이블 첫 글자']) }}
+
+    {{ macros.setting_input_text('jav_uncensored_temp_path', '처리 실패시 이동 경로', value=arg['jav_uncensored_temp_path'], desc=['처리 실패시 영상 파일이 이동할 경로입니다. 필수']) }}
+    {{ macros.setting_input_text('jav_uncensored_remove_path', '중복인 경우 이동 경로', value=arg['jav_uncensored_remove_path'], desc=['파일명이나 파일크기 기준 중복인 경우 이동할 경로입니다', '빈값이거나, 폴더를 지정해도 정상 경로 이외의 중복 파일은 삭제합니다.']) }}
+    {{ macros.m_hr() }}
+
+    {{ macros.m_hr() }}
+    {{ macros.info_text('path_priority_info', '처리 경로 우선순위', value='', desc=['아래 사용자 설정의 경로와 구조로 이동합니다.']) }}
+
+    {{ macros.setting_input_textarea('jav_uncensored_label_path_overrides', '1. 사용자 지정 레이블별 이동 경로', value=arg['jav_uncensored_label_path_overrides'], row='3', desc=['"레이블: 절대경로" 형식으로 입력하세요. 이 규칙은 아래 모든 규칙보다 우선합니다.', '[추가 옵션]', '{year4}: 1pon, carib 처럼 MMDDYY 형식 품번일 때 YYYY 형식 폴더 생성', '{num_X_Y}: 품번의 넘버 파트 자리수 앞 일부를 폴더로 생성. {num_3_7}이면 7자리 패딩에 앞 3자리 숫자를 폴더로 생성(fc2)']) }}
+
+    {{ macros.setting_radio_with_value('jav_uncensored_use_meta', '2. 메타 검색 사용', [['not_using', '사용안함'], ['using', '사용']], value=arg['jav_uncensored_use_meta'], desc=['메타 검색에 성공한 파일이 이동할 경로입니다.', '메타 검색이 가능한 레이블만 매칭을 시도합니다.']) }}
+
+    <div id="jav_uncensored_use_meta_on_div" class="collapse">
+      {{ macros.setting_input_text('jav_uncensored_meta_path', 'ㄴ 매칭 성공 시 이동 경로', value=arg['jav_uncensored_meta_path'], desc=['메타 검색을 성공한 파일이 이동할 경로입니다.']) }}
+
+      {{ macros.setting_input_text('jav_uncensored_meta_no_path', 'ㄴ 매칭 실패 시 이동 경로', value=arg['jav_uncensored_meta_no_path'], desc=['메타 검색을 시도했으나 실패한 파일이 이동할 경로입니다.', '비워두면 \'처리 실패시 이동 경로\' 아래 [NO META] 폴더로 이동합니다.']) }}
+
+      {{ macros.setting_checkbox('jav_uncensored_meta_no_change_filename', 'ㄴ 매칭 실패 영상 이동 시 파일명 변경', value=arg['jav_uncensored_meta_no_change_filename'], desc=['On: 품번 기반으로 파일명을 변경하여 이동합니다.', 'Off: 원본 파일명 그대로 이동합니다.']) }}
+
+      {{ macros.setting_input_int('jav_uncensored_meta_no_retry_every', 'ㄴ 매칭 실패 영상 재시도 주기 (일)', value=arg['jav_uncensored_meta_no_retry_every'], min='0', placeholder='0', desc='매칭 실패로 분류된 영상을 주기적으로 재시도합니다. 0이면 재시도 안 함. 주기: 일') }}
+
+      {{ macros.m_hr() }}
+      {{ macros.setting_checkbox('jav_uncensored_make_yaml', 'ㄴ YAML 파일 생성', value=arg['jav_uncensored_make_yaml'], desc=['On: 메타가 있을 경우 YAML 파일을 생성합니다.', '폴더 구조가 {code}로 끝나야 합니다.']) }}
+      {{ macros.setting_checkbox('jav_uncensored_make_nfo', 'ㄴ NFO 파일 생성', value=arg['jav_uncensored_make_nfo'], desc=None) }}
+      {{ macros.setting_checkbox('jav_uncensored_make_image', 'ㄴ 이미지 파일 생성', value=arg['jav_uncensored_make_image'], desc=None) }}
+    </div>
+
+    {{ macros.setting_input_text('jav_uncensored_target_path', '3. 기본 이동 경로', value=arg['jav_uncensored_target_path'], desc=['위 조건에 해당하지 않고, 품번이 정상적으로 파싱된 파일이 이동할 기본 경로입니다.']) }}
+
   {{ macros.m_tab_content_end() }}  
 
   {{ macros.m_tab_content_start('auto', false) }}
     {{ macros.global_setting_scheduler_button(arg['is_include'], arg['is_running']) }}
     {{ macros.setting_input_text('jav_uncensored_interval', '스케쥴링 실행 정보', value=arg['jav_uncensored_interval'], col='3', desc=['Inverval(minute 단위)이나 Cron 설정']) }}
     {{ macros.setting_checkbox('jav_uncensored_auto_start', '시작시 자동실행', value=arg['jav_uncensored_auto_start'], desc='On : 시작시 자동으로 스케쥴러에 등록됩니다.') }}
+  
+    {{ macros.m_hr() }}
+
+    {{ macros.setting_input_text_and_buttons('jav_uncensored_db_delete_day', 'DB 삭제 기간', [['globalDbDeleteDayBtn', '기간 적용 삭제', [['tag_id','jav_uncensored_db_delete_day']]], ['globalDbDeleteBtn', '전체 삭제']], value=arg['jav_uncensored_db_delete_day'], col='6') }} 
+    {{ macros.setting_checkbox('jav_uncensored_db_auto_delete', 'DB 자동 삭제', value=arg['jav_uncensored_db_auto_delete'], desc=['On : 기간 적용하여 DB를 자동 삭제합니다.']) }}
   {{ macros.m_tab_content_end() }} 
 
-  {{ macros.m_tab_content_start('tool', false) }}
-    {{ macros.setting_input_text_and_buttons('_gds', 'GDS 관련', [['gds_btn', 'Run']], value="", col='6') }} 
-  {{ macros.m_tab_content_end() }} 
   </div><!--tab-content-->
 </form>
 
-
 <script type="text/javascript">
-
 $(document).ready(function(){
+  use_collapse("jav_uncensored_include_original_filename");
+  use_meta("{{arg['jav_uncensored_use_meta']}}");
+  use_collapse("jav_uncensored_meta_no_move");
 });
 
-$("body").on('click', '#gds_btn', function(e){
+$('#jav_uncensored_include_original_filename').change(function() {
+  use_collapse('jav_uncensored_include_original_filename');
+});
+
+$('input[type=radio][name=jav_uncensored_use_meta]').change(function() {
+  use_meta(this.value);
+});
+
+function use_meta(value) {
+  if (value == 'not_using') {
+    $('#jav_uncensored_use_meta_on_div').collapse('hide');
+    $('#jav_uncensored_use_meta_off_div').collapse('show');
+  } else {
+    $('#jav_uncensored_use_meta_on_div').collapse('show');
+    $('#jav_uncensored_use_meta_off_div').collapse('hide');
+  }
+}
+
+$('#jav_uncensored_meta_no_move').change(function() {
+  use_collapse('jav_uncensored_meta_no_move');
+});
+
+$("body").on('click', '#jav_uncensored_filename_test_btn', function(e){
   e.preventDefault();
-  globalSendCommand('gds', $('#_gds').val());
+  var filename = $("#jav_uncensored_filename_test").val();
+  $.ajax({
+    url: '/' + package_name + '/ajax/' + sub + '/filename_test',
+    type: "POST", 
+    cache: false,
+    data: {filename:filename},
+    dataType: "json",
+    success: function (ret) {
+      m_modal(ret)
+    }
+  });
 });
-
 </script>    
 {% endblock %}

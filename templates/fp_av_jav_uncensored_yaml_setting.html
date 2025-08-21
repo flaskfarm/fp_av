@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block content %}
+
+{{ macros.m_button_group([['globalSettingSaveBtn', '설정 저장'], ['globalOneExecuteBtn', '1회 실행'], ['globalImmediatelyExecuteBtn', '즉시 실행']])}}
+{{ macros.m_row_start('5') }}
+{{ macros.m_row_end() }}
+  
+<nav>
+  {{ macros.m_tab_head_start() }}
+    {{ macros.m_tab_head('basic', '기본', true) }}
+    {{ macros.m_tab_head('auto', '자동 & 기타', false) }}
+    {{ macros.m_tab_head('tool', 'Tool', false) }}
+  {{ macros.m_tab_head_end() }}
+</nav>
+
+<form id='setting' name='setting'>
+  <div class="tab-content mb-4" id="nav-tabContent">
+  {{ macros.m_tab_content_start('basic', true) }}
+    {{ macros.setting_input_text('jav_uncensored_yaml_filepath', '설정파일 경로', desc=None, value=arg['jav_uncensored_yaml_filepath']) }}
+  {{ macros.m_tab_content_end() }}  
+
+  {{ macros.m_tab_content_start('auto', false) }}
+    {{ macros.global_setting_scheduler_button(arg['is_include'], arg['is_running']) }}
+    {{ macros.setting_input_text('jav_uncensored_yaml_interval', '스케쥴링 실행 정보', value=arg['jav_uncensored_yaml_interval'], col='3', desc=['Inverval(minute 단위)이나 Cron 설정']) }}
+    {{ macros.setting_checkbox('jav_uncensored_yaml_auto_start', '시작시 자동실행', value=arg['jav_uncensored_yaml_auto_start'], desc='On : 시작시 자동으로 스케쥴러에 등록됩니다.') }}
+  {{ macros.m_tab_content_end() }}
+  </div><!--tab-content-->
+</form>
+
+
+<script type="text/javascript">
+
+$(document).ready(function(){
+});
+
+$("body").on('click', '#gds_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('gds', $('#_gds').val());
+});
+
+</script>    
+{% endblock %}

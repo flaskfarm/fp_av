@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div>
+  <!-- 상단 검색 및 필터 폼 -->
+  <form id="form_search" class="form-inline" style="text-align:left">
+    <div class="container-fluid">
+      <div class="row show-grid">
+        <span class="col-md-6">
+          <select id="order" name="order" class="form-control form-control-sm">
+            <option value="desc">최근순</option>
+            <option value="asc">오래된순</option>
+          </select>
+          <select id="option" name="option" class="form-control form-control-sm">
+            <option value="all">전체</option>
+            <option value="default">기본 이동</option>
+            <option value="override">사용자 지정 이동</option>
+            <option value="meta_success">메타 매칭 성공</option>
+            <option value="meta_fail">메타 매칭 실패</option>
+            <option value="no_label">품번 추출 실패</option>
+            <option value="already_exist">중복 파일</option>
+          </select>
+        </span>
+        <span class="col-md-6">
+          <input id="search_word" name="search_word" class="form-control form-control-sm w-75" type="text" placeholder="원본파일명" aria-label="Search">
+          <button id="search" class="btn btn-sm btn-outline-success">검색</button>
+          <button id="reset_btn" class="btn btn-sm btn-outline-success">리셋</button>
+        </span>
+      </div>
+    </div>
+  </form>
+  
+  <!-- 페이지네이션 (상단) -->
+  <div id='page1'></div>
+  
+  <!-- 테이블 헤더 -->
+  {{ macros.m_hr_head_top() }}
+  {{ macros.m_row_start('0') }}
+  {{ macros.m_col(2,  macros.m_strong('처리 시각')) }}
+  {{ macros.m_col(2,  macros.m_strong('처리 타입')) }}
+  {{ macros.m_col(8,  macros.m_strong('파일 정보')) }}
+  {{ macros.m_row_end() }}
+  {{ macros.m_hr_head_bottom() }}
+  
+  <!-- 데이터 리스트 -->
+  <div id="list_div"></div>
+  
+  <!-- 페이지네이션 (하단) -->
+  <div id='page2'></div>
+</div>
+
+
+<script type="text/javascript">
+// 전역 변수 설정
+var package_name = "{{arg['package_name'] }}";
+var sub = 'jav_uncensored'; // 현재 모듈 이름
+
+// 페이지 로드 완료 시 실행
+$(document).ready(function(){
+  // 1. 마지막으로 사용한 목록 옵션을 불러와 UI에 적용
+  var last_list_option = "{{arg['jav_uncensored_last_list_option']}}";
+  var page = '1';
+  if (last_list_option) {
+    try {
+      var tmp = JSON.parse(last_list_option);
+      $("#order").val(tmp.order);
+      $("#option").val(tmp.option);
+      $("#search_word").val(tmp.search_word);
+      page = tmp.page || '1';
+    } catch(e) { }
+  }
+  // 2. 초기 목록 로드
+  request_list(page);
+
+  // 3. 이벤트 핸들러 바인딩
+  // 검색 버튼 클릭
+  $("#search").click(function(e) {
+    e.preventDefault();
+    request_list('1');
+  });
+
+  // 검색어 입력 후 엔터
+  $('#search_word').keypress(function (e) {
+    if (e.which == 13) {
+      e.preventDefault();
+      request_list('1');
+    }
+  });
+
+  // 리셋 버튼 클릭
+  $("#reset_btn").click(function(e) {
+    e.preventDefault();
+    $("#order").val('desc');
+    $("#option").val('all');
+    $("#search_word").val('');
+    request_list('1');
+  });
+
+  // 페이지 번호 클릭 (이벤트 위임)
+  $("body").on('click', '.page-link', function(e){
+    e.preventDefault();
+    request_list($(this).data('page'));
+  });
+
+  // 정렬, 옵션 셀렉트 박스 변경
+  $("#order, #option").change(function(e){
+    request_list('1');
+  });
+});
+
+// 서버에 목록을 요청하는 함수
+function request_list(page) {
+  var formData = $("#form_search").serialize();
+  
+  globalRequest('/' + package_name + '/ajax/' + sub + '/web_list?page=' + page, formData, function(data){
+    // 성공 콜백 함수
+    make_list(data.list);
+    $('#page1').html(data.paging);
+    $('#page2').html(data.paging);
+
+    // 마지막 검색 조건을 저장
+    var last_option = {
+      order: $("#order").val(),
+      option: $("#option").val(),
+      search_word: $("#search_word").val(),
+      page: page
+    };
+    globalRequest('/' + package_name + '/ajax/' + sub + '/last_list_option', {last_list_option: JSON.stringify(last_option)}, null);
+  });
+}
+
+// 목록을 HTML로 그리는 함수
+function make_list(data) {
+  let str = '';
+  if (!data || data.length === 0) {
+    str = j_row_start() + j_col(12, '<div class="text-center"><strong>결과가 없습니다.</strong></div>') + j_row_end();
+    $("#list_div").html(str);
+    return;
+  }
+
+  for (let i in data) {
+    let item = data[i];
+    let move_type_str = '';
+    
+    switch(item.move_type) {
+      case 'default': move_type_str = '기본 이동'; break;
+      case 'override': move_type_str = '사용자 지정'; break;
+      case 'meta_success': move_type_str = '메타 성공'; break;
+      case 'meta_fail': move_type_str = '메타 실패'; break;
+      case 'no_label': move_type_str = '품번 추출 실패'; break;
+      default:
+        if (item.move_type && item.move_type.includes('already_exist')) {
+          move_type_str = '중복 파일';
+        } else if (item.move_type && item.move_type.includes('deleted')) {
+          move_type_str = '중복 삭제';
+        } else {
+          move_type_str = item.move_type || '--';
+        }
+    }
+
+    str += j_row_start();
+    str += j_col(2, `${item.id}<br>${item.created_time}`);
+    str += j_col(2, move_type_str);
+    
+    let info_str = `소스 파일 : ${item.source_filename}<br>`;
+    if (item.target_dir) {
+      info_str += `타겟 파일 : ${item.target_filename}<br>`;
+      info_str += `타겟 폴더 : ${item.target_dir}`;
+    } else {
+      info_str += `<strong>이동되지 않음</strong>`;
+    }
+    str += j_col(8, info_str);
+    str += j_row_end();
+    if (i < data.length - 1) str += j_hr();
+  }
+  $("#list_div").html(str);
+}
+</script>
+
+
+{% endblock %}

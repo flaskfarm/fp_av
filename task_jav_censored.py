@@ -6,6 +6,7 @@ import re
 import os
 import shutil
 import time
+import string
 from datetime import datetime
 
 ModelSetting = P.ModelSetting
@@ -65,7 +66,7 @@ class TaskBase:
                 "파일당딜레이": ModelSetting.get_int("jav_censored_delay_per_file"),
             }
             # 2. 공통 실행 헬퍼 호출
-            TaskBase.__run_task(config)
+            TaskBase.__task(config)
 
         elif job_type == 'yaml':
             try:
@@ -82,14 +83,14 @@ class TaskBase:
                     job['재시도'] = False # YAML 작업은 재시도 비활성화
 
                     # 공통 실행 헬퍼 호출 (각 job에 대해)
-                    TaskBase.__run_task(job)
+                    TaskBase.__task(job)
             except Exception as e:
                 logger.error(f"YAML 파일 처리 중 오류 발생: {str(e)}")
                 logger.error(traceback.format_exc())
 
 
     @staticmethod
-    def __run_task(config):
+    def __task(config):
         """
         작업 설정을 받아 공통 로직(사이트 목록 추가 등)을 적용하고 실제 Task를 실행하는 헬퍼 메소드
         """
@@ -122,35 +123,29 @@ class TaskBase:
 
         # 특수 파서 규칙을 config에 추가
         try:
-            meta_module = Task.get_meta_module()
-            if meta_module:
-                # YAML에 있으면 그 값을 사용
-                custom_rules_str = config.get('레이블특수처리규칙')
-
-                if custom_rules_str is None:
-                    # YAML에 없으면 metadata 플러그인의 전역 설정에서 로드
-                    custom_rules_str = meta_module.P.ModelSetting.get("jav_censored_special_parser_custom_rules")
-
-                if custom_rules_str is None:
-                    custom_rules_str = ""
-
-                custom_rules_list = [line.strip() for line in custom_rules_str.splitlines() if line.strip()]
-
-                config['레이블특수처리규칙'] = {
-                    'custom_rules': custom_rules_list
-                }
-
+            meta_module = F.PluginManager.get_plugin_instance("metadata").get_module("jav_censored")
+            if meta_module and hasattr(meta_module, 'get_jav_settings'):
+                jav_settings = meta_module.get_jav_settings()
+                parsing_rules = jav_settings.get('jav_parsing_rules', {})
+                config['파싱규칙'] = parsing_rules
+                logger.debug(f"메타데이터 플러그인에서 통합 파싱 규칙을 로드했습니다.")
             else:
-                config['레이블특수처리규칙'] = {}
-                logger.warning("메타데이터 플러그인을 찾을 수 없어 특수 규칙을 로드하지 못했습니다.")
-
+                logger.warning("메타데이터 플러그인에서 파싱 규칙을 가져올 수 없습니다. (get_jav_settings 메서드 없음)")
+                config['파싱규칙'] = {}
         except Exception as e:
-            logger.error(f"특수 처리 규칙을 로드하는 중 치명적인 오류가 발생했습니다.")
-            logger.error(f"오류: {e}")
-            raise e
+            logger.error(f"파싱 규칙 로드 중 오류: {e}")
+            config['파싱규칙'] = {}
 
         # 3. 실제 Task 실행
         Task.start(config)
+
+
+class SafeFormatter(string.Formatter):
+    def get_value(self, key, args, kwargs):
+        if isinstance(key, str):
+            return kwargs.get(key, f'{{{key}}}')
+        else:
+            return super().get_value(key, args, kwargs)
 
 
 class Task:
@@ -165,14 +160,17 @@ class Task:
         logger.debug(f"처리 파일 목록 생성")
         files = Task.__collect_initial_files()
         if not files:
-            logger.warning("처리할 파일이 없습니다.")
+            logger.info("처리할 파일이 없습니다.")
             return
 
         # 1-2. [Transform] 파싱 및 기본 정보 추출
         logger.debug(f"파싱 및 기본 정보 추출")
         execution_plan = []
         for file in files:
-            info = Task.__prepare_initial_info(file)
+            parsing_rules = Task.config.get('파싱규칙')
+            cleanup_list = Task.config.get('품번파싱제외키워드')
+            info = Task.__prepare_initial_info(file, parsing_rules, cleanup_list, mode='censored')
+            # ▲▲▲▲▲ [수정] 이 함수 내부 호출도 새 시그지처에 맞게 변경 ▲▲▲▲▲
             if info:
                 execution_plan.append(info)
         
@@ -218,12 +216,10 @@ class Task:
 
 
     @staticmethod
-    def __prepare_initial_info(file):
+    def __prepare_initial_info(file, parsing_rules, cleanup_list, mode='censored'):
         """파일을 파싱하여 메타 검색 이전에 가능한 모든 정보를 추출합니다."""
-        special_parser_rules = Task.config.get('레이블특수처리규칙')
-        cleanup_list = Task.config.get('품번파싱제외키워드')
 
-        parsed = ToolExpandFileProcess.change_filename_censored(file.name, special_parser_rules, cleanup_list)
+        parsed = ToolExpandFileProcess.parse_jav_filename(file.name, parsing_rules, cleanup_list, mode=mode)
         if not parsed:
             logger.warning(f"파싱 실패: {file.name}")
             return None
@@ -343,7 +339,14 @@ class Task:
                         target_dir = Path(target_paths[0]).joinpath(*folders)
 
                     # 실제 파일 이동/중복 처리 로직 호출
-                    entity = Task.__file_move_logic(info, info['newfilename'], target_dir, move_type, meta_info)
+                    entity = Task.__file_move_logic(
+                        info, 
+                        info['newfilename'], 
+                        target_dir, 
+                        move_type, 
+                        meta_info,
+                        ModelJavCensoredItem
+                    )
                     if entity and entity.move_type is not None:
                         entity.save()
 
@@ -353,15 +356,15 @@ class Task:
 
 
     @staticmethod
-    def __file_move_logic(info, newfilename, target_dir, move_type, meta_info):
+    def __file_move_logic(info, newfilename, target_dir, move_type, meta_info, model_class):
         """실제 파일 이동, 중복 처리, DB 기록, 방송 등을 담당합니다."""
         config = Task.config
         file = info['original_file'] # 원본 파일 객체
 
-        entity = ModelJavCensoredItem(config['이름'], str(file.parent), file.name)
+        entity = model_class(config['이름'], str(file.parent), file.name)
 
         if move_type is None or target_dir is None:
-            logger.warning(f"'{file.name}'의 최종 이동 경로를 결정할 수 없어 건너<binary data, 2 bytes>니다.")
+            logger.warning(f"'{file.name}'의 최종 이동 경로를 결정할 수 없어 건너뜁니다.")
             return entity.set_move_type(None)
 
         if not target_dir.exists():
@@ -415,7 +418,7 @@ class Task:
             try:
                 # 3a. shutil.move만 단독으로 예외 처리
                 shutil.move(file, newfile)
-                logger.info(f"파일 이동 성공: {file.name} -> {newfile}")
+                logger.info(f"파일 이동 성공: -> {newfile}")
                 move_success = True
             except Exception as e:
                 logger.error(f"최종 파일 이동 중 오류 발생: {file} -> {newfile}")
@@ -571,61 +574,84 @@ class Task:
 
     @staticmethod
     def process_folder_format(meta_type, meta_info):
-        folders = None
-        folder_format = Task.config['이동폴더포맷'].strip()
-        if meta_type in ["normal", "no_meta"]:
+        # 1. 사용할 폴더 포맷을 config에서 가져옴
+        folder_format = Task.config.get('이동폴더포맷', '').strip()
+        if not folder_format:
+            return []
+
+        data = {}
+        number_part_raw = ''
+
+        # 2. meta_type에 따라 기본 data 딕셔너리와 number_part_raw를 생성
+        if meta_type in ["default", "override", "meta_fail", "normal", "no_meta"]:
+            # 메타 정보가 없는 경우 (품번 문자열만 있음)
+            code_parts = meta_info.split('-', 1)
+            label_part = code_parts[0]
+            number_part_raw = code_parts[1] if len(code_parts) > 1 else ''
             data = {
-                "code": meta_info.replace(" ", "-").upper(),
-                "label": meta_info.split(" ")[0].upper(),
-                "label_1": meta_info.split(" ")[0].upper()[0],
-                "year": "",
-                "actor":"",
-                "actor_2": "",
-                "actor_3": "",
-                "studio": "NO_STUDIO",
+                "code": meta_info.upper(),
+                "label": label_part.upper(),
+                "label_1": label_part[0].upper() if label_part else '#',
+                "year": "", "actor": "", "studio": "NO_STUDIO",
             }
-            if data['label_1'].isdigit():
-                data['label_1'] = "#"
-            folders = folder_format.format(**data)
-        elif meta_type == "dvd":
-            if meta_info['actor'] == None:
-                meta_info['actor'] = []
-            actor_names = [actor.get('name', '') for actor in meta_info['actor'][:3]]
+
+        elif meta_type in ["dvd", "meta_success"]:
+            # 메타 정보가 있는 경우
+            original_title = meta_info.get("originaltitle", "")
+            code_parts = original_title.split('-', 1)
+            label_part = code_parts[0]
+            number_part_raw = code_parts[1] if len(code_parts) > 1 else ''
+            
+            # 메타 정보로 data 딕셔너리 채우기
+            actor_names = [actor.get('name', '') for actor in meta_info.get('actor', [])[:3]]
             actor_names = [name for name in actor_names if name and name.strip()]
             data = {
-                "studio": meta_info.get("studio", None) or "NO_STUDIO",
-                "code": meta_info["originaltitle"],
-                "label": meta_info["originaltitle"].split("-")[0],
+                "studio": meta_info.get("studio", "NO_STUDIO"),
+                "code": original_title,
+                "label": label_part,
+                "label_1": label_part[0] if label_part else '#',
                 "actor": f"{','.join(actor_names[:1])}",
                 "actor_2": f"{','.join(actor_names[:2])}",
                 "actor_3": f"{','.join(actor_names[:3])}",
                 "year": meta_info.get("year", ""),
             }
-            match = re.compile(r"\d{2}id", re.I).search(data['label'])
-            if match:
-                data['label'] = "ID"
-            data['label_1'] = data['label'][0]
-            if data['label_1'].isdigit():
-                data['label_1'] = "#"
+        else:
+            return []
 
+        # 3. 새로운 포맷 변수 처리
+        try:
+            # {num_X_Y} 변수 처리
+            num_matches = re.findall(r'\{num_(\d+)_(\d+)\}', folder_format)
+            if num_matches and number_part_raw:
+                main_number_part = re.split(r'[-_\s]', number_part_raw, 1)[0]
+                for x_str, y_str in set(num_matches):
+                    x, y = int(x_str), int(y_str)
+                    data[f'num_{x}_{y}'] = main_number_part.zfill(y)[:x]
 
-            folder_format_actor = Task.config.get('배우조건매칭시이동폴더포맷', '')
-            if (
-                folder_format_actor
-                and meta_info["actor"] is not None
-                and len(meta_info["actor"]) == 1
-                and meta_info["actor"][0]["originalname"] != meta_info["actor"][0]["name"]
-                and meta_info["actor"][0]["name"] != ""
-            ):
-                folders = folder_format_actor.format(**data)
-            else:
-                folders = folder_format.format(**data)
-        
+            # {year4} 변수 처리
+            if '{year4}' in folder_format and number_part_raw:
+                year4_value = ''
+                main_number_part = re.split(r'[-_\s]', number_part_raw, 1)[0]
+                if re.match(r'^\d{6}$', main_number_part):
+                    yy = main_number_part[4:6]
+                    year4_value = f"20{yy}" if int(yy) < 50 else f"19{yy}"
+                data['year4'] = year4_value
+        except Exception as e:
+            logger.error(f"폴더 포맷 변수 처리 중 오류: {e}")
+
+        # 4. 안전한 포맷팅 실행
+        safe_fmt = SafeFormatter()
+        folders = safe_fmt.format(folder_format, **data)
+
+        # 5. 후처리
         folders = re.sub(r'\{.*?\}', '', folders)
         folders = folders.replace("[]", "").replace("{}", "").replace("()", "")
-        folders = re.sub(r'\s{2,}', ' ', folders).strip()                
-        folders = folders.split("/")
-        return folders
+        folders = re.sub(r'\s{2,}', ' ', folders).strip()
+        final_parts = folders.split("/")
+        if folders.startswith('/'):
+            return [''] + [part for part in final_parts[1:] if part]
+        else:
+            return [part for part in final_parts if part]
 
 
     @staticmethod
@@ -641,12 +667,12 @@ class Task:
 
         # 2021-04-21 ??????
         if filename == newfilename and filename.find("[") == -1 and filename.find("]") == -1:
-            newfilename = Task.change_filename_censored_by_save_original(filename, newfilename, file_path)
+            newfilename = Task.parse_jav_filename_by_save_original(filename, newfilename, file_path)
         elif filename != newfilename and (
             (filename.find("[") == -1 or filename.find("]") == -1)
             or not os.path.splitext(filename)[0].startswith(os.path.splitext(newfilename)[0])
         ):
-            newfilename = Task.change_filename_censored_by_save_original(filename, newfilename, file_path)
+            newfilename = Task.parse_jav_filename_by_save_original(filename, newfilename, file_path, file_size)
         else:
             # 이미 한번 파일처리를 한것으로 가정하여 변경하지 않는다.
             newfilename = filename
@@ -660,47 +686,42 @@ class Task:
 
 
     @staticmethod
-    def change_filename_censored_by_save_original(original_filename, new_filename, original_filepath, file_size=None):
+    def parse_jav_filename_by_save_original(original_filename, new_filename, original_filepath, file_size=None):
         """원본파일명 보존 옵션에 의해 파일명을 변경한다."""
         try:
             if not Task.config.get('원본파일명포함여부', True):
                 return new_filename
 
-            new_name, new_ext = os.path.splitext(new_filename)
-            part = None
-            match = re.search(r"(?P<part>cd\d+)$", new_name)
-            if match:
-                # cd1 앞에가 같아야함.
-                return new_filename
-                # part = match.group("part")
-                # new_name = new_name.replace(part, "")
-
-            ori_name, _ = os.path.splitext(original_filename)
-            # 2019-07-30
-            ori_name = ori_name.replace("[", "(").replace("]", ")").strip()
-            if part is not None:
-                # 안씀
-                return f"{new_name} [{ori_name}] {part}{new_ext}"
-
-            if file_size is None:
-                file_size = os.stat(original_filepath).st_size
-
             option = Task.config.get('원본파일명처리옵션', 'original')
-            if option == "original" or original_filepath is None:
+
+            size_required_options = ["original_bytes", "original_giga", "bytes"]
+            if option in size_required_options and file_size is None:
+                logger.error(f"{original_filename}: 파일 크기 정보가 없어서 파일명 변경을 건너뜁니다.")
+                # 파일명 변경 실패로 간주하고, 원본 파일명을 포함하기 전의
+                # 기본 파일명(예: ABC-123.mp4)을 반환
+                return new_filename 
+
+            new_name, new_ext = os.path.splitext(new_filename)
+            ori_name, _ = os.path.splitext(original_filename)
+            ori_name = ori_name.replace("[", "(").replace("]", ")").strip()
+
+            # --- os.stat()을 완전히 제거하고 file_size 인자만 사용 ---
+            if option == "original":
                 return f"{new_name} [{ori_name}]{new_ext}"
             if option == "original_bytes":
-                str_size = os.stat(original_filepath).st_size
-                return f"{new_name} [{ori_name}({str_size})]{new_ext}"
+                return f"{new_name} [{ori_name}({file_size})]{new_ext}"
             if option == "original_giga":
-                str_size = SupportUtil.sizeof_fmt(os.stat(original_filepath).st_size, suffix="B")
+                str_size = SupportUtil.sizeof_fmt(file_size, suffix="B")
                 return f"{new_name} [{ori_name}({str_size})]{new_ext}"
             if option == "bytes":
-                str_size = os.stat(original_filepath).st_size
-                return f"{new_name} [{str_size}]{new_ext}"
+                return f"{new_name} [{file_size}]{new_ext}"
+
+            # 위에서 처리되지 않은 옵션이 있을 경우의 기본 폴백
             return f"{new_name} [{ori_name}]{new_ext}"
         except Exception as exception:
-            logger.debug("Exception:%s", exception)
-            logger.debug(traceback.format_exc())
+            logger.error("Exception:%s", exception)
+            logger.error(traceback.format_exc())
+            return new_filename
 
 
     @staticmethod
@@ -737,237 +758,5 @@ class Task:
             logger.debug(traceback.format_exc())
             return None # 모듈 로딩 실패 시 None 반환
 
-
-    # ====================================================================
-    # --- To be deleted ---
-    # ====================================================================
-
-    @staticmethod
-    def __task(file, all_files=None):
-        special_parser_rules = Task.config.get('레이블특수처리규칙')
-        cleanup_list = Task.config.get('품번파싱제외키워드')
-        change_filename = Task.config.get('파일명변경', True)
-        process_parts = Task.config.get('분할파일처리', True)
-
-        parsed_info = ToolExpandFileProcess.change_filename_censored(
-            file.name, 
-            special_parser_rules=special_parser_rules,
-            cleanup_list=cleanup_list
-        )
-
-        if parsed_info is None:
-            logger.error(f"FATAL: 파일의 품번을 추출할 수 없습니다: {file.name}")
-            return None
-
-        search_name = parsed_info['code']
-
-        if not change_filename:
-            # === 파일명 변경 OFF ===
-            # newfilename은 원본 파일명과 동일
-            newfilename = file.name
-        else:
-            # === 파일명 변경 ON ===
-            # 파트 넘버 해석을 시도
-            part_num_part = ""
-            if process_parts:
-                part_num_part = ToolExpandFileProcess._parse_part_number(parsed_info['part'])
-
-            # 해석된 파트 넘버의 존재 여부에 따라 분기
-            if part_num_part:
-                # 유효한 파트 넘버가 발견된 경우 (명백한 분할 파일)
-                newfilename = f"{search_name}{part_num_part}{parsed_info['ext']}"
-            else:
-                # 유효한 파트 넘버가 없거나, '분할 파일 처리'가 OFF인 경우
-                base_processed_filename = f"{search_name}{parsed_info['ext']}"
-                # '원본 파일명 포함' 옵션을 적용하여 최종 파일명을 생성
-                newfilename = Task.check_newfilename(file.name, base_processed_filename, str(file))
-
-        logger.debug(f"최종 search_name={search_name}, 최종 newfilename={newfilename}")
-
-
-        #
-        # target_dir를 결정하라!
-        #
-        target_dir, move_type, meta_info = None, None, None
-        if Task.config.get('메타사용', "not_using") == "not_using":
-            move_type = "normal"
-            target = Task.get_path_list(Task.config['라이브러리폴더'])
-            folders = Task.process_folder_format(move_type, search_name)
-            # 2025.07.12 by soju6jan
-            # 아래 로직 의미를 모르겠음
-
-            ## 첫번째 자식폴더만 타겟에서 찾는다.
-            #for tmp in target:
-            #    tmp_dir = Path(tmp).joinpath(folders[0])
-            #    if tmp_dir.exists():
-            #        target_dir = tmp_dir
-            #        break
-            ## 없으면 첫번째 타겟으로
-            #if target_dir is None and target:
-            #    target_dir = Path(target[0]).joinpath(*folders)
-            target_dir = Path(target[0]).joinpath(*folders)
-        else:
-            # 메타 처리
-            try:
-                target_dir, move_type, meta_info = Task.__get_target_with_meta(search_name)
-            except Exception:
-                logger.exception("메타를 이용한 타겟 폴더 결정 중 예외:")
-                logger.error(f"파일 '{file.name}' 처리 중 메타 검색 단계에서 오류가 발생하여 건너뜁니다.")
-                target_dir, move_type, meta_info = None, None, None
-
-
-        # 2021-04-30
-        #try:
-        #    match = re.compile(r"\d+\-?c(\.|\].)|\(").search(file.stem.lower())
-        #    if match:
-        #        for cd in ["1", "2", "4"]:
-        #            cd_name = f'{search_name.replace(" ", "-")}cd{cd}{file.suffix}'
-        #            cd_file = Path(target_dir).joinpath(cd_name)
-        #            if cd_file.exists():
-        #                newfilename = f'{search_name.replace(" ", "-")}cd3{file.suffix}'
-        #                break
-        #except Exception as e:
-        #    logger.debug("Exception:%s", e)
-        #    logger.debug(traceback.format_exc())
-
-
-        # target_dir이 결정된 후, None이 아니고 str 타입이라면 즉시 Path 객체로 변환
-        if target_dir is not None and isinstance(target_dir, str):
-            # logger.debug(f"target_dir이 문자열 타입({target_dir})이므로 Path 객체로 변환합니다.")
-            target_dir = Path(target_dir)
-
-        if not target_dir.exists():
-            target_dir.mkdir(parents=True)
-        else:
-            #logger.error("타겟 폴더가 이미 존재함: %s", target_dir)
-            pass
-
-        logger.debug("target_dir: %s", target_dir)
-
-        entity = ModelJavCensoredItem(Task.config['이름'], str(file.parent), file.name)
-
-        # 이동/중복/삭제 처리 로직 재설계
-        if move_type is None or target_dir is None:
-            logger.warning("타겟 폴더를 결정할 수 없어 처리를 중단합니다.")
-            return entity.set_move_type(None)
-
-        if not target_dir.exists():
-            target_dir.mkdir(parents=True)
-
-        # 매칭 실패 (no_meta) 케이스 처리
-        if move_type == "no_meta":
-            if not Task.config.get('메타매칭실패시이동', False):
-                logger.info(f"메타 검색 실패: '{file.name}' 파일 이동 안함 설정에 따라 처리를 중단합니다.")
-                return entity.set_move_type(None) # DB에 기록하지 않음
-
-            # 사용할 파일명 결정 (옵션에 따라 품번 또는 원본명)
-            final_filename = newfilename if Task.config.get('메타매칭실패시파일명변경', False) else file.name
-            newfile = target_dir.joinpath(final_filename)
-
-            # '메타 없는 영상 이동 경로'에 중복 파일이 있으면, 새 파일 삭제
-            if newfile.exists():
-                logger.warning(f"메타 없는 영상 이동 경로에 동일한 파일이 존재하여 새 파일을 삭제합니다: {newfile}")
-                file.unlink()
-                entity.set_move_type("no_meta_deleted_due_to_duplication")
-            else:
-                UtilFunc.move(file, newfile)
-                entity.set_target(newfile).set_move_type(move_type)
-            return entity
-
-
-        # 정상 처리 (dvd, normal) 케이스 처리
-        newfile = target_dir.joinpath(newfilename)
-
-        # 타겟 경로에 중복 파일이 있는지 확인
-        if UtilFunc.is_duplicate(file, newfile):
-            logger.info(f"타겟 경로에 동일 파일이 존재합니다: {newfile}")
-            remove_path_str = Task.config.get('중복파일이동폴더', '').strip() # config 키 확인 필요
-
-            if not file.exists():
-                logger.warning(f"파일이 처리 도중 사라졌습니다: {file.name}")
-                return entity.set_move_type("already_processed_by_other")
-
-            if not remove_path_str:
-                # '중복인 경우 이동 폴더'가 설정되지 않았으면 삭제
-                logger.info("'중복인 경우 이동 폴더'가 설정되지 않아 파일을 삭제합니다.")
-                file.unlink()
-                entity.set_move_type(move_type + "_deleted_due_to_duplication")
-            else:
-                # '중복인 경우 이동 폴더'로 이동
-                remove_path = Path(remove_path_str)
-                if not remove_path.exists():
-                    remove_path.mkdir(parents=True)
-
-                # 먼저, 타임스탬프 없이 이동할 경로를 결정
-                final_dup_path = remove_path.joinpath(newfilename)
-
-                # '중복 폴더'에도 동일한 이름의 파일이 있는지 확인
-                if final_dup_path.exists():
-                    # 존재할 경우에만, 타임스탬프를 붙인 고유한 이름으로 경로를 다시 생성
-                    timestamp = int(datetime.now().timestamp())
-                    unique_filename = f"[{timestamp}] {newfilename}"
-                    final_dup_path = remove_path.joinpath(unique_filename)
-                    logger.debug(f"중복 폴더에도 동일 파일이 있어 타임스탬프를 추가합니다: {unique_filename}")
-
-                UtilFunc.move(file, final_dup_path)
-                logger.info(f"중복 파일을 다음 경로로 이동했습니다: {final_dup_path}")
-                entity.set_target(final_dup_path).set_move_type(move_type + "_already_exist")
-            return entity
-
-        # 중복이 아닌 경우, 최종 라이브러리로 이동
-        if file.exists():
-            shutil.move(file, newfile)
-
-            if meta_info is not None:
-                TaskMakeYaml.make_files(
-                    meta_info,
-                    str(newfile.parent),
-                    make_yaml=Task.config.get('부가파일생성_YAML', False),
-                    make_nfo=Task.config.get('부가파일생성_NFO', False),
-                    make_image=Task.config.get('부가파일생성_IMAGE', False),
-                )
-
-            try:
-                if Task.config.get('방송', False):
-                    bot = {
-                        't1': 'gds_tool',
-                        't2': 'fp',
-                        't3': 'av',
-                        'data': {
-                            'gds_path': str(newfile).replace('/mnt/AV/MP/GDS', '/ROOT/GDRIVE/VIDEO/AV'),
-                        }
-                    }
-                    hook = base64.b64decode(b'aHR0cHM6Ly9kaXNjb3JkLmNvbS9hcGkvd2ViaG9va3MvMTM5OTkxMDg4MDE4NzEyNTgxMS84SFY0bk93cGpXdHhIdk5TUHNnTGhRbDhrR3lGOXk4THFQQTdQVTBZSXVvcFBNN21PWHhkSVJSNkVmcmIxV21UdFhENw==').decode('utf-8')
-                    SupportDiscord.send_discord_bot_message(json.dumps(bot), hook)
-            except Exception as e:
-                logger.error("방송 메시지 전송 실패: %s", e)
-
-        return entity.set_target(newfile).set_move_type(move_type)
-
-
-    @staticmethod
-    def __add_meta_no_path():
-        meta_no_path_str = Task.config.get('메타매칭실패시이동폴더', '').strip()
-        if not meta_no_path_str:
-            temp_path_str = Task.config.get('처리실패이동폴더', '').strip()
-            # temp_path_str는 start에서 유효성 검증됨
-            meta_no_path = Path(temp_path_str).joinpath("[NO META]")
-        else:
-            meta_no_path = Path(meta_no_path_str)
-        
-        if not meta_no_path.is_dir():
-            return []
-
-        meta_no_retry_every = ModelSetting.get_int("jav_censored_meta_no_retry_every")
-        if meta_no_retry_every <= 0:
-            return []
-        
-        meta_no_last_retry = datetime.fromisoformat(ModelSetting.get("jav_censored_meta_no_last_retry"))
-        if (datetime.now() - meta_no_last_retry).days < meta_no_retry_every:
-            return []
-        
-        ModelSetting.set("jav_censored_meta_no_last_retry", datetime.now().isoformat())
-        # Path 객체를 리스트에 담아 반환
-        return [meta_no_path]
 
 

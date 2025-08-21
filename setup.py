@@ -49,6 +49,24 @@ setting = {
                         'uri': 'setting',
                         'name': '설정',
                     },
+                    {
+                        'uri': 'list',
+                        'name': '처리결과',
+                    },
+                ]
+            },
+            {
+                'uri': 'jav_uncensored_yaml',
+                'name': 'Jav Uncensored Yaml',
+                'list': [
+                    {
+                        'uri': 'setting',
+                        'name': '설정',
+                    },
+                    {
+                        'uri': 'files/jav_uncensored_yaml.md',
+                        'name': '매뉴얼',
+                    },
                 ]
             },
             {
@@ -75,7 +93,8 @@ try:
     from .mod_jav_censored import ModuleJavCensored
     from .mod_jav_censored_yaml import ModuleJavCensoredYaml
     from .mod_jav_uncensored import ModuleJavUncensored
-    P.set_module_list([ModuleJavCensored, ModuleJavCensoredYaml, ModuleJavUncensored])
+    from .mod_jav_uncensored_yaml import ModuleJavUncensoredYaml
+    P.set_module_list([ModuleJavCensored, ModuleJavCensoredYaml, ModuleJavUncensored, ModuleJavUncensoredYaml])
 except Exception as e:
     P.logger.error(f'Exception:{str(e)}')
     P.logger.error(traceback.format_exc())
