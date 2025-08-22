@@ -16,7 +16,7 @@
 
 <form id='setting' name='setting'>
   <div class="tab-content mb-4" id="nav-tabContent">
-    {{ macros.m_tab_content_start('basic', true) }}
+  {{ macros.m_tab_content_start('basic', true) }}
     {{ macros.setting_input_textarea('jav_uncensored_download_path', '다운로드 폴더', value=arg['jav_uncensored_download_path'], row='3', desc=['Uncensored 영상을 다운받은 폴더. 필수', '2개 이상일 경우 구분자 Enter, #으로 시작하여 주석처리']) }}
 
     {{ macros.info_text('preprocess_1', '전처리 1단계', value='', desc=['다운로드 폴더의 depth=1인 자식들을 탐색하여 유효한 파일이 아니거나 그것을 포함하지 않은 폴더를 삭제. 유효한 파일은 아래 조건에 의해 결정.']) }}
@@ -31,7 +31,12 @@
     {{ macros.setting_input_textarea('jav_uncensored_filename_not_allowed_list', '파일명 예외 키워드', value=arg['jav_uncensored_filename_not_allowed_list'], row='3', desc=['파일명에 위와 같은 키워드가 포함된 경우 [FILENAME NOT ALLOWED] 폴더 아래에 분류', '대소문자 구분 없음. 구분자 바(|)']) }}
 
     {{ macros.setting_input_int('jav_uncensored_delay_per_file', '파일당 처리 딜레이', value=arg['jav_uncensored_delay_per_file'], placeholder='0', min='0', desc=['개별 파일을 처리하기 전 대기하는 시간입니다.', '메타데이터 사이트의 과도한 연속 호출을 방지합니다. 단위: 초(second)']) }}
-  {{ macros.m_tab_content_end() }}  
+
+    {{ macros.m_hr() }}
+    {{ macros.setting_checkbox('jav_uncensored_scan_with_plex_mate', 'PLEX MATE 스캔', value=arg['jav_uncensored_scan_with_plex_mate'], desc=['On: 실패 경로 이외의 이동에 성공하면 PLEX MATE에 스캔 요청을 보냅니다.', '동일 FF 내에 설치/설정된 PLEX MATE만 해당됩니다.']) }}
+
+  {{ macros.m_tab_content_end() }}
+
 
   {{ macros.m_tab_content_start('filename', false) }}
     {{ macros.setting_checkbox('jav_uncensored_change_filename', '파일명 변경', value=arg['jav_uncensored_change_filename'], desc=['On : 파일명 변경', 'Off: 원본파일명 유지']) }}
@@ -42,7 +47,9 @@
     </div>
     {{ macros.m_hr() }}
     {{ macros.setting_input_text_and_buttons('jav_uncensored_filename_test', '파일명 변경 테스트', [['jav_uncensored_filename_test_btn', '테스트']], value=arg['jav_uncensored_filename_test'], desc=None) }}
+
   {{ macros.m_tab_content_end() }}  
+
 
   {{ macros.m_tab_content_start('folders', false) }}
     {{ macros.setting_input_text('jav_uncensored_folder_format', '기본 폴더 구조', value=arg['jav_uncensored_folder_format'], desc=['예) {label}/{code} : 레이블폴더/품번폴더 생성 후 이동', '{studio}: 제작사 / {label_1}: 레이블 첫 글자']) }}

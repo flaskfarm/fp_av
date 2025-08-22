@@ -308,7 +308,6 @@ class ToolExpandFileProcess:
         return None, ""
 
 
-
 class UtilFunc:
 
     def is_duplicate(src: Path, dst: Path) -> bool:
@@ -323,3 +322,4 @@ class UtilFunc:
             trg = trg.with_name(f"[{int(time.time())}] {trg.name}")
         shutil.move(src, trg)
         logger.debug("Moved: %s -> %s", src.name, trg)
+

@@ -7,6 +7,7 @@ import os
 import shutil
 import time
 import string
+import requests
 from datetime import datetime
 
 ModelSetting = P.ModelSetting
@@ -14,6 +15,7 @@ from .tool import ToolExpandFileProcess, UtilFunc
 from .model_jav_censored import ModelJavCensoredItem
 from support import SupportYaml, SupportUtil, SupportDiscord
 from .task_make_yaml import Task as TaskMakeYaml
+from types import SimpleNamespace
 
 
 class TaskBase:
@@ -23,7 +25,6 @@ class TaskBase:
         job_type = args[0]
 
         if job_type == 'default':
-            # 1. Default 작업에 대한 config 생성
             config = {
                 "이름": "default",
                 "사용": True,
@@ -64,8 +65,11 @@ class TaskBase:
 
                 # etc
                 "파일당딜레이": ModelSetting.get_int("jav_censored_delay_per_file"),
+                "PLEXMATE스캔": ModelSetting.get_bool("jav_censored_scan_with_plex_mate"),
             }
-            # 2. 공통 실행 헬퍼 호출
+
+            config['PLEXMATE_URL'] = F.SystemModelSetting.get('ddns')
+
             TaskBase.__task(config)
 
         elif job_type == 'yaml':
@@ -118,6 +122,8 @@ class TaskBase:
                 logger.warning("기본 검색 순서(dmm, mgstage)를 사용합니다.")
                 site_list_to_search = ['dmm', 'mgstage']
 
+        config['사이트목록'] = site_list_to_search
+
         # 2. 파싱 규칙을 config에 추가
         Task._load_parsing_rules(config)
 
@@ -154,11 +160,11 @@ class Task:
         for file in files:
             parsing_rules = Task.config.get('파싱규칙')
             cleanup_list = Task.config.get('품번파싱제외키워드')
+
             info = Task.__prepare_initial_info(file, parsing_rules, cleanup_list, mode='censored')
-            # ▲▲▲▲▲ [수정] 이 함수 내부 호출도 새 시그지처에 맞게 변경 ▲▲▲▲▲
             if info:
                 execution_plan.append(info)
-        
+
         # 1-3. [Enrichment] -c 파트 모호성 해결
         logger.debug(f"'-C' 파트 처리")
         Task.__resolve_c_part_ambiguity(execution_plan)
@@ -166,7 +172,7 @@ class Task:
         # 1-4. [Assemble] 최종 파일명 및 경로 조립
         for info in execution_plan:
             Task.__assemble_final_plan(info)
-            
+
         # 1-5. [Load] 메타데이터 처리 및 실제 파일 이동
         Task.__execute_plan(execution_plan)
 
@@ -289,7 +295,7 @@ class Task:
         """최종 search_name, newfilename, target_dir을 조립합니다."""
         config = Task.config
         info['search_name'] = info['pure_code'] # search_name은 항상 순수 품번
-        
+
         part_to_use = info['parsed_part_type'] if config.get('분할파일처리', True) else ""
 
         if not config.get('파일명변경', True):
@@ -305,7 +311,7 @@ class Task:
 
     @staticmethod
     def __execute_plan(execution_plan):
-        """메타 검색 및 실제 파일 처리를 실행합니다."""
+        """메타 검색, 파일 처리를 실행하고 이동 경로 변경 시 스캔을 요청합니다."""
         config = Task.config
 
         # 품번 그룹화
@@ -315,69 +321,88 @@ class Task:
             if code not in code_groups: code_groups[code] = []
             code_groups[code].append(info)
 
-        logger.info(f"처리할 품번 그룹 {len(code_groups)}개 (총 파일 {len(execution_plan)}개)")
-        delay_seconds = config.get('파일당딜레이', 0)
-
         total_files = len(execution_plan)
+        logger.info(f"처리할 품번 그룹 {len(code_groups)}개 (총 파일 {total_files}개)")
+
+        scan_enabled = config.get("PLEXMATE스캔", False)
+        if config.get('메타사용') == 'using' or scan_enabled:
+            delay_seconds = config.get('파일당딜레이', 0)
+        else:
+            delay_seconds = 0
         processed_count = 0
+        last_scan_path = None
 
         for idx, (pure_code, group_infos) in enumerate(code_groups.items()):
             if delay_seconds > 0 and idx > 0:
                 time.sleep(delay_seconds)
 
             try:
-                # 그룹당 1회 메타 검색
+                # 1. 그룹 대표 정보로 target_dir과 meta_info를 한 번만 결정
                 meta_target_dir, meta_move_type, meta_info = None, None, None
                 if config.get('메타사용') == 'using':
                     meta_target_dir, meta_move_type, meta_info = Task.__get_target_with_meta(pure_code)
 
-                # 그룹 내 각 파일 처리
+                if config.get('메타사용') == 'using':
+                    target_dir = meta_target_dir
+                    move_type = meta_move_type
+                else: # 메타 미사용 시
+                    move_type = "normal"
+                    target_paths = Task.get_path_list(config['라이브러리폴더'])
+                    folders = Task.process_folder_format(move_type, pure_code)
+                    target_dir = Path(target_paths[0]).joinpath(*folders) if target_paths else None
+
+                # 2. 스캔 경로 변경 감지 및 요청
+                if scan_enabled and target_dir != last_scan_path and last_scan_path is not None:
+                    logger.info(f"경로 변경 감지. 이전 경로 스캔 요청: {last_scan_path}")
+                    Task.__request_plex_mate_scan(last_scan_path)
+
+                # 3. 그룹 내 각 파일 처리
                 for info in group_infos:
                     processed_count += 1
                     logger.info(f"[{processed_count:03d}/{total_files:03d}] {info['original_file'].name}")
 
-                    # 메타 사용 여부에 따라 최종 이동 경로와 타입을 결정
-                    if config.get('메타사용') == 'using':
-                        target_dir = meta_target_dir
-                        move_type = meta_move_type
-                    else: # 메타 미사용 시
-                        move_type = "normal"
-                        target_paths = Task.get_path_list(config['라이브러리폴더'])
-                        folders = Task.process_folder_format(move_type, pure_code)
-                        target_dir = Path(target_paths[0]).joinpath(*folders)
+                    # info 객체에 계산된 최종 정보들을 담아줍니다.
+                    info['target_dir'] = target_dir
+                    info['move_type'] = move_type
+                    info['meta_info'] = meta_info
 
-                    # 실제 파일 이동/중복 처리 로직 호출
-                    entity = Task.__file_move_logic(
-                        info, 
-                        info['newfilename'], 
-                        target_dir, 
-                        move_type, 
-                        meta_info,
-                        ModelJavCensoredItem
-                    )
+                    entity = Task.__file_move_logic(info, ModelJavCensoredItem)
+
                     if entity and entity.move_type is not None:
                         entity.save()
+
+                # 4. 이동 성공 시, 현재 그룹의 경로를 '마지막 스캔 경로'로 업데이트
+                if scan_enabled and target_dir is not None:
+                    last_scan_path = target_dir
 
             except Exception as e:
                 logger.error(f"'{pure_code}' 그룹 처리 중 예외 발생: {e}")
                 logger.error(traceback.format_exc())
 
+        # 5. 모든 루프가 끝난 후, 마지막으로 처리된 경로에 대해 스캔을 요청
+        if scan_enabled and last_scan_path is not None:
+            logger.info(f"모든 파일 처리 완료. 마지막 경로 스캔 요청: {last_scan_path}")
+            Task.__request_plex_mate_scan(last_scan_path)
+
 
     @staticmethod
-    def __file_move_logic(info, newfilename, target_dir, move_type, meta_info, model_class):
+    def __file_move_logic(info, model_class):
         """실제 파일 이동, 중복 처리, DB 기록, 방송 등을 담당합니다."""
         config = Task.config
-        file = info['original_file'] # 원본 파일 객체
 
-        entity = model_class(config['이름'], str(file.parent), file.name)
+        file = info['original_file']
+        newfilename = info.get('newfilename', file.name)
+        target_dir = info.get('target_dir')
+        move_type = info.get('move_type')
+        meta_info = info.get('meta_info')
+
+        entity = model_class(config.get('이름'), str(file.parent), file.name)
 
         if move_type is None or target_dir is None:
             logger.warning(f"'{file.name}'의 최종 이동 경로를 결정할 수 없어 건너뜁니다.")
             return entity.set_move_type(None)
 
-        if not target_dir.exists():
-            target_dir.mkdir(parents=True)
-
+        target_dir.mkdir(parents=True, exist_ok=True)
         newfile = target_dir.joinpath(newfilename)
 
         # 1. 매칭 실패 (no_meta) 케이스 처리
@@ -424,19 +449,11 @@ class Task:
         if file.exists():
             move_success = False
             try:
-                # 3a. shutil.move만 단독으로 예외 처리
+                # 3a. 파일 이동
                 shutil.move(file, newfile)
                 logger.info(f"파일 이동 성공: -> {newfile}")
-                move_success = True
-            except Exception as e:
-                logger.error(f"최종 파일 이동 중 오류 발생: {file} -> {newfile}")
-                logger.error(f"오류: {e}")
-                logger.error(traceback.format_exc())
-                return entity.set_move_type("move_fail")
 
-            # 3b. 파일 이동이 성공했을 경우에만 후속 작업 실행
-            if move_success:
-                # 부가 파일 (NFO, YAML, 이미지) 생성
+                # 3b. 부가 파일 생성 (이동 성공 후)
                 if meta_info:
                     TaskMakeYaml.make_files(
                         meta_info,
@@ -446,21 +463,23 @@ class Task:
                         make_image=config.get('부가파일생성_IMAGE', False),
                     )
 
-                # 방송 처리
-                try:
-                    if config.get('방송', False):
-                        bot = {
-                            't1': 'gds_tool', 't2': 'fp', 't3': 'av',
-                            'data': {'gds_path': str(newfile).replace('/mnt/AV/MP/GDS', '/ROOT/GDRIVE/VIDEO/AV')}
-                        }
-                        hook = base64.b64decode(b'aHR0cHM6Ly9kaXNjb3JkLmNvbS9hcGkvd2ViaG9va3MvMTM5OTkxMDg4MDE4NzEyNTgxMS84SFY0bk93cGpXdHhIdk5TUHNnTGhRbDhrR3lGOXk4THFQQTdQVTBZSXVvcFBNN21PWHhkSVJSNkVmcmIxV21UdFhENw==').decode('utf-8')
-                        SupportDiscord.send_discord_bot_message(json.dumps(bot), hook)
-                except Exception as e:
-                    logger.error(f"방송 메시지 전송 실패: {e}")
+                # 3c. 방송 처리 (이동 성공 후)
+                if config.get('방송', False):
+                    bot = {
+                        't1': 'gds_tool', 't2': 'fp', 't3': 'av',
+                        'data': {'gds_path': str(newfile).replace('/mnt/AV/MP/GDS', '/ROOT/GDRIVE/VIDEO/AV')}
+                    }
+                    hook = base64.b64decode(b'aHR0cHM6Ly9kaXNjb3JkLmNvbS9hcGkvd2ViaG9va3MvMTM5OTkxMDg4MDE4NzEyNTgxMS84SFY0bk93cGpXdHhIdk5TUHNnTGhRbDhrR3lGOXk4THFQQTdQVTBZSXVvcFBNN21PWHhkSVJSNkVmcmIxV21UdFhENw==').decode('utf-8')
+                    SupportDiscord.send_discord_bot_message(json.dumps(bot), hook)
 
                 return entity.set_target(newfile).set_move_type(move_type)
 
-        return entity.set_move_type(None) # 파일이 중간에 사라진 경우 등
+            except Exception as e:
+                logger.error(f"최종 파일 이동 또는 후속 작업 중 오류: {file} -> {newfile}, 오류: {e}")
+                logger.error(traceback.format_exc())
+                return entity.set_move_type("move_fail")
+
+        return entity.set_move_type(None)
 
 
     # ====================================================================
@@ -675,7 +694,7 @@ class Task:
 
         # 2021-04-21 ??????
         if filename == newfilename and filename.find("[") == -1 and filename.find("]") == -1:
-            newfilename = Task.parse_jav_filename_by_save_original(filename, newfilename, file_path)
+            newfilename = Task.parse_jav_filename_by_save_original(filename, newfilename, file_path, file_size)
         elif filename != newfilename and (
             (filename.find("[") == -1 or filename.find("]") == -1)
             or not os.path.splitext(filename)[0].startswith(os.path.splitext(newfilename)[0])
@@ -765,6 +784,43 @@ class Task:
             logger.debug("Exception:%s", exception)
             logger.debug(traceback.format_exc())
             return None # 모듈 로딩 실패 시 None 반환
+
+
+    @staticmethod
+    def __request_plex_mate_scan(scan_path: Path, db_item=None):
+        """Plex Mate에 웹 API를 통해 스캔을 요청합니다."""
+        try:
+            base_url = Task.config.get('PLEXMATE_URL')
+            if not base_url:
+                return
+
+            url = f"{base_url.rstrip('/')}/plex_mate/api/scan/do_scan"
+            
+            callback_id = ''
+            if db_item and db_item.id:
+                callback_id = f"{P.package_name}_item_{db_item.id}"
+
+            data = {
+                'target': str(scan_path),
+                'apikey': F.SystemModelSetting.get('apikey'),
+                'mode': 'ADD',
+                # 'scanner': 'web',
+                'callback_id': callback_id
+            }
+
+            logger.debug(f"Plex Mate 스캔 API 호출: URL={url}, Data={data}")
+            res = requests.post(url, data=data, timeout=10)
+            
+            if res.status_code == 200:
+                logger.info(f"Plex Mate 스캔 요청 성공: {res.json()}")
+            else:
+                logger.warning(f"Plex Mate 스캔 요청 실패: {res.status_code} - {res.text}")
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Plex Mate API 호출 중 네트워크 오류: {e}")
+        except Exception as e:
+            logger.error(f"Plex Mate 스캔 요청 중 알 수 없는 오류: {e}")
+            logger.error(traceback.format_exc())
 
 
 
