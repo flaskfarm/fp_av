@@ -18,9 +18,9 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_remove_path": "",
             f"{self.name}_min_size": "300",
             f"{self.name}_max_age": "0",
+            # filename
             f"{self.name}_filename_not_allowed_list": "",
             f"{self.name}_filename_cleanup_list": "3xplanet|archive|bo99|boy999|ddr91|dioguitar|dioguitar23|fengniao|fengniao151|giogio99|im520|javonly|javplayer|javplayer200a|javsubs91|konoha57|love69|mosaic|removed|uncensored|nodrm|nomatch-2023|sis001|u3c3|wwg101|xplanet",
-            # filename
             f"{self.name}_include_original_filename": "True",
             f"{self.name}_process_part_files": "True",
             f"{self.name}_include_original_filename_option": "0",
@@ -48,6 +48,7 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_make_image": "False",
             # etc
             f"{self.name}_delay_per_file": "0",
+            f"{self.name}_scan_with_plex_mate": "False",
             #f"{self.name}_last_list_option": "",
         }
         self.web_list_model = ModelJavCensoredItem

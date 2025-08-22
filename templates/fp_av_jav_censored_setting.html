@@ -34,7 +34,12 @@
     {{ macros.setting_input_textarea('jav_censored_filename_not_allowed_list', '파일명 예외 키워드', desc=['파일명에 위와 같은 키워드가 포함된 경우 [FILENAME NOT ALLOWED] 폴더 아래에 분류', '대소문자 구분 없음. 구분자 바(|)'], value=arg['jav_censored_filename_not_allowed_list'], row='3') }}
 
     {{ macros.setting_input_int('jav_censored_delay_per_file', '파일당 처리 딜레이', value=arg['jav_censored_delay_per_file'], placeholder='0', min='0', desc=['개별 파일을 처리하기 전 대기하는 시간입니다.', '메타데이터 사이트의 과도한 연속 호출을 방지합니다. 단위: 초(second)']) }}
-    {{ macros.m_tab_content_end() }}  
+
+    {{ macros.m_hr() }}
+    {{ macros.setting_checkbox('jav_censored_scan_with_plex_mate', 'PLEX MATE 스캔', value=arg['jav_censored_scan_with_plex_mate'], desc=['On: 실패 경로 이외의 이동에 성공하면 PLEX MATE에 스캔 요청을 보냅니다.', '동일 FF 내에 설치/설정된 PLEX MATE만 해당됩니다.']) }}
+
+  {{ macros.m_tab_content_end() }}
+
 
   {{ macros.m_tab_content_start('filename', false) }}
     {{ macros.setting_checkbox('jav_censored_change_filename', '파일명 변경', value=arg['jav_censored_change_filename'], desc=['On : 파일명 변경', 'Off: 원본파일명 유지']) }}
@@ -46,7 +51,9 @@
     </div>
     {{ macros.m_hr() }}
     {{ macros.setting_input_text_and_buttons('jav_censored_filename_test', '파일명 변경 테스트', [['jav_censored_filename_test_btn', '테스트']], value=arg['jav_censored_filename_test'], desc=None) }}
-  {{ macros.m_tab_content_end() }}  
+
+  {{ macros.m_tab_content_end() }}
+
 
   {{ macros.m_tab_content_start('folders', false) }}
     {{ macros.setting_input_text('jav_censored_folder_format', '기본 폴더 구조', desc=['예) {label} : 레이블 폴더에 파일 이동', '예) {label}/{code} : 레이블폴더/품번폴더 생성 후 이동', '예) 품번별/{label} 처럼 문자와 / 사용 가능', '{label} {code} {studio} {label_1}'], value=arg['jav_censored_folder_format']) }}
@@ -76,8 +83,6 @@
     {{ macros.setting_checkbox('jav_censored_make_nfo', 'NFO 파일 생성', value=arg['jav_censored_make_nfo'], desc=None) }}
     {{ macros.setting_checkbox('jav_censored_make_image', '이미지 파일 생성', value=arg['jav_censored_make_image'], desc=None) }}
 
-
-
     </div>
   {{ macros.m_tab_content_end() }}  
 
@@ -90,6 +95,7 @@
 
     {{ macros.setting_input_text_and_buttons('jav_censored_db_delete_day', 'DB 삭제 기간', [['globalDbDeleteDayBtn', '기간 적용 삭제', [['tag_id','jav_censored_db_delete_day']]], ['globalDbDeleteBtn', '전체 삭제']], value=arg['jav_censored_db_delete_day'], col='6') }} 
     {{ macros.setting_checkbox('jav_censored_db_auto_delete', 'DB 자동 삭제', value=arg['jav_censored_db_auto_delete'], desc=['On : 기간 적용하여 DB를 자동 삭제합니다.']) }}
+
   {{ macros.m_tab_content_end() }} 
 
   </div><!--tab-content-->

@@ -55,7 +55,10 @@ class TaskBase:
                 "부가파일생성_YAML": ModelSetting.get_bool("jav_uncensored_make_yaml"),
                 "부가파일생성_NFO": ModelSetting.get_bool("jav_uncensored_make_nfo"),
                 "부가파일생성_IMAGE": ModelSetting.get_bool("jav_uncensored_make_image"),
+                "PLEXMATE스캔": ModelSetting.get_bool("jav_uncensored_scan_with_plex_mate"),
             }
+
+            config['PLEXMATE_URL'] = F.SystemModelSetting.get('ddns')
 
             TaskBase.__task(config)
 
@@ -213,46 +216,70 @@ class Task:
             code_groups.setdefault(info['search_name'], []).append(info)
 
         total_files = len(execution_plan)
-        processed_count = 0
         logger.info(f"처리할 품번 그룹 {len(code_groups)}개 (총 파일 {total_files}개)")
 
-        delay = config.get('파일당딜레이', 0)
+        scan_enabled = config.get("PLEXMATE스캔", False)
+        if config.get('메타사용') == 'using' or scan_enabled:
+            delay = config.get('파일당딜레이', 0)
+        else:
+            delay = 0
+        processed_count = 0
+        last_scan_path = None
 
         for idx, (pure_code, group_infos) in enumerate(code_groups.items()):
             if delay > 0 and idx > 0: time.sleep(delay)
+            
             try:
+                # 1. 그룹 대표 정보로 경로의 '기반'과 '타입'을 한 번만 결정
                 path_result, move_type, meta_info = Task.__determine_target_path_and_meta(group_infos[0])
 
                 if path_result is None:
                     continue
 
+                # 2. move_type에 따라 최종 target_dir을 올바르게 계산
+                target_dir = None
+                if move_type == "override_final":
+                    target_dir = path_result
+                elif move_type in ["meta_fail", "no_rule", "no_label"]:
+                    target_dir = path_result
+                else:
+                    format_type = "dvd" if move_type == "meta_success" else "normal"
+                    folders = CensoredTask.process_folder_format(format_type, meta_info or pure_code)
+                    target_dir = path_result.joinpath(*folders)
+
+                # 3. 스캔 경로 변경 감지 및 요청
+                if scan_enabled and target_dir != last_scan_path and last_scan_path is not None:
+                    logger.info(f"경로 변경 감지. 이전 경로 스캔 요청: {last_scan_path}")
+                    CensoredTask.__request_plex_mate_scan(last_scan_path) # CensoredTask의 함수 호출
+
+                # 4. 그룹 내 각 파일 처리
                 for info in group_infos:
                     processed_count += 1
                     logger.info(f"[{processed_count:03d}/{total_files:03d}] {info['original_file'].name}")
 
-                    target_dir = None
+                    info['target_dir'] = target_dir
+                    info['move_type'] = move_type
+                    info['meta_info'] = meta_info
+                    
+                    # CensoredTask의 공유 함수를 호출
+                    entity = CensoredTask.__file_move_logic(info, ModelJavUncensoredItem)
 
-                    if move_type == "override_final":
-                        target_dir = path_result
-                    elif move_type in ["meta_fail", "no_rule", "no_label"]:
-                        target_dir = path_result
-                    else:
-                        target_path = path_result
-                        format_type = "dvd" if move_type == "meta_success" else "normal"
-                        folders = CensoredTask.process_folder_format(format_type, meta_info or info['pure_code'])
-                        target_dir = target_path.joinpath(*folders)
+                    if entity and entity.move_type is not None:
+                        entity.save()
 
-                    if target_dir:
-                        entity = CensoredTask.__file_move_logic(
-                            info, info['newfilename'], target_dir, move_type, meta_info, ModelJavUncensoredItem
-                        )
-                        if entity and entity.move_type is not None:
-                            entity.save()
+                # 5. 이동 성공 시, 현재 그룹의 경로를 '마지막 스캔 경로'로 업데이트
+                if scan_enabled and target_dir is not None:
+                    last_scan_path = target_dir
 
             except Exception as e:
                 logger.error(f"'{pure_code}' 그룹 처리 중 예외: {e}")
                 logger.error(traceback.format_exc())
                 processed_count += len(group_infos)
+
+        # 6. 모든 루프가 끝난 후, 마지막으로 처리된 경로에 대해 스캔을 요청
+        if scan_enabled and last_scan_path is not None:
+            logger.info(f"모든 파일 처리 완료. 마지막 경로 스캔 요청: {last_scan_path}")
+            CensoredTask.__request_plex_mate_scan(last_scan_path)
 
 
     @staticmethod
