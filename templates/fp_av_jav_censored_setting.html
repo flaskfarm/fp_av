@@ -38,6 +38,9 @@
     {{ macros.m_hr() }}
     {{ macros.setting_checkbox('jav_censored_scan_with_plex_mate', 'PLEX MATE 스캔', value=arg['jav_censored_scan_with_plex_mate'], desc=['On: 실패 경로 이외의 이동에 성공하면 PLEX MATE에 스캔 요청을 보냅니다.', '동일 FF 내에 설치/설정된 PLEX MATE만 해당됩니다.']) }}
 
+    {{ macros.m_hr() }}
+    {{ macros.setting_checkbox('jav_censored_dry_run', 'DRY RUN 모드', value=arg['jav_censored_dry_run'], desc=['On: 상단의 "1회 실행/즉시 실행" 버튼을 눌렀을 때 Dry Run 모드로 실행됩니다.', '실제 파일 이동이나 DB 저장 없이, 처리 과정을 로그로만 확인합니다.']) }}
+
   {{ macros.m_tab_content_end() }}
 
 
@@ -152,6 +155,7 @@ $("body").on('click', '#jav_censored_filename_test_btn', function(e){
     }
   });
 });
+
 
 </script>    
 {% endblock %}

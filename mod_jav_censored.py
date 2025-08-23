@@ -49,7 +49,7 @@ class ModuleJavCensored(PluginModuleBase):
             # etc
             f"{self.name}_delay_per_file": "0",
             f"{self.name}_scan_with_plex_mate": "False",
-            #f"{self.name}_last_list_option": "",
+            f"{self.name}_dry_run": "False",
         }
         self.web_list_model = ModelJavCensoredItem
 

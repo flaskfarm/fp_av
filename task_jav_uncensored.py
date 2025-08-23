@@ -9,7 +9,7 @@ import time
 from datetime import datetime
 
 ModelSetting = P.ModelSetting
-from .task_jav_censored import Task as CensoredTask
+from .task_jav_censored import Task as CensoredTask, VIDEO_EXTS, SUBTITLE_EXTS
 from .tool import ToolExpandFileProcess, UtilFunc
 from .model_jav_uncensored import ModelJavUncensoredItem
 from support import SupportYaml, SupportUtil, SupportDiscord
@@ -56,9 +56,15 @@ class TaskBase:
                 "부가파일생성_NFO": ModelSetting.get_bool("jav_uncensored_make_nfo"),
                 "부가파일생성_IMAGE": ModelSetting.get_bool("jav_uncensored_make_image"),
                 "PLEXMATE스캔": ModelSetting.get_bool("jav_uncensored_scan_with_plex_mate"),
+                "드라이런": ModelSetting.get_bool("jav_uncensored_dry_run"),
             }
 
             config['PLEXMATE_URL'] = F.SystemModelSetting.get('ddns')
+
+            is_dry_run = config.get('드라이런')
+            if is_dry_run:
+                logger.warning("Dry Run 모드가 활성화되었습니다. (파일 이동/DB 저장 없음)")
+                config['이름'] = "dry_run"
 
             TaskBase.__task(config)
 
@@ -75,7 +81,6 @@ class TaskBase:
                         continue
                     job['재시도'] = False
 
-                    # 공통 실행 헬퍼 호출 (각 job에 대해)
                     TaskBase.__task(job)
             except Exception as e:
                 logger.error(f"YAML 파일 처리 중 오류 발생: {str(e)}")
@@ -84,12 +89,9 @@ class TaskBase:
 
     @staticmethod
     def __task(config):
-        # 1. 공용 헬퍼 함수를 호출하여 파싱 규칙 로드
-        CensoredTask._load_parsing_rules(config)
-        
-        # 2. Uncensored 전용 설정 로드 (메타 검색 지원 레이블)
+        # Uncensored 전용 설정 로드 (메타 검색 지원 레이블)
         try:
-            meta_module = Task.get_meta_module() # jav_uncensored 메타 모듈
+            meta_module = CensoredTask.get_meta_module('jav_uncensored')
             if meta_module and hasattr(meta_module, 'site_map'):
                 supported_labels = [
                     v['keyword'][0] for v in meta_module.site_map.values() if v.get('keyword')
@@ -113,48 +115,16 @@ class Task:
         Task.config = config
         CensoredTask.config = config
 
-        logger.debug("처리 파일 목록 생성")
-        files = Task.__collect_initial_files()
-        if not files:
-            logger.info("처리할 파일이 없습니다.")
-            return
+        # uncensored 작업에 필요한 고유한 정보(컨텍스트)를 정의
+        task_context = {
+            'module_name': 'jav_uncensored',
+            'parse_mode': 'uncensored',
+            'execute_plan': Task.__execute_plan,
+            'db_model': ModelJavUncensoredItem,
+        }
 
-        # logger.debug("파싱 및 처리 계획 수립")
-        execution_plan = []
-        no_label_files = [] # 파싱에 실패한 파일들을 담을 리스트
-
-        parsing_rules = Task.config.get('파싱규칙')
-        cleanup_list = Task.config.get('품번파싱제외키워드')
-
-        for file in files:
-            info = CensoredTask.__prepare_initial_info(file, parsing_rules, cleanup_list, mode='uncensored')
-            if info:
-                # 파싱 성공 -> 실행 계획에 추가
-                execution_plan.append(info)
-            else:
-                # 파싱 실패 -> 실패 목록에 추가
-                no_label_files.append(file)
-
-        logger.debug(f"파싱 성공: {len(execution_plan)}개, 파싱 실패(NO LABEL): {len(no_label_files)}개")
-
-        if no_label_files:
-            # logger.debug("파싱 실패 파일 이동 시작")
-            for file in no_label_files:
-                Task.__move_to_no_label_folder(file)
-
-        if not execution_plan:
-            logger.debug("파싱에 성공한 파일이 없어 작업을 종료합니다.")
-            return
-
-        # logger.debug("'-C' 파트 처리")
-        CensoredTask.__resolve_c_part_ambiguity(execution_plan)
-
-        # logger.debug("최종 파일명 조립")
-        for info in execution_plan:
-            CensoredTask.__assemble_final_plan(info)
-
-        logger.debug("메타 검색 및 파일 이동 시작")
-        Task.__execute_plan(execution_plan)
+        # CensoredTask에 있는 공용 실행 함수를 호출
+        CensoredTask.__start_shared_logic(config, task_context)
 
 
     # ====================================================================
@@ -163,53 +133,7 @@ class Task:
 
 
     @staticmethod
-    def __collect_initial_files():
-        config = Task.config
-        no_censored_path = Path(config['처리실패이동폴더'].strip())
-        if not no_censored_path.is_dir():
-            logger.warning("'처리 실패시 이동 폴더'가 유효하지 않아 작업을 중단합니다.")
-            return []
-
-        src_list = CensoredTask.get_path_list(config['다운로드폴더'])
-        src_list.extend(Task.__add_meta_no_path()) # 매칭 실패 재시도 경로 추가
-
-        all_files = []
-        for src in src_list:
-            ToolExpandFileProcess.preprocess_cleanup(src, config.get('최소크기', 0), config.get('최대기간', 0))
-            _f = ToolExpandFileProcess.preprocess_listdir(src, no_censored_path, config)
-            all_files.extend(_f or [])
-
-        if all_files:
-            all_files.sort(key=lambda p: [int(c) if c.isdigit() else c.lower() for c in re.split('([0-9]+)', p.name)])
-        return all_files
-
-
-    @staticmethod
-    def __move_to_no_label_folder(file_path: Path):
-        """품번 추출에 실패한 파일을 지정된 폴더로 이동시킵니다."""
-        config = Task.config
-        target_root_str = config.get('품번추출실패시이동경로', '').strip()
-
-        if not target_root_str:
-            target_root_str = config.get('처리실패이동폴더', '').strip()
-            if not target_root_str: return
-            target_dir = Path(target_root_str).joinpath("[NO LABEL]")
-        else:
-            target_dir = Path(target_root_str)
-
-        try:
-            target_dir.mkdir(parents=True, exist_ok=True)
-            target_file = target_dir.joinpath(file_path.name)
-            if target_file.exists():
-                target_file = target_file.with_name(f"[{int(time.time())}] {file_path.name}")
-            shutil.move(file_path, target_file)
-            logger.info(f"품번 추출 실패 파일을 이동: {target_file}")
-        except Exception as e:
-            logger.error(f"{file_path.name} 이동 중 오류: {e}")
-
-
-    @staticmethod
-    def __execute_plan(execution_plan):
+    def __execute_plan(execution_plan, db_model):
         config = Task.config
         code_groups = {}
         for info in execution_plan:
@@ -219,16 +143,10 @@ class Task:
         logger.info(f"처리할 품번 그룹 {len(code_groups)}개 (총 파일 {total_files}개)")
 
         scan_enabled = config.get("PLEXMATE스캔", False)
-        if config.get('메타사용') == 'using' or scan_enabled:
-            delay = config.get('파일당딜레이', 0)
-        else:
-            delay = 0
         processed_count = 0
         last_scan_path = None
 
         for idx, (pure_code, group_infos) in enumerate(code_groups.items()):
-            if delay > 0 and idx > 0: time.sleep(delay)
-            
             try:
                 # 1. 그룹 대표 정보로 경로의 '기반'과 '타입'을 한 번만 결정
                 path_result, move_type, meta_info = Task.__determine_target_path_and_meta(group_infos[0])
@@ -249,8 +167,11 @@ class Task:
 
                 # 3. 스캔 경로 변경 감지 및 요청
                 if scan_enabled and target_dir != last_scan_path and last_scan_path is not None:
-                    logger.info(f"경로 변경 감지. 이전 경로 스캔 요청: {last_scan_path}")
-                    CensoredTask.__request_plex_mate_scan(last_scan_path) # CensoredTask의 함수 호출
+                    if config.get('드라이런', False):
+                        logger.info(f"[Dry Run] 경로 변경 감지. 이전 경로 스캔 요청(Pass): {last_scan_path}")
+                    else:
+                        logger.info(f"경로 변경 감지. 이전 경로 스캔 요청: {last_scan_path}")
+                        CensoredTask.__request_plex_mate_scan(last_scan_path)
 
                 # 4. 그룹 내 각 파일 처리
                 for info in group_infos:
@@ -262,7 +183,7 @@ class Task:
                     info['meta_info'] = meta_info
                     
                     # CensoredTask의 공유 함수를 호출
-                    entity = CensoredTask.__file_move_logic(info, ModelJavUncensoredItem)
+                    entity = CensoredTask.__file_move_logic(info, db_model)
 
                     if entity and entity.move_type is not None:
                         entity.save()
@@ -277,7 +198,7 @@ class Task:
                 processed_count += len(group_infos)
 
         # 6. 모든 루프가 끝난 후, 마지막으로 처리된 경로에 대해 스캔을 요청
-        if scan_enabled and last_scan_path is not None:
+        if scan_enabled and last_scan_path is not None and not config.get('드라이런', False):
             logger.info(f"모든 파일 처리 완료. 마지막 경로 스캔 요청: {last_scan_path}")
             CensoredTask.__request_plex_mate_scan(last_scan_path)
 
@@ -319,6 +240,10 @@ class Task:
                 # (YES) 메타 검색을 시도합니다.
                 logger.debug(f"'{label}' -> 메타 검색 시도")
                 meta_info = Task.__search_meta(pure_code)
+
+                delay_seconds = config.get('파일당딜레이', 0)
+                if delay_seconds > 0:
+                    time.sleep(delay_seconds)
 
                 if meta_info:
                     # (성공) -> '메타매칭시이동폴더'
@@ -370,7 +295,7 @@ class Task:
     def __search_meta(pure_code):
         """메타 검색 헬퍼 함수"""
         try:
-            meta_module = Task.get_meta_module()
+            meta_module = CensoredTask.get_meta_module('jav_uncensored')
             if not meta_module: return None
             search_result = meta_module.search(pure_code, manual=False)
             best_match = next((item for item in search_result if item.get('score', 0) >= 95), None)
@@ -380,43 +305,5 @@ class Task:
             logger.error(f"'{pure_code}' 메타 검색 중 예외: {e}")
         return None
 
-
-    @staticmethod
-    def __add_meta_no_path():
-        """매칭 실패 영상을 주기적으로 재시도하기 위해 스캔 목록에 추가합니다."""
-        config = Task.config
-        meta_no_path_str = config.get('매칭실패시이동경로', '').strip()
-        if not meta_no_path_str: return []
-
-        meta_no_path = Path(meta_no_path_str)
-        if not meta_no_path.is_dir(): return []
-
-        retry_every = config.get("매칭실패재시도주기", 0)
-        if retry_every <= 0: return []
-        
-        last_retry_str = ModelSetting.get("jav_uncensored_meta_no_last_retry")
-        if (datetime.now() - datetime.fromisoformat(last_retry_str)).days < retry_every: return []
-        
-        ModelSetting.set("jav_uncensored_meta_no_last_retry", datetime.now().isoformat())
-        logger.info(f"매칭 실패 영상 재시도 폴더를 스캔 목록에 추가: {meta_no_path}")
-        return [meta_no_path]
-
-
-    # ====================================================================
-    # --- 유틸리티 및 레거시 함수들 ---
-    # ====================================================================
-
-
-    @staticmethod
-    def get_meta_module():
-        """Uncensored 전용 메타데이터 모듈 로더"""
-        try:
-            if Task.metadata_module is None:
-                Task.metadata_module = F.PluginManager.get_plugin_instance("metadata").get_module("jav_uncensored")
-            return Task.metadata_module
-        except Exception as e:
-            logger.debug(f"Exception: {e}")
-            logger.debug(traceback.format_exc())
-            return None
 
 

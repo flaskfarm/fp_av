@@ -9,11 +9,13 @@ from typing import Generator
 
 from .setup import P, logger
 
-EXTENSION = "mp4|avi|mkv|ts|wmv|m2ts|smi|srt|ass|m4v|flv|asf|mpg|ogm"
+# EXTENSION = "mp4|avi|mkv|ts|wmv|m2ts|smi|srt|ass|m4v|flv|asf|mpg|ogm"
+
+VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".ts", ".wmv", ".m2ts", "mts", ".m4v", ".flv", ".asf", ".mpg", ".ogm"}
+SUBTITLE_EXTS = {".srt", ".smi", ".ass", ".ssa", "idx", "sub", ".sup", ".ttml", ".vtt"}
 
 class ToolExpandFileProcess:
-    sub_exts = [".srt", ".sup", ".smi", ".ass", ".ssa", ".vtt"]
-    
+
     ##########################
     # preprocess_cleanup
     ##########################
@@ -54,7 +56,8 @@ class ToolExpandFileProcess:
     def _is_legit_file(cls, path: PathLike, min_size: int = 0):
         if not path.is_file():
             return False
-        return path.stat().st_size >= min_size * 1024**2 or path.suffix.lower() in cls.sub_exts
+        return path.stat().st_size >= min_size * 1024**2 or path.suffix.lower() in SUBTITLE_EXTS
+
 
     ##########################
     # preprocess_listdir
@@ -64,23 +67,19 @@ class ToolExpandFileProcess:
         source = Path(source)
         if not source.is_dir():
             return
-        #errpath = Path(errpath)
-        #if not errpath.is_dir():
-        #    return
+
         if disallowed_keys is None:
             disallowed_keys = []
 
         min_size = config.get('최소크기', 0)
         disallowed_keys = config.get('파일처리하지않을파일명', [])
 
-        special_parser_rules = config.get('레이블특수처리규칙')
-        cleanup_list = config.get('파일명정리목록')
-
         files = []
         for file in cls._iterdir(source, min_size=min_size):
-            if file.suffix.lower() in cls.sub_exts:
+            if file.suffix.lower() in SUBTITLE_EXTS:
                 files.append(file)
                 continue
+
             newdir = None
             if len(file.name) == 40 and file.name.isalnum():
                 newdir = errpath.joinpath("[FILENAME HASHED]")
@@ -88,24 +87,15 @@ class ToolExpandFileProcess:
                 newdir = errpath.joinpath("[FILENAME TOO LONG]")
             elif any(p in file.name.lower() for p in map(str.lower, disallowed_keys)):
                 newdir = errpath.joinpath("[FILENAME NOT ALLOWED]")
-            elif cls.parse_jav_filename(file.name, special_parser_rules, cleanup_list) is None:
-                newdir = errpath.joinpath("[FILENAME CANT CHANGE]")
             else:
-                #try:
-                #    from .secret import Secret
-                #    error_type = Secret.run_ffprobe(file)
-                #    if error_type is not None:
-                #        newdir = errpath.joinpath(error_type)
-                #except ImportError:
-                #    pass
-                pass
+                files.append(file)
+                continue
 
             if newdir is not None:
                 newdir.mkdir(exist_ok=True)
                 newfile = newdir.joinpath(file.name)
                 shutil.move(file, newfile)
-            else:
-                files.append(file)
+
         return files
 
 
@@ -122,33 +112,36 @@ class ToolExpandFileProcess:
         try:
             # 전처리
             cleaned_base = cls._preprocess_base(base, cleanup_list=cleanup_list)
-            code_part, remaining_part = None, ""
+            parsed_code, remaining_part = None, ""
 
             # 품번 추출
             if parsing_rules:
-                # 1. 모드에 맞는 특수 규칙 목록을 가져옴
                 special_key = f"{mode}_special_rules"
                 special_rules = parsing_rules.get(special_key, [])
-
-                # 2. 범용 규칙 목록을 가져옴
                 generic_rules = parsing_rules.get('generic_rules', [])
-
-                # 3. 두 규칙 리스트를 합쳐서 하나의 통합된 파서 함수를 호출
                 all_rules = special_rules + generic_rules
                 if all_rules:
-                    code_part, remaining_part = cls._apply_parsing_rules(cleaned_base, all_rules)
+                    parsed_code, remaining_part = cls._apply_parsing_rules(cleaned_base, all_rules)
 
-            if not code_part:
-                code_part, remaining_part = cls._apply_fallback_rules(original_filename)
+            if not parsed_code:
+                parsed_code, remaining_part = cls._apply_fallback_rules(cleaned_base)
 
-            if code_part:
-                # 패딩(zfill) 처리는 Censored 모드일 때만 적용
-                if mode == 'censored' and '-' in code_part:
-                    parts = code_part.rsplit('-', 1)
-                    if len(parts) == 2 and parts[1].isdigit():
-                        code_part = f"{parts[0]}-{str(int(parts[1])).zfill(3)}"
+            if parsed_code:
+                label_part, number_part = parsed_code
 
-                return { 'code': code_part.lower(), 'part': remaining_part, 'ext': ext }
+                # Censored 모드일 때만 숫자 부분에 패딩(zfill) 적용
+                if mode == 'censored' and number_part.isdigit():
+                    number_part = str(int(number_part)).zfill(3)
+
+                code_part = f"{label_part}-{number_part}" if number_part else label_part
+
+                return {
+                    'code': code_part,
+                    'label': label_part,
+                    'number': number_part,
+                    'part': remaining_part,
+                    'ext': ext
+                }
 
         except Exception as e:
             logger.error(f"파일명 파싱 중 오류 발생: {original_filename} - {e}")
@@ -187,7 +180,6 @@ class ToolExpandFileProcess:
         base = re.sub(r'^[hn]_\d', '', base, flags=re.I)
 
         # 화질/코덱 등 '명백한' 접미사 제거
-        # -c, -5 등 모호한 패턴은 여기서 처리하지 않음
         misc_suffixes = r'[-_. ](720p|1080p|2160p|2k|4k|8k|sd|fhd|uhd|hq|uhq|h264|h265|hevc)'
         combined_pattern = r'(%s)?$' % (misc_suffixes)
         base = re.sub(combined_pattern, '', base, flags=re.I)
@@ -224,44 +216,34 @@ class ToolExpandFileProcess:
                 match = re.match(pattern, base, re.I)
                 if match:
                     # logger.debug(f"      - 매칭 성공! 그룹: {match.groups()}")
-
-                    result_code = ""
-                    template_parts = template.split('|')
                     groups = match.groups()
+                    label_part, num_part = "", ""
 
-                    if len(template_parts) == 2: # label|number 형식
-                        label_template, num_template = template_parts
+                    if '|' in template: # label|number 형식
+                        label_template, num_template = [t.strip() for t in template.split('|', 1)]
                         try:
                             label_part = label_template.format(*groups)
                             num_part = num_template.format(*groups)
-                            result_code = f"{label_part}-{num_part}"
-                            logger.debug(f"        - pattern='{pattern}'")
                         except IndexError as e:
-                            logger.error(f"        - 템플릿 적용 오류 (그룹 인덱스): {e}. 그룹 수: {len(groups)}, 템플릿: '{template}'")
+                            logger.error(f"        - 템플릿 적용 오류 (그룹 인덱스): {e}...")
                             continue
-
-                    else: # 단일 템플릿 형식
+                    else: # 단일 템플릿 형식. 전체를 label, number는 빈 값으로 간주
                         try:
-                            result_code = template.format(*groups)
-                            logger.debug(f"        - 템플릿 적용 (단일): -> '{result_code}'")
+                            label_part = template.format(*groups)
                         except IndexError as e:
-                            logger.error(f"        - 템플릿 적용 오류 (그룹 인덱스): {e}. 그룹 수: {len(groups)}, 템플릿: '{template}'")
+                            logger.error(f"        - 템플릿 적용 오류 (그룹 인덱스): {e}...")
                             continue
 
                     matched_string = match.group(0)
-                    start_index = base.find(matched_string)
-                    remaining_part = base[start_index + len(matched_string):]
+                    remaining_part = base[base.find(matched_string) + len(matched_string):]
 
                     logger.debug(f"  - Parsed: {base} > label='{label_part}', num='{num_part}', part='{remaining_part}'")
-                    return result_code.lower(), remaining_part
-                # else:
-                #    logger.debug(f"      - 매칭 실패") # 로그가 너무 많아질 수 있어 주석 처리
+                    return (label_part.lower(), num_part), remaining_part
 
             except (IndexError, re.error) as e:
                 logger.error(f"    - 규칙 {i+1} 적용 중 예외 발생: {e} - '{line}'")
 
-        # logger.debug("  - 모든 파싱 규칙 매칭 실패.")
-        return None, ""
+        return None, "" # 실패 시 (None, "") 반환
 
 
     @classmethod
@@ -292,17 +274,29 @@ class ToolExpandFileProcess:
 
 
     @classmethod
-    def _apply_fallback_rules(cls, original_filename):
-        """[헬퍼 5/5] 최종 폴백으로 원본 파일명에서 품번을 찾습니다."""
-
-        base, _ = os.path.splitext(original_filename.lower())
-
-        match = re.search(r"\b(?P<code>[a-z]+\d*[-_]?\d+)(?P<part>.*)", base, re.I)
+    def _apply_fallback_rules(cls, base):
+        """[헬퍼 5/5] 최종 폴백으로 원본 파일명에서 (label, number) 튜플을 찾습니다."""
+        match = re.search(r"\b(?P<code>[a-z]+[-_]?\d+)(?P<part>.*)", base, re.I)
         if match:
             code = match.group('code').replace('_', '-')
-            part = match.group('part')
-            logger.debug(f"  - 폴백 규칙 매칭 성공: code='{code}', part='{part}'")
-            return code, part
+            part_str = match.group('part')
+
+            label_part, number_part = "", ""
+            if '-' in code:
+                parts = code.rsplit('-', 1)
+                if len(parts) == 2 and parts[1].isdigit():
+                    label_part, number_part = parts
+                else: # carib-123125-001 같은 경우
+                    label_part = code
+            else: # 하이픈 없는 경우
+                match_ln = re.match(r'([a-zA-Z]+)(\d+)', code)
+                if match_ln:
+                    label_part, number_part = match_ln.groups()
+                else:
+                    label_part = code
+
+            logger.debug(f"  - 폴백 규칙 매칭 성공: label='{label_part}', number='{number_part}', part='{part_str}'")
+            return (label_part, number_part), part_str
 
         logger.debug("  - 폴백 규칙 매칭 실패")
         return None, ""

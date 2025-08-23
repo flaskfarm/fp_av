@@ -45,6 +45,7 @@ class ModuleJavUncensored(PluginModuleBase):
             f"{self.name}_make_image": "False",
             # etc
             f"{self.name}_scan_with_plex_mate": "False",
+            f"{self.name}_dry_run": "False",
         }
         self.web_list_model = ModelJavUncensoredItem
 
