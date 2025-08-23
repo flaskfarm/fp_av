@@ -22,7 +22,7 @@ setting = {
                         'name': '처리결과',
                     },
                     {
-                        'uri': 'files/jav_censored.md',
+                        'uri': 'manual/files/jav_censored.md',
                         'name': '매뉴얼',
                     },
                 ]
@@ -36,8 +36,7 @@ setting = {
                         'name': '설정',
                     },
                     {
-                        'uri': 'files/jav_censored_yaml.md',
-                        'name': '매뉴얼',
+                        'uri': 'manual/files/jav_censored_yaml.md', 'name': '매뉴얼',
                     },
                 ]
             },

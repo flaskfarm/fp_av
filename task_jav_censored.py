@@ -11,11 +11,10 @@ import requests
 from datetime import datetime
 
 ModelSetting = P.ModelSetting
-from .tool import ToolExpandFileProcess, UtilFunc
+from .tool import ToolExpandFileProcess, UtilFunc, VIDEO_EXTS, SUBTITLE_EXTS
 from .model_jav_censored import ModelJavCensoredItem
 from support import SupportYaml, SupportUtil, SupportDiscord
 from .task_make_yaml import Task as TaskMakeYaml
-from types import SimpleNamespace
 
 
 class TaskBase:
@@ -24,9 +23,9 @@ class TaskBase:
         logger.info(args)
         job_type = args[0]
 
-        if job_type == 'default':
+        if job_type in ['default', 'dry_run']:
             config = {
-                "이름": "default",
+                "이름": job_type,
                 "사용": True,
                 "처리실패이동폴더": ModelSetting.get("jav_censored_temp_path").strip(),
                 "중복파일이동폴더": ModelSetting.get("jav_censored_remove_path").strip(),
@@ -66,15 +65,20 @@ class TaskBase:
                 # etc
                 "파일당딜레이": ModelSetting.get_int("jav_censored_delay_per_file"),
                 "PLEXMATE스캔": ModelSetting.get_bool("jav_censored_scan_with_plex_mate"),
+                "드라이런": ModelSetting.get_bool("jav_censored_dry_run"),
             }
 
             config['PLEXMATE_URL'] = F.SystemModelSetting.get('ddns')
+
+            is_dry_run = config.get('드라이런')
+            if is_dry_run:
+                logger.warning("Dry Run 모드가 활성화되었습니다. (파일 이동/DB 저장 없음)")
+                config['이름'] = "dry_run"
 
             TaskBase.__task(config)
 
         elif job_type == 'yaml':
             try:
-                # jav_censored_yaml 모듈의 설정을 사용
                 yaml_filepath = ModelSetting.get('jav_censored_yaml_filepath') 
                 if not yaml_filepath:
                     logger.error("YAML 파일 경로가 설정되지 않았습니다.")
@@ -84,9 +88,8 @@ class TaskBase:
                 for job in yaml_data.get('작업', []):
                     if not job.get('사용', True):
                         continue
-                    job['재시도'] = False # YAML 작업은 재시도 비활성화
+                    job['재시도'] = False
 
-                    # 공통 실행 헬퍼 호출 (각 job에 대해)
                     TaskBase.__task(job)
             except Exception as e:
                 logger.error(f"YAML 파일 처리 중 오류 발생: {str(e)}")
@@ -98,16 +101,14 @@ class TaskBase:
         """
         작업 설정을 받아 공통 로직(사이트 목록 추가 등)을 적용하고 실제 Task를 실행하는 헬퍼 메소드
         """
-        # 1. 사이트 목록 로드
+        # 사이트 목록 로드
         site_list_to_search = []
-        # YAML 작업에서 이 옵션을 개별적으로 설정할 수 있게 하려면 config.get()을 사용
         use_dmm_mgs_only = config.get('메타검색에공식사이트만사용', ModelSetting.get_bool("jav_censored_meta_dvd_use_dmm_only"))
 
         if use_dmm_mgs_only:
             logger.info(f"작업 [{config.get('이름', 'N/A')}] : DMM+MGS만 사용하도록 설정됨.")
             site_list_to_search = ['dmm', 'mgstage']
         else:
-            # logger.info(f"작업 [{config.get('이름', 'N/A')}] : 메타데이터 플러그인 설정을 따르도록 설정됨.")
             try:
                 meta_module = F.PluginManager.get_plugin_instance("metadata").get_module("jav_censored")
                 if meta_module:
@@ -124,10 +125,7 @@ class TaskBase:
 
         config['사이트목록'] = site_list_to_search
 
-        # 2. 파싱 규칙을 config에 추가
-        Task._load_parsing_rules(config)
-
-        # 3. 실제 Task 실행
+        # 실제 Task 실행
         Task.start(config)
 
 
@@ -141,57 +139,94 @@ class SafeFormatter(string.Formatter):
 
 class Task:
     config = None
-    metadata_module = None
+    metadata_modules = {}
+
+
+    @staticmethod
+    def __start_shared_logic(config, task_context):
+        """[공용] 모든 JAV 파일 처리 작업의 공통 실행 흐름을 담당합니다."""
+
+        # 0. 파싱 규칙 로드 (meta_module_name을 컨텍스트에서 가져옴)
+        Task._load_parsing_rules(config)
+
+        # 1. 파일 목록 수집
+        logger.debug(f"처리 파일 목록 생성")
+        files = Task.__collect_initial_files(task_context['module_name'])
+        if not files:
+            logger.info("처리할 파일이 없습니다.")
+            return
+
+        # 2. 파싱 및 목록 분리
+        logger.debug(f"파싱 및 기본 정보 추출")
+        execution_plan = []
+        no_label_files = []
+
+        for file in files:
+            parsing_rules = config.get('파싱규칙')
+            cleanup_list = config.get('품번파싱제외키워드')
+            info = Task.__prepare_initial_info(file, parsing_rules, cleanup_list, mode=task_context['parse_mode'])
+
+            if info:
+                execution_plan.append(info)
+            else:
+                no_label_files.append(file)
+
+        logger.debug(f"파싱 성공: {len(execution_plan)}개, 파싱 실패(NO LABEL): {len(no_label_files)}개")
+
+        # 2-1. 파싱 실패 파일 처리
+        if no_label_files:
+            for file in no_label_files:
+                Task.__move_to_no_label_folder(file)
+
+        if not execution_plan:
+            logger.debug("파싱에 성공한 파일이 없어 작업을 종료합니다.")
+            return
+
+        # 3. 분할 파일 처리
+        if config.get('분할파일처리', True):
+            logger.debug(f"분할 파일 세트 식별 및 처리 시작")
+            Task.__process_part_sets(execution_plan)
+
+        # 4. 최종 파일명 조립
+        for info in execution_plan:
+            Task.__assemble_final_plan(info)
+
+        # 5. 실제 파일 이동
+        task_context['execute_plan'](execution_plan, task_context['db_model'])
+
 
     @staticmethod
     def start(config):
         Task.config = config
 
-        # 1-1. [Extract] 파일 목록 수집
-        logger.debug(f"처리 파일 목록 생성")
-        files = Task.__collect_initial_files()
-        if not files:
-            logger.info("처리할 파일이 없습니다.")
-            return
+        # censored 작업에 필요한 고유한 정보(컨텍스트)를 정의
+        task_context = {
+            'module_name': 'jav_censored',
+            'parse_mode': 'censored',
+            'execute_plan': Task.__execute_plan,
+            'db_model': ModelJavCensoredItem,
+        }
 
-        # 1-2. [Transform] 파싱 및 기본 정보 추출
-        logger.debug(f"파싱 및 기본 정보 추출")
-        execution_plan = []
-        for file in files:
-            parsing_rules = Task.config.get('파싱규칙')
-            cleanup_list = Task.config.get('품번파싱제외키워드')
-
-            info = Task.__prepare_initial_info(file, parsing_rules, cleanup_list, mode='censored')
-            if info:
-                execution_plan.append(info)
-
-        # 1-3. [Enrichment] -c 파트 모호성 해결
-        logger.debug(f"'-C' 파트 처리")
-        Task.__resolve_c_part_ambiguity(execution_plan)
-
-        # 1-4. [Assemble] 최종 파일명 및 경로 조립
-        for info in execution_plan:
-            Task.__assemble_final_plan(info)
-
-        # 1-5. [Load] 메타데이터 처리 및 실제 파일 이동
-        Task.__execute_plan(execution_plan)
+        Task.__start_shared_logic(config, task_context)
 
 
     # ====================================================================
     # --- 헬퍼 함수들 (Helper Functions) ---
     # ====================================================================
 
+
     @staticmethod
     def _load_parsing_rules(config):
         """ metadata 플러그인에서 통합 파싱 규칙을 로드하여 config에 추가합니다."""
         try:
-            meta_module = F.PluginManager.get_plugin_instance("metadata").get_module("jav_censored")
+            meta_module = Task.get_meta_module('jav_censored')
+            
             if meta_module and hasattr(meta_module, 'get_jav_settings'):
                 jav_settings = meta_module.get_jav_settings()
                 parsing_rules = jav_settings.get('jav_parsing_rules', {})
                 config['파싱규칙'] = parsing_rules
+                
                 if parsing_rules:
-                    # 각 규칙 리스트의 길이를 계산하여 로그 메시지 생성
                     rule_counts = [f"{key}: {len(value)}개" for key, value in parsing_rules.items() if isinstance(value, list)]
                     logger.debug(f"메타데이터 플러그인에서 통합 파싱 규칙을 로드했습니다. (규칙 수: {', '.join(rule_counts)})")
                 else:
@@ -205,26 +240,101 @@ class Task:
 
 
     @staticmethod
-    def __collect_initial_files():
-        """파일 시스템에서 처리할 초기 파일 목록을 수집합니다."""
-        no_censored_path = Path(Task.config['처리실패이동폴더'].strip())
+    def __move_to_no_label_folder(file_path: Path):
+        """품번 추출에 실패한 파일을 '처리실패이동폴더/[NO LABEL]'로 이동시킵니다."""
+        config = Task.config
+
+        target_root_str = config.get('처리실패이동폴더', '').strip()
+        if not target_root_str:
+            logger.warning(f"'{file_path.name}'을 이동할 '처리실패이동폴더'가 설정되지 않았습니다.")
+            return
+
+        target_dir = Path(target_root_str).joinpath("[NO LABEL]")
+
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target_file = target_dir.joinpath(file_path.name)
+
+            if target_file.exists():
+                # is_duplicate 대신 간단한 존재 여부만 체크
+                logger.warning(f"NO LABEL 폴더에 동일 파일명이 존재하여 원본을 삭제합니다: {file_path.name}")
+                file_path.unlink()
+                return
+
+            shutil.move(file_path, target_file)
+            logger.info(f"품번 추출 실패 파일을 이동: {target_file}")
+        except Exception as e:
+            logger.error(f"{file_path.name} 이동 중 오류: {e}")
+
+
+    @staticmethod
+    def __add_meta_no_path(module_name):
+        """메타 매칭 실패 파일을 주기적으로 재시도하기 위해 스캔 목록에 추가합니다."""
+        meta_no_path_str = ModelSetting.get(f'{module_name}_meta_no_path').strip()
+        if not meta_no_path_str: return []
+
+        meta_no_path = Path(meta_no_path_str)
+        if not meta_no_path.is_dir(): return []
+
+        retry_every = ModelSetting.get_int(f"{module_name}_meta_no_retry_every")
+        if retry_every <= 0: return []
+        
+        last_retry_key = f"{module_name}_meta_no_last_retry"
+        last_retry_str = ModelSetting.get(last_retry_key)
+        if (datetime.now() - datetime.fromisoformat(last_retry_str)).days < retry_every:
+            return []
+        
+        ModelSetting.set(last_retry_key, datetime.now().isoformat())
+        logger.info(f"매칭 실패 파일 재시도 폴더를 스캔 목록에 추가: {meta_no_path}")
+        return [meta_no_path]
+
+
+    @staticmethod
+    def __collect_initial_files(module_name):
+        """파일 시스템에서 처리할 초기 파일 목록을 수집하고, 통계를 반환합니다."""
+        config = Task.config
+        no_censored_path = Path(config['처리실패이동폴더'].strip())
         if not no_censored_path.is_dir():
             logger.warning("'처리 실패시 이동 폴더'가 유효하지 않아 작업을 중단합니다.")
-            return []
+            return [], {}
 
-        src_list = Task.get_path_list(Task.config['다운로드폴더'])
-        # 재시도 로직은 메타 검색 단계에서 별도로 처리하는 것이 더 좋으므로 여기서는 제외.
+        src_list = Task.get_path_list(config['다운로드폴더'])
+        src_list.extend(Task.__add_meta_no_path(module_name))
 
         all_files = []
         for src in src_list:
-            ToolExpandFileProcess.preprocess_cleanup(src, Task.config.get('최소크기', 0), Task.config.get('최대기간', 0))
-            _f = ToolExpandFileProcess.preprocess_listdir(src, no_censored_path, Task.config)
+            ToolExpandFileProcess.preprocess_cleanup(
+                src, 
+                config.get('최소크기', 0), 
+                config.get('최대기간', 0)
+            )
+            _f = ToolExpandFileProcess.preprocess_listdir(src, no_censored_path, config)
             all_files.extend(_f or [])
 
-        # 파일 목록을 반환하기 전에 자연수 정렬
-        if all_files:
-            # logger.debug(f"총 {len(all_files)}개의 파일을 자연수 기준으로 정렬합니다.")
-            all_files.sort(key=lambda p: [int(c) if c.isdigit() else c.lower() for c in re.split('([0-9]+)', p.name)])
+        from collections import Counter
+        stats = Counter()
+        for file in all_files:
+            ext = file.suffix.lower()
+            if ext in VIDEO_EXTS:
+                stats['video'] += 1
+            elif ext in SUBTITLE_EXTS:
+                stats['subtitle'] += 1
+            else:
+                stats['etc'] += 1
+
+        total_count = sum(stats.values())
+        video_count = stats.get('video', 0)
+        subtitle_count = stats.get('subtitle', 0)
+        etc_count = stats.get('etc', 0)
+        
+        log_msg = f"파일 수집 완료: 총 {total_count}개 "
+        log_msg += f"(동영상: {video_count}개, 자막: {subtitle_count}개"
+        if etc_count > 0:
+            log_msg += f", 기타: {etc_count}개"
+        log_msg += ")"
+        logger.info(log_msg)
+
+        all_files.sort(key=lambda p: [int(c) if c.isdigit() else c.lower() for c in re.split('([0-9]+)', p.name)])
 
         return all_files
 
@@ -235,67 +345,163 @@ class Task:
 
         parsed = ToolExpandFileProcess.parse_jav_filename(file.name, parsing_rules, cleanup_list, mode=mode)
         if not parsed:
-            logger.warning(f"파싱 실패: {file.name}")
-            return None
+            return {'is_parsed': False, 'original_file': file, 'file_type': 'unparsed'}
 
-        # 파트 넘버를 미리 해석하여 저장
-        parsed_part_type = ToolExpandFileProcess._parse_part_number(parsed['part'])
+        ext = file.suffix.lower()
+        if ext in VIDEO_EXTS:
+            file_type = 'video'
+        elif ext in SUBTITLE_EXTS:
+            file_type = 'subtitle'
+        else:
+            file_type = 'etc'
 
         info = {
             'original_file': file,
             'file_size': file.stat().st_size,
+            'file_type': file_type,
+            'is_parsed': True,
             'pure_code': parsed['code'],
+            'label': parsed['label'],
+            'number': parsed['number'],
             'raw_part': parsed['part'],
-
-            'parsed_part_type': parsed_part_type,
+            'parsed_part_type': ToolExpandFileProcess._parse_part_number(parsed['part']),
             'ext': parsed['ext'],
             'meta_info': None,
         }
-
-        logger.debug(
-            f"- Parsed Code: '{info['pure_code']}', Part: '{info['parsed_part_type']}'"
-        )
-
+        logger.debug(f"- Parsed: code='{info['pure_code']}', label='{info['label']}', number='{info['number']}', part='{info['parsed_part_type']}'")
         return info
 
 
     @staticmethod
-    def __resolve_c_part_ambiguity(plan_list):
-        """전체 목록의 문맥을 사용하여 '-c' 파트의 모호성을 해결합니다."""
-        # 품번별로 파일 인덱스를 그룹화하여 검색 속도 향상
-        code_map = {}
-        for i, info in enumerate(plan_list):
-            code = info['pure_code']
-            if code not in code_map:
-                code_map[code] = []
-            code_map[code].append(i)
+    def __process_part_sets(execution_plan):
+        """
+        분할 파일 처리 로직
+        """
+        from collections import defaultdict
 
-        for i, info in enumerate(plan_list):
-            # 'c' 파트이고, 아직 해석되지 않은 경우에만('cd3') 검사
-            if info['raw_part'].strip(' ._-').lower() == 'c' and info['parsed_part_type'] == 'cd3':
-                is_series = False
-                # 동일 품번 그룹 내에서만 다른 파트를 찾음
-                for other_index in code_map.get(info['pure_code'], []):
-                    if i == other_index: continue
-                    other_info = plan_list[other_index]
-                    other_part = other_info['raw_part'].strip(' ._-').lower()
-                    if other_part in ['a', 'b', 'd']:
-                        is_series = True
-                        logger.debug(f"{info['pure_code']}-c: 멀티 파트로 처리(cd3)")
-                        break
+        # 0. 동영상 파일 중, 이미 처리된 'cdN' 형식의 파일은 제외
+        unprocessed_infos = []
+        video_infos = [info for info in execution_plan if info.get('file_type') == 'video']
+        for info in video_infos:
+            if re.search(r'cd\d+$', info['original_file'].stem, re.IGNORECASE):
+                logger.debug(f"분할 파일 세트 처리에서 제외: 이미 처리된 파일명 형식입니다 - {info['original_file'].name}")
+            else:
+                unprocessed_infos.append(info)
 
-                # 시리즈가 아닌 것으로 판명되면, 해석된 파트를 무효화
-                if not is_series:
-                    info['parsed_part_type'] = "" # 자막 등으로 간주하고 파트 정보 제거
-                    logger.debug(f"{info['pure_code']}-c: 멀티 파트가 아닌 것으로 처리")
+        potential_sets = defaultdict(list)
+
+        for info in unprocessed_infos:
+            stem = info['original_file'].stem
+            if not info['number']:
+                continue
+
+            # 1. 원본 stem에서 파싱된 number가 나타나는 모든 위치를 찾음
+            indices = [m.start() for m in re.finditer(re.escape(info['number']), stem, re.IGNORECASE)]
+            if not indices:
+                continue
+
+            for idx in indices:
+                # 2. number의 각 위치를 기준으로 뒷부분(tail)을 자름
+                tail_part = stem[idx + len(info['number']):]
+
+                # 3. tail에서 숫자 파트 또는 알파벳 파트 패턴을 찾음
+                pattern = r'^(?:(?P<part_num>[-_.\s]\d{1,2})|(?P<part_alpha>[-_.\s]?[a-zA-Z]))\b(?P<suffix>.*)$'
+                match = re.match(pattern, tail_part, re.IGNORECASE)
+
+                if match:
+                    parts = match.groupdict()
+                    part_str = ''
+
+                    if parts['part_num']:
+                        part_str = re.search(r'\d{1,2}', parts['part_num']).group(0)
+                    elif parts['part_alpha']:
+                        part_str = re.search(r'[a-zA-Z]', parts['part_alpha']).group(0)
+
+                    if not (part_str.isdigit() or (part_str.isalpha() and len(part_str) == 1)):
+                        continue
+
+                    # 4. 유효한 파트를 찾았으면, 정보를 수집하고 루프 탈출
+                    prefix_part = stem[:idx]
+                    suffix_part = parts['suffix']
+
+                    part_type = 'digit' if part_str.isdigit() else 'alpha'
+                    group_key = (prefix_part.lower(), info['pure_code'], suffix_part.lower(), part_type)
+
+                    potential_sets[group_key].append({
+                        'info': info, 'part_str': part_str,
+                        'original_prefix': prefix_part,
+                        'original_number': info['number'],
+                        'original_suffix': suffix_part
+                    })
+                    break # 가장 먼저 발견된 유효한 조합을 사용
+
+        # 5. 세트 검증 및 정보 주입
+        for group_key, items in potential_sets.items():
+            if len(items) < 2:
+                continue
+
+            part_type = group_key[3]
+
+            # 5a. 파트 넘버를 수치로 변환
+            numeric_parts = []
+            for item in items:
+                part_str = item['part_str']
+                if part_type == 'digit':
+                    numeric_parts.append(int(part_str))
+                else: # alpha
+                    numeric_parts.append(ord(part_str.lower()))
+
+            # 5b. 시퀀스 시작점 및 연속성 검사
+            sorted_numeric = sorted(numeric_parts)
+
+            starts_correctly = (part_type == 'digit' and sorted_numeric[0] == 1) or \
+                               (part_type == 'alpha' and sorted_numeric[0] == ord('a'))
+
+            is_continuous = all(sorted_numeric[i] == sorted_numeric[0] + i for i in range(len(sorted_numeric)))
+
+            if not (starts_correctly and is_continuous):
+                logger.debug(f"'{items[0]['info']['pure_code']}' 그룹은 유효한 시퀀스(시작점/연속성)가 아님: {[item['part_str'] for item in items]}")
+                continue
+
+            # 5c. 세트 확정 및 정보 주입
+            representative_code = items[0]['info']['pure_code']
+            logger.info(f"'{representative_code}' 그룹에서 유효한 분할 파일 세트를 발견했습니다.")
+            total_size = sum(item['info']['file_size'] for item in items)
+
+            sorted_items = sorted(zip(numeric_parts, items), key=lambda x: x[0])
+
+            for i, (_, item) in enumerate(sorted_items):
+                info = item['info']
+                info['is_part_of_set'] = True
+                info['parsed_part_type'] = f"cd{i + 1}"
+                info['part_set_code'] = representative_code
+                info['part_set_total_size'] = total_size
+                info['part_set_prefix'] = item['original_prefix']
+                info['part_set_number'] = item['original_number']
+                info['part_set_suffix'] = item['original_suffix']
 
 
     @staticmethod
     def __assemble_final_plan(info):
-        """최종 search_name, newfilename, target_dir을 조립합니다."""
+        """최종 search_name, newfilename을 조립합니다."""
         config = Task.config
-        info['search_name'] = info['pure_code'] # search_name은 항상 순수 품번
 
+        if info.get('is_part_of_set'):
+            code = info['part_set_code']
+            part = info['parsed_part_type']
+            prefix = info['part_set_prefix']
+            number = info['part_set_number']
+            suffix = info['part_set_suffix']
+            total_size = info['part_set_total_size']
+            ext = info['ext']
+
+            original_template = f"{prefix}{number}_{suffix}"
+
+            info['newfilename'] = f"{code} [{original_template}({total_size})]{part}{ext}"
+            info['search_name'] = code
+            return
+
+        info['search_name'] = info['pure_code']
         part_to_use = info['parsed_part_type'] if config.get('분할파일처리', True) else ""
 
         if not config.get('파일명변경', True):
@@ -310,7 +516,7 @@ class Task:
 
 
     @staticmethod
-    def __execute_plan(execution_plan):
+    def __execute_plan(execution_plan, db_model):
         """메타 검색, 파일 처리를 실행하고 이동 경로 변경 시 스캔을 요청합니다."""
         config = Task.config
 
@@ -324,23 +530,20 @@ class Task:
         total_files = len(execution_plan)
         logger.info(f"처리할 품번 그룹 {len(code_groups)}개 (총 파일 {total_files}개)")
 
+        delay_seconds = config.get('파일당딜레이', 0)
         scan_enabled = config.get("PLEXMATE스캔", False)
-        if config.get('메타사용') == 'using' or scan_enabled:
-            delay_seconds = config.get('파일당딜레이', 0)
-        else:
-            delay_seconds = 0
         processed_count = 0
         last_scan_path = None
 
         for idx, (pure_code, group_infos) in enumerate(code_groups.items()):
-            if delay_seconds > 0 and idx > 0:
-                time.sleep(delay_seconds)
 
             try:
                 # 1. 그룹 대표 정보로 target_dir과 meta_info를 한 번만 결정
                 meta_target_dir, meta_move_type, meta_info = None, None, None
                 if config.get('메타사용') == 'using':
                     meta_target_dir, meta_move_type, meta_info = Task.__get_target_with_meta(pure_code)
+                    if delay_seconds > 0:
+                        time.sleep(delay_seconds)
 
                 if config.get('메타사용') == 'using':
                     target_dir = meta_target_dir
@@ -353,8 +556,11 @@ class Task:
 
                 # 2. 스캔 경로 변경 감지 및 요청
                 if scan_enabled and target_dir != last_scan_path and last_scan_path is not None:
-                    logger.info(f"경로 변경 감지. 이전 경로 스캔 요청: {last_scan_path}")
-                    Task.__request_plex_mate_scan(last_scan_path)
+                    if config.get('드라이런', False):
+                        logger.info(f"[Dry Run] 경로 변경 감지. 이전 경로 스캔 요청(Pass): {last_scan_path}")
+                    else:
+                        logger.info(f"경로 변경 감지. 이전 경로 스캔 요청: {last_scan_path}")
+                        Task.__request_plex_mate_scan(last_scan_path)
 
                 # 3. 그룹 내 각 파일 처리
                 for info in group_infos:
@@ -366,7 +572,7 @@ class Task:
                     info['move_type'] = move_type
                     info['meta_info'] = meta_info
 
-                    entity = Task.__file_move_logic(info, ModelJavCensoredItem)
+                    entity = Task.__file_move_logic(info, db_model)
 
                     if entity and entity.move_type is not None:
                         entity.save()
@@ -380,7 +586,7 @@ class Task:
                 logger.error(traceback.format_exc())
 
         # 5. 모든 루프가 끝난 후, 마지막으로 처리된 경로에 대해 스캔을 요청
-        if scan_enabled and last_scan_path is not None:
+        if scan_enabled and last_scan_path is not None and not config.get('드라이런', False):
             logger.info(f"모든 파일 처리 완료. 마지막 경로 스캔 요청: {last_scan_path}")
             Task.__request_plex_mate_scan(last_scan_path)
 
@@ -389,6 +595,7 @@ class Task:
     def __file_move_logic(info, model_class):
         """실제 파일 이동, 중복 처리, DB 기록, 방송 등을 담당합니다."""
         config = Task.config
+        is_dry_run = config.get('드라이런', False)
 
         file = info['original_file']
         newfilename = info.get('newfilename', file.name)
@@ -404,6 +611,24 @@ class Task:
 
         target_dir.mkdir(parents=True, exist_ok=True)
         newfile = target_dir.joinpath(newfilename)
+
+        # Dry Run 모드일 경우, 로그만 남기고 조기 리턴
+        if is_dry_run:
+            log_msg = f"[Dry Run] 원본: {file}\n"
+            log_msg += f"         이동: {newfile} (타입: {move_type})\n"
+
+            # 중복 검사도 시뮬레이션
+            if UtilFunc.is_duplicate(file, newfile):
+                remove_path_str = config.get('중복파일이동폴더', '').strip()
+                if not remove_path_str:
+                    log_msg += f"         결과: 중복 파일로 감지되어 삭제될 예정"
+                else:
+                    log_msg += f"         결과: 중복 파일로 감지되어 {remove_path_str}로 이동될 예정"
+            else:
+                log_msg += f"         결과: 정상적으로 이동될 예정"
+
+            logger.warning(log_msg)
+            return None # DB 저장을 막기 위해 None 반환
 
         # 1. 매칭 실패 (no_meta) 케이스 처리
         if move_type == "no_meta":
@@ -447,7 +672,6 @@ class Task:
 
         # 3. 최종 라이브러리로 이동
         if file.exists():
-            move_success = False
             try:
                 # 3a. 파일 이동
                 shutil.move(file, newfile)
@@ -488,7 +712,7 @@ class Task:
 
     @staticmethod
     def __get_target_with_meta_dvd(search_name):
-        meta_module = Task.get_meta_module()
+        meta_module = Task.get_meta_module('jav_censored')
         if meta_module is None:
             logger.error("메타데이터 플러그인을 찾을 수 없습니다. 메타 검색을 건너뜁니다.")
             return None, None
@@ -732,7 +956,6 @@ class Task:
             ori_name, _ = os.path.splitext(original_filename)
             ori_name = ori_name.replace("[", "(").replace("]", ")").strip()
 
-            # --- os.stat()을 완전히 제거하고 file_size 인자만 사용 ---
             if option == "original":
                 return f"{new_name} [{ori_name}]{new_ext}"
             if option == "original_bytes":
@@ -773,22 +996,32 @@ class Task:
         return ret
 
 
-    metadata_module = None
     @staticmethod
-    def get_meta_module():
+    def get_meta_module(module_name):
+        """[공용] 지정된 이름의 메타데이터 모듈을 로드하고 캐싱합니다."""
         try:
-            if Task.metadata_module is None:
-                Task.metadata_module = F.PluginManager.get_plugin_instance("metadata").get_module("jav_censored")
-            return Task.metadata_module
-        except Exception as exception:
-            logger.debug("Exception:%s", exception)
+            if module_name not in Task.metadata_modules:
+                instance = F.PluginManager.get_plugin_instance("metadata")
+                if instance:
+                    Task.metadata_modules[module_name] = instance.get_module(module_name)
+                else:
+                    Task.metadata_modules[module_name] = None
+            
+            return Task.metadata_modules[module_name]
+        except Exception as e:
+            logger.error(f"메타데이터 모듈 '{module_name}' 로딩 중 오류: {e}")
             logger.debug(traceback.format_exc())
-            return None # 모듈 로딩 실패 시 None 반환
+            Task.metadata_modules[module_name] = None
+            return None
 
 
     @staticmethod
     def __request_plex_mate_scan(scan_path: Path, db_item=None):
         """Plex Mate에 웹 API를 통해 스캔을 요청합니다."""
+        if Task.config.get('드라이런', False):
+            logger.warning(f"[Dry Run] Plex Mate 스캔 요청 시뮬레이션: {scan_path}")
+            return
+
         try:
             base_url = Task.config.get('PLEXMATE_URL')
             if not base_url:
