@@ -25,110 +25,83 @@ class TaskBase:
         logger.info(args)
         job_type = args[0]
 
+        base_config = {
+            "이름": job_type,
+            "사용": True,
+            "처리실패이동폴더": ModelSetting.get("jav_censored_temp_path").strip(),
+            "중복파일이동폴더": ModelSetting.get("jav_censored_remove_path").strip(),
+            "다운로드폴더": ModelSetting.get("jav_censored_download_path").splitlines(),
+            "라이브러리폴더": ModelSetting.get("jav_censored_target_path").splitlines(),
+
+            "최소크기": ModelSetting.get_int("jav_censored_min_size"),
+            "최대기간": ModelSetting.get_int("jav_censored_max_age"),
+            "품번파싱제외키워드": ModelSetting.get_list("jav_censored_filename_cleanup_list", "|"),
+            "파일처리하지않을파일명": ModelSetting.get_list("jav_censored_filename_not_allowed_list", "|"),
+
+            "이동폴더포맷": ModelSetting.get("jav_censored_folder_format"),
+            "메타사용": ModelSetting.get("jav_censored_use_meta"),
+            "파일명변경": ModelSetting.get_bool("jav_censored_change_filename"),
+            "파일명에미디어정보포함": ModelSetting.get_bool("jav_censored_include_media_info_in_filename"),
+            "분할파일처리": ModelSetting.get_bool("jav_censored_process_part_files"),
+            "원본파일명포함여부": ModelSetting.get_bool("jav_censored_include_original_filename"),
+            "원본파일명처리옵션": ModelSetting.get("jav_censored_include_original_filename_option"),
+
+            "메타검색에공식사이트만사용": ModelSetting.get_bool("jav_censored_meta_dvd_use_dmm_only"),
+            "메타매칭시이동폴더": ModelSetting.get("jav_censored_meta_dvd_path").strip(),
+            "VR영상이동폴더": ModelSetting.get("jav_censored_meta_dvd_vr_path").strip(),
+            "메타매칭실패시이동폴더": ModelSetting.get("jav_censored_meta_no_path").strip(),
+
+            "메타매칭제외레이블": ModelSetting.get_list("jav_censored_meta_dvd_labels_exclude", ","),
+            "메타매칭포함레이블": ModelSetting.get_list("jav_censored_meta_dvd_labels_include", ','),
+            "배우조건매칭시이동폴더포맷": ModelSetting.get("jav_censored_folder_format_actor").strip(),
+            "메타매칭실패시이동": ModelSetting.get_bool("jav_censored_meta_no_move"),
+            "메타매칭실패시파일명변경": ModelSetting.get_bool("jav_censored_meta_no_change_filename"),
+
+            "재시도": True,
+            "방송": False,
+            # 부가파일 생성 옵션 추가
+            "부가파일생성_YAML": ModelSetting.get_bool("jav_censored_make_yaml"),
+            "부가파일생성_NFO": ModelSetting.get_bool("jav_censored_make_nfo"),
+            "부가파일생성_IMAGE": ModelSetting.get_bool("jav_censored_make_image"),
+
+            # etc
+            "파일당딜레이": ModelSetting.get_int("jav_censored_delay_per_file"),
+            "PLEXMATE스캔": ModelSetting.get_bool("jav_censored_scan_with_plex_mate"),
+            "드라이런": ModelSetting.get_bool("jav_censored_dry_run"),
+            'PLEXMATE_URL': F.SystemModelSetting.get('ddns'),
+        }
+
         if job_type in ['default', 'dry_run']:
-            config = {
-                "이름": job_type,
-                "사용": True,
-                "처리실패이동폴더": ModelSetting.get("jav_censored_temp_path").strip(),
-                "중복파일이동폴더": ModelSetting.get("jav_censored_remove_path").strip(),
-                "다운로드폴더": ModelSetting.get("jav_censored_download_path").splitlines(),
-                "라이브러리폴더": ModelSetting.get("jav_censored_target_path").splitlines(),
-
-                "최소크기": ModelSetting.get_int("jav_censored_min_size"),
-                "최대기간": ModelSetting.get_int("jav_censored_max_age"),
-                "품번파싱제외키워드": ModelSetting.get_list("jav_censored_filename_cleanup_list", "|"),
-                "파일처리하지않을파일명": ModelSetting.get_list("jav_censored_filename_not_allowed_list", "|"),
-
-                "이동폴더포맷": ModelSetting.get("jav_censored_folder_format"),
-                "메타사용": ModelSetting.get("jav_censored_use_meta"),
-                "파일명변경": ModelSetting.get_bool("jav_censored_change_filename"),
-                "파일명에미디어정보포함": ModelSetting.get_bool("jav_censored_include_media_info_in_filename"),
-                "분할파일처리": ModelSetting.get_bool("jav_censored_process_part_files"),
-                "원본파일명포함여부": ModelSetting.get_bool("jav_censored_include_original_filename"),
-                "원본파일명처리옵션": ModelSetting.get("jav_censored_include_original_filename_option"),
-
-                "메타검색에공식사이트만사용": ModelSetting.get_bool("jav_censored_meta_dvd_use_dmm_only"),
-                "메타매칭시이동폴더": ModelSetting.get("jav_censored_meta_dvd_path").strip(),
-                "VR영상이동폴더": ModelSetting.get("jav_censored_meta_dvd_vr_path").strip(),
-                "메타매칭실패시이동폴더": ModelSetting.get("jav_censored_meta_no_path").strip(),
-
-                "메타매칭제외레이블": ModelSetting.get_list("jav_censored_meta_dvd_labels_exclude", ","),
-                "메타매칭포함레이블": ModelSetting.get_list("jav_censored_meta_dvd_labels_include", ','),
-                "배우조건매칭시이동폴더포맷": ModelSetting.get("jav_censored_folder_format_actor").strip(),
-                "메타매칭실패시이동": ModelSetting.get_bool("jav_censored_meta_no_move"),
-                "메타매칭실패시파일명변경": ModelSetting.get_bool("jav_censored_meta_no_change_filename"),
-
-                "재시도": True,
-                "방송": False,
-                # 부가파일 생성 옵션 추가
-                "부가파일생성_YAML": ModelSetting.get_bool("jav_censored_make_yaml"),
-                "부가파일생성_NFO": ModelSetting.get_bool("jav_censored_make_nfo"),
-                "부가파일생성_IMAGE": ModelSetting.get_bool("jav_censored_make_image"),
-
-                # etc
-                "파일당딜레이": ModelSetting.get_int("jav_censored_delay_per_file"),
-                "PLEXMATE스캔": ModelSetting.get_bool("jav_censored_scan_with_plex_mate"),
-                "드라이런": ModelSetting.get_bool("jav_censored_dry_run"),
-            }
-
-            config['PLEXMATE_URL'] = F.SystemModelSetting.get('ddns')
-
-            is_dry_run = config.get('드라이런')
-            if is_dry_run:
-                logger.warning("Dry Run 모드가 활성화되었습니다. (파일 이동/DB 저장 없음)")
-                config['이름'] = "dry_run"
+            config = base_config.copy()
+            config["이름"] = job_type
+            if config.get('드라이런', False):
+                logger.warning(f"'{config['이름']}' 작업: Dry Run 모드가 활성화되었습니다.")
 
             TaskBase.__task(config)
 
         elif job_type == 'yaml':
+            yaml_filepath = args[1]
             try:
-                yaml_filepath = ModelSetting.get('jav_censored_yaml_filepath') 
-                if not yaml_filepath:
-                    logger.error("YAML 파일 경로가 설정되지 않았습니다.")
-                    return
-
                 yaml_data = SupportYaml.read_yaml(yaml_filepath)
                 for job in yaml_data.get('작업', []):
-                    if not job.get('사용', True):
-                        continue
-                    job['재시도'] = False
+                    if not job.get('사용', True): continue
 
-                    TaskBase.__task(job)
+                    config = base_config.copy()
+                    config.update(job)
+
+                    if config.get('드라이런', False):
+                        logger.warning(f"'{config.get('이름', 'YAML Job')}' 작업: Dry Run 모드가 활성화되었습니다.")
+
+                    TaskBase.__task(config)
             except Exception as e:
-                logger.error(f"YAML 파일 처리 중 오류 발생: {str(e)}")
-                logger.error(traceback.format_exc())
+                logger.error(f"YAML 파일 처리 중 오류 발생: {e}")
 
 
     @staticmethod
     def __task(config):
-        """
-        작업 설정을 받아 공통 로직(사이트 목록 추가 등)을 적용하고 실제 Task를 실행하는 헬퍼 메소드
-        """
-        # 사이트 목록 로드
-        site_list_to_search = []
-        use_dmm_mgs_only = config.get('메타검색에공식사이트만사용', ModelSetting.get_bool("jav_censored_meta_dvd_use_dmm_only"))
+        config['parse_mode'] = 'censored'
+        Task._load_extended_settings(config)
 
-        if use_dmm_mgs_only:
-            logger.info(f"작업 [{config.get('이름', 'N/A')}] : DMM+MGS만 사용하도록 설정됨.")
-            site_list_to_search = ['dmm', 'mgstage']
-        else:
-            try:
-                meta_module = F.PluginManager.get_plugin_instance("metadata").get_module("jav_censored")
-                if meta_module:
-                    site_list_to_search = meta_module.P.ModelSetting.get_list('jav_censored_order', ',')
-                    if not site_list_to_search:
-                        raise ValueError("메타데이터 플러그인의 사이트 순서 설정이 비어있습니다.")
-                    logger.debug(f"메타데이터 플러그인에서 가져온 검색 순서: {site_list_to_search}")
-                else:
-                    raise ModuleNotFoundError("메타데이터 플러그인을 로드할 수 없습니다.")
-            except Exception as e:
-                logger.error(f"메타데이터 플러그인에서 사이트 목록을 가져오는 데 실패했습니다: {e}")
-                logger.warning("기본 검색 순서(dmm, mgstage)를 사용합니다.")
-                site_list_to_search = ['dmm', 'mgstage']
-
-        config['사이트목록'] = site_list_to_search
-
-        # 실제 Task 실행
         Task.start(config)
 
 
@@ -252,6 +225,7 @@ class Task:
                 config['이미처리된파일명패턴'] = misc_settings.get('already_processed_pattern', r'^[a-zA-Z0-9]+-[a-zA-Z0-9-_]+(\s\[.*\](?:cd\d+)?)$')
                 config['허용된숫자레이블'] = misc_settings.get('allowed_numeric_labels', r'^(741|1pon|10mu).*?')
                 config['scan_with_no_meta'] = misc_settings.get('scan_with_no_meta', True)
+                config['메타검색에사용할사이트'] = misc_settings.get('메타검색에사용할사이트', None)
 
                 # --- 커스텀 경로 규칙 ---
                 custom_path_rules_yaml = jav_settings.get('meta_custom_path', [])
@@ -950,25 +924,44 @@ class Task:
         if not target_root_path.is_dir():
             raise NotADirectoryError(f"'정상 매칭시 이동 경로'가 존재하지 않음: {target_root_str}")
 
-        site_list_to_search = config.get('사이트목록', [])
-        if not site_list_to_search:
+        # 사용할 사이트 목록 및 점수 결정
+        site_search_list = []
+        custom_search_settings = config.get('메타검색에사용할사이트')
+
+        if custom_search_settings: # 고급 설정이 있을 경우
+            logger.debug("고급 메타 검색 설정을 사용하여 검색합니다.")
+            site_search_list = custom_search_settings
+            if config.get('메타검색에공식사이트만사용', False):
+                site_search_list = [s for s in site_search_list if s['사이트'] in ['dmm', 'mgstage']]
+                logger.debug(f"공식 사이트만 사용: {site_search_list}")
+        else: # 고급 설정이 없을 경우 (기본 동작)
+            try:
+                site_order = meta_module.P.ModelSetting.get_list('jav_censored_order', ',')
+                site_search_list = [{'사이트': site, '점수': 95} for site in site_order]
+            except Exception as e:
+                logger.warning(f"메타데이터 플러그인에서 사이트 순서 로드 실패: {e}")
+                site_search_list = [{'사이트': 'dmm', '점수': 95}, {'사이트': 'mgstage', '점수': 95}]
+
+        if not site_search_list:
             logger.warning("검색할 사이트 목록이 비어있습니다. 메타 검색을 건너뜁니다.")
             return None, None
 
-        for site in site_list_to_search:
+        # 결정된 목록으로 순차 검색
+        search_name = info['pure_code']
+        for search_rule in site_search_list:
+            site_name = search_rule['사이트']
+            min_score = search_rule['점수']
             try:
-                #logger.debug(f"메타 검색 시도: 사이트=[{site}], 검색어=[{search_name}]")
-                search_result_list = meta_module.search2(search_name, site, manual=False)
-
+                search_result_list = meta_module.search2(search_name, site_name, manual=False)
                 if not search_result_list:
                     continue
 
-                # 95점 이상인 첫 번째 결과를 찾으면 바로 사용
-                best_match = next((item for item in search_result_list if item.get('score', 0) >= 95), None)
-
+                best_match = next((item for item in search_result_list if item.get('score', 0) >= min_score), None)
                 if best_match:
-                    logger.info(f"매칭 성공! 사이트=[{site}], 검색어=[{search_name}], 코드=[{best_match['code']}], 점수=[{best_match['score']}]")
-                    meta_info = meta_module.info(best_match["code"], keyword=search_name, fp_meta_mode=True)
+                    logger.info(f"매칭 성공! 사이트=[{site_name}], 검색어=[{search_name}], 코드=[{best_match['code']}], 점수=[{best_match['score']}] (기준: {min_score})")
+                    # 메타검색시 파일처리용으로, 프로세스 단순화 목적으로 fp_meta_mode를 추가했지만,
+                    # NFO/YAML 생성 등을 고려하지 않았음...필요하면 추후 로직 업데이트 고려. 지금은 False로 비활성화
+                    meta_info = meta_module.info(best_match["code"], keyword=search_name, fp_meta_mode=False)
 
                     if meta_info:
                         current_target_root = target_root_path
@@ -979,7 +972,7 @@ class Task:
                         # 메타 정보가 있을 때는 메타의 레이블을 기준으로, 없으면 파싱된 레이블 기준
                         effective_info = info.copy()
                         effective_info['label'] = meta_info.get("originaltitle", info['pure_code']).split('-')[0]
-                        
+
                         matched_rule = Task.__find_custom_path_rule(effective_info, custom_rules)
                         if matched_rule:
                             custom_path = Path(matched_rule['path'])
@@ -1003,10 +996,10 @@ class Task:
                         return current_target_root.joinpath(*folders), meta_info
 
             except Exception as e:
-                logger.error(f"'{site}' 사이트 검색 중 예외 발생: {e}")
+                logger.error(f"'{site_name}' 사이트 검색 중 예외 발생: {e}")
                 logger.debug(traceback.format_exc())
 
-        logger.info(f"'{search_name}'에 대한 유효한(95점 이상) 메타 정보를 찾지 못했습니다.")
+        logger.info(f"'{search_name}'에 대한 유효한 메타 정보를 찾지 못했습니다.")
 
         meta_dvd_labels_include = map(str.strip, config.get('메타매칭포함레이블', []))
         if label in map(str.lower, meta_dvd_labels_include):
