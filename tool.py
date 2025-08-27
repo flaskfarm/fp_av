@@ -493,15 +493,20 @@ class ToolExpandFileProcess:
             # --- 프레임레이트 계산 (폴백 적용) ---
             fr_str = '0/0'
             if video_stream:
-                # 1순위: avg_frame_rate, 2순위: r_frame_rate
                 fr_str = video_stream.get('avg_frame_rate') or video_stream.get('r_frame_rate') or '0/0'
-                if fr_str == '0/0': # 두 값이 모두 없거나 0/0일 경우 로그
+                if fr_str == '0/0':
                     logger.debug(f"{file_path.name}: 유효한 프레임레이트 정보를 찾을 수 없습니다.")
 
-            num, den = map(float, fr_str.split('/'))
-            raw_fps = num / den if den != 0 else 0.0
+            num_str, den_str = fr_str.split('/')
 
-            # 프레임레이트 표준화
+            # 분자/분모가 0이거나 정수가 아닌 경우 대비
+            try:
+                num, den = float(num_str), float(den_str)
+                raw_fps = num / den if den != 0 else 0.0
+            except ValueError:
+                raw_fps = 0.0
+
+            # 표준 프레임레이트 값으로 보정
             fps_tolerance = ffprobe_config.get('tolerance', {}).get('fps', 0.01)
             standard_fps_list = ffprobe_config.get('standard_fps_values', [])
             standardized_fps = raw_fps
@@ -509,6 +514,12 @@ class ToolExpandFileProcess:
                 if abs(raw_fps - std_fps) <= fps_tolerance:
                     standardized_fps = std_fps
                     break
+
+            # 소수점 3자리까지 반올림
+            final_fps_float = round(standardized_fps, 3)
+
+            # 문자열로 변환 시 .0 제거
+            final_fps_str = f"{final_fps_float}".rstrip('0').rstrip('.')
 
             # --- 오디오 비트레이트 계산 (폴백 적용) ---
             a_bitrate_kbps = 0
@@ -553,8 +564,8 @@ class ToolExpandFileProcess:
                 'v_codec': v_codec,
                 'a_codec': a_codec,
                 'a_bitrate': a_bitrate_kbps,
-                'fps_float': standardized_fps,
-                'fps': f"{standardized_fps}".rstrip('0').rstrip('.'),
+                'fps_float': final_fps_float,
+                'fps': final_fps_float,
                 'tag_title': tag_title,
             })
             return media_info
