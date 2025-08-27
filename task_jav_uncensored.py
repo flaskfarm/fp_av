@@ -107,6 +107,7 @@ class TaskBase:
 
         try:
             logger.debug("Uncensored 모듈에서 Censored의 고급 YAML 설정을 로드합니다.")
+            config['parse_mode'] = 'uncensored'
             CensoredTask._load_extended_settings(config)
         except Exception as e:
             logger.error(f"Censored 고급 설정 로드 중 오류 발생: {e}")
@@ -122,14 +123,11 @@ class TaskBase:
 
 
 class Task:
-    config = None
     metadata_module = None
 
 
     @staticmethod
     def start(config):
-        Task.config = config
-        CensoredTask.config = config
 
         task_context = {
             'module_name': 'jav_uncensored',
@@ -147,16 +145,11 @@ class Task:
 
 
     @staticmethod
-    def __get_target_with_meta(info):
+    def __get_target_with_meta(config, info):
         """
         [Uncensored 전용] 메타 검색 및 경로를 결정합니다.
         Censored의 로직을 기반으로 하되, Uncensored의 특성을 반영합니다.
         """
-        config = Task.config
-        if config is None:
-            logger.error("Task.config가 초기화되지 않았습니다. 처리를 중단합니다.")
-            return None, None, None
-
         label = info['label'].lower()
         meta_info = None
         move_type = "default"
@@ -170,7 +163,7 @@ class Task:
             # 임시로 폴더 포맷을 변경하여 경로 생성
             original_format = config['이동폴더포맷']
             config['이동폴더포맷'] = user_defined_format
-            folders = CensoredTask.process_folder_format(info)
+            folders = CensoredTask.process_folder_format(config, info, user_defined_format)
             config['이동폴더포맷'] = original_format
 
             # 절대 경로로 해석하여 반환
@@ -179,7 +172,7 @@ class Task:
         # [Priority 2] 메타 검색 로직
         if config.get('메타사용') == 'using' and label in config.get('메타검색지원레이블', set()):
             meta_module = CensoredTask.get_meta_module('jav_uncensored')
-            meta_info = Task.__search_meta(meta_module, info['pure_code'])
+            meta_info = Task.__search_meta(config, meta_module, info['pure_code'])
 
             if meta_info:
                 # 메타 검색 성공
@@ -205,6 +198,7 @@ class Task:
         original_format = config['이동폴더포맷']
         use_custom_format = False
 
+        folder_format_to_use = config['이동폴더포맷']
         custom_rules = config.get('커스텀경로규칙', [])
         effective_info = info.copy()
         if meta_info:
@@ -220,7 +214,7 @@ class Task:
                     config['이동폴더포맷'] = matched_rule['format']
                     use_custom_format = True
 
-        folders = CensoredTask.process_folder_format(info, meta_info)
+        folders = CensoredTask.process_folder_format(config, info, folder_format_to_use, meta_info)
 
         if use_custom_format:
             config['이동폴더포맷'] = original_format
@@ -229,11 +223,10 @@ class Task:
 
 
     @staticmethod
-    def __execute_plan(execution_plan, db_model):
+    def __execute_plan(config, execution_plan, db_model):
         """
         Uncensored 모듈의 최종 실행 함수. Censored와 로직 통일.
         """
-        config = Task.config
         sub_config = config.get('확장_자막우선처리', {})
         
         code_groups = {}
@@ -262,7 +255,7 @@ class Task:
                 is_subbed_target = False
                 if sub_config.get('처리활성화') and sub_config.get('규칙'):
                     if any(kw in representative_info['original_file'].name.lower() for kw in sub_config['내장자막키워드']) or \
-                       CensoredTask._find_external_subtitle(representative_info, sub_config):
+                       CensoredTask._find_external_subtitle(config, representative_info, sub_config):
                         is_subbed_target = True
 
                 if is_subbed_target:
@@ -272,9 +265,9 @@ class Task:
                     # 자막 우선 처리 시에도 메타 검색은 선택적으로 수행
                     if config.get('메타사용') == 'using' and representative_info['label'].lower() in config.get('메타검색지원레이블', set()):
                         meta_module = CensoredTask.get_meta_module('jav_uncensored')
-                        meta_info = Task.__search_meta(meta_module, pure_code)
-                    
-                    folders = CensoredTask.process_folder_format(representative_info, meta_info)
+                        meta_info = Task.__search_meta(config, meta_module, pure_code)
+
+                    folders = CensoredTask.process_folder_format(config, representative_info, meta_info)
                     target_dir = base_path.joinpath(*folders)
                     move_type = "subbed"
                 else:
@@ -299,14 +292,14 @@ class Task:
                             info['final_media_info'] = info.get('media_info') if use_media_info_in_filename else None
 
                     # Uncensored 전용 경로 결정 헬퍼 호출
-                    target_dir, move_type, meta_info = Task.__get_target_with_meta(representative_info)
+                    target_dir, move_type, meta_info = Task.__get_target_with_meta(config, representative_info)
 
                 # --- 스캔 요청 전 조건 확인 ---
                 successful_move_types = {'subbed', 'override', 'meta_success', 'default', 'custom_path'}
 
                 if scan_enabled and target_dir != last_scan_path and last_scan_path is not None:
                     if last_move_type in successful_move_types:
-                        CensoredTask.__request_plex_mate_scan(last_scan_path)
+                        CensoredTask.__request_plex_mate_scan(config, last_scan_path)
 
                 # --- 그룹 내 각 파일 처리 루프 ---
                 for info in group_infos:
@@ -318,7 +311,7 @@ class Task:
                     info['move_type'] = move_type
                     info['meta_info'] = meta_info
 
-                    entity = CensoredTask.__file_move_logic(info, db_model)
+                    entity = CensoredTask.__file_move_logic(config, info, db_model)
                     if entity and entity.move_type is not None:
                         entity.save()
 
@@ -336,7 +329,7 @@ class Task:
             successful_move_types = {'subbed', 'override', 'meta_success', 'default', 'custom_path'}
             if last_move_type in successful_move_types:
                 logger.info(f"모든 파일 처리 완료. 마지막 경로 스캔 요청: {last_scan_path}")
-                CensoredTask.__request_plex_mate_scan(last_scan_path)
+                CensoredTask.__request_plex_mate_scan(config, last_scan_path)
 
 
     @staticmethod
@@ -353,12 +346,12 @@ class Task:
 
 
     @staticmethod
-    def __search_meta(meta_module, pure_code):
+    def __search_meta(config, meta_module, pure_code):
         """메타 검색을 수행하고 딜레이를 적용하는 단일 책임 헬퍼."""
         if not meta_module:
             return None
         try:
-            delay_seconds = Task.config.get('파일당딜레이', 0)
+            delay_seconds = config.get('파일당딜레이', 0)
             if delay_seconds > 0:
                 time.sleep(delay_seconds)
 

@@ -133,15 +133,11 @@ class TaskBase:
 
 
 class Task:
-    config = None
     metadata_modules = {}
 
 
     @staticmethod
     def start(config):
-        Task.config = config
-
-        # censored 작업에 필요한 고유한 정보(컨텍스트)를 정의
         task_context = {
             'module_name': 'jav_censored',
             'parse_mode': 'censored',
@@ -156,8 +152,6 @@ class Task:
     def __start_shared_logic(config, task_context):
         """모든 JAV 파일 처리 작업의 공통 실행 흐름을 담당합니다."""
 
-        Task.config = config # config 설정
-
         config['module_name'] = task_context.get('module_name')
         config['parse_mode'] = task_context.get('parse_mode')
 
@@ -166,7 +160,7 @@ class Task:
 
         # 1. 파일 목록 수집
         logger.debug(f"처리 파일 목록 생성")
-        files = Task.__collect_initial_files(task_context['module_name'])
+        files = Task.__collect_initial_files(config, task_context['module_name'])
         if not files:
             logger.info("처리할 파일이 없습니다.")
             return
@@ -174,13 +168,10 @@ class Task:
         # 2. 파싱 및 기본 정보 추출, 목록 분리
         logger.debug(f"파싱 및 기본 정보 추출")
         execution_plan = []
-        no_label_files = [] 
         unparsed_infos = []
 
         for file in files:
-            parsing_rules = config.get('파싱규칙')
-            cleanup_list = config.get('품번파싱제외키워드')
-            info = Task.__prepare_initial_info(file, parsing_rules, cleanup_list, mode=task_context['parse_mode'])
+            info = Task.__prepare_initial_info(config, file)
 
             if info.get('is_parsed'):
                 execution_plan.append(info)
@@ -191,7 +182,7 @@ class Task:
         if unparsed_infos:
             logger.debug(f"파싱 실패 파일 {len(unparsed_infos)}개 이동 시작")
             for info in unparsed_infos:
-                Task.__move_to_no_label_folder(info['original_file'])
+                Task.__move_to_no_label_folder(config, info['original_file'])
 
         if not execution_plan:
             logger.debug("파싱에 성공한 파일이 없어 작업을 종료합니다.")
@@ -214,7 +205,7 @@ class Task:
             is_set = any(info.get('is_part_of_set') for info in group_infos)
             if is_set:
                 if config.get('파일명에미디어정보포함'):
-                    merge_result = Task._merge_and_standardize_media_info(group_infos, ext_config)
+                    merge_result = Task._merge_and_standardize_media_info(group_infos, config)
                     if merge_result.get('is_valid_set'):
                         for info in group_infos:
                             info['final_media_info'] = merge_result['final_media']
@@ -235,7 +226,8 @@ class Task:
             info['newfilename'] = ToolExpandFileProcess.assemble_filename(config, info)
 
         # 6. 실제 파일 이동 (각 모듈의 __execute_plan 호출)
-        task_context['execute_plan'](execution_plan, task_context['db_model'])
+        task_context['execute_plan'](config, execution_plan, task_context['db_model'])
+
 
     # ====================================================================
     # --- 헬퍼 함수들 (Helper Functions) ---
@@ -360,9 +352,8 @@ class Task:
 
 
     @staticmethod
-    def __move_to_no_label_folder(file_path: Path):
+    def __move_to_no_label_folder(config, file_path: Path):
         """품번 추출에 실패한 파일을 '처리실패이동폴더/[NO LABEL]'로 이동시킵니다."""
-        config = Task.config
 
         target_root_str = config.get('처리실패이동폴더', '').strip()
         if not target_root_str:
@@ -410,9 +401,9 @@ class Task:
 
 
     @staticmethod
-    def __collect_initial_files(module_name):
+    def __collect_initial_files(config, module_name):
         """파일 시스템에서 처리할 초기 파일 목록을 수집하고, 통계를 반환합니다."""
-        config = Task.config
+
         no_censored_path = Path(config['처리실패이동폴더'].strip())
         if not no_censored_path.is_dir():
             logger.warning("'처리 실패시 이동 폴더'가 유효하지 않아 작업을 중단합니다.")
@@ -441,12 +432,12 @@ class Task:
                 stats['subtitle'] += 1
             else:
                 stats['etc'] += 1
-        
+
         total_count = sum(stats.values())
         video_count = stats.get('video', 0)
         subtitle_count = stats.get('subtitle', 0)
         etc_count = stats.get('etc', 0)
-        
+
         log_msg = f"파일 수집 완료: 총 {total_count}개 "
         log_msg += f"(동영상: {video_count}개, 자막: {subtitle_count}개"
         # etc 파일이 있을 때만 로그에 포함
@@ -462,8 +453,11 @@ class Task:
 
 
     @staticmethod
-    def __prepare_initial_info(file, parsing_rules, cleanup_list, mode='censored'):
+    def __prepare_initial_info(config, file):
         """파일을 파싱하여 메타 검색 이전에 가능한 모든 정보를 추출합니다."""
+        parsing_rules = config.get('파싱규칙')
+        cleanup_list = config.get('품번파싱제외키워드')
+        mode = config.get('parse_mode')
 
         parsed = ToolExpandFileProcess.parse_jav_filename(file.name, parsing_rules, cleanup_list, mode=mode)
         if not parsed:
@@ -490,8 +484,8 @@ class Task:
             'ext': parsed['ext'],
             'meta_info': None,
         }
-        ext_config = Task.config.get('확장_ffprobe', {})
-        if Task.config.get('파일명에미디어정보포함') and ext_config.get('enable') and info.get('file_type') == 'video':
+        ext_config = config.get('확장_ffprobe', {})
+        if config.get('파일명에미디어정보포함') and ext_config.get('enable') and info.get('file_type') == 'video':
             info['media_info'] = ToolExpandFileProcess._get_media_info(file, ext_config)
 
         return info
@@ -608,14 +602,13 @@ class Task:
 
 
     @staticmethod
-    def __execute_plan(execution_plan, db_model):
+    def __execute_plan(config, execution_plan, db_model):
         """
         최종 실행 함수.
         """
-        config = Task.config
         ext_config = config.get('확장_ffprobe', {})
         sub_config = config.get('확장_자막우선처리', {})
-        
+
         # 품번 그룹화
         code_groups = {}
         for info in execution_plan:
@@ -647,14 +640,15 @@ class Task:
                     if any(kw in representative_info['original_file'].name.lower() for kw in sub_config['내장자막키워드']):
                         is_subbed_target = True
                     # 2. 외부 자막 파일 확인
-                    elif Task._find_external_subtitle(representative_info, sub_config):
+                    elif Task._find_external_subtitle(config, representative_info, sub_config):
                         is_subbed_target = True
 
                 if is_subbed_target:
                     logger.info(f"'{pure_code}' 그룹: 자막 파일 조건 충족, 우선 처리합니다.")
                     rule = sub_config['규칙']
                     base_path = Path(rule['경로'])
-                    folders = Task.process_folder_format(representative_info) # 그룹 대표 정보로 폴더 생성
+                    folder_format = rule.get('폴더구조') or config.get('이동폴더포맷')
+                    folders = Task.process_folder_format(config, representative_info, folder_format) # 그룹 대표 정보로 폴더 생성
                     target_dir = base_path.joinpath(*folders)
                     move_type = "subbed"
                     meta_info = None # 자막 우선 처리는 메타 검색 안 함
@@ -680,12 +674,12 @@ class Task:
 
                     # 2. 경로 결정 (그룹 단위로 한 번만)
                     if config.get('메타사용') == 'using':
-                        target_dir, move_type, meta_info = Task.__get_target_with_meta(representative_info)
+                        target_dir, move_type, meta_info = Task.__get_target_with_meta(config, representative_info)
                         if delay_seconds > 0: time.sleep(delay_seconds)
                     else:
                         move_type = "normal"
                         target_paths = Task.get_path_list(config['라이브러리폴더'])
-                        folders = Task.process_folder_format(representative_info)
+                        folders = Task.process_folder_format(config, representative_info, config['이동폴더포맷'])
                         target_dir = Path(target_paths[0]).joinpath(*folders) if target_paths else None
 
                 # --- 스캔 요청 전 조건 확인 ---
@@ -694,7 +688,7 @@ class Task:
                 if scan_enabled and target_dir != last_scan_path and last_scan_path is not None:
                     # 이전 경로가 성공적인 이동 경로였을 때만 스캔
                     if last_move_type in successful_move_types:
-                        Task.__request_plex_mate_scan(last_scan_path)
+                        Task.__request_plex_mate_scan(config, last_scan_path)
 
                 # --- 그룹 내 각 파일 처리 루프 ---
                 for info in group_infos:
@@ -721,8 +715,8 @@ class Task:
                         'move_type': current_move_type,
                         'meta_info': meta_info
                     })
-                    
-                    entity = Task.__file_move_logic(info, db_model)
+
+                    entity = Task.__file_move_logic(config, info, db_model)
                     if entity and entity.move_type is not None:
                         entity.save()
 
@@ -741,13 +735,12 @@ class Task:
             successful_move_types = {'dvd', 'normal', 'subbed'}
             if last_move_type in successful_move_types:
                 logger.info(f"모든 파일 처리 완료. 마지막 경로 스캔 요청: {last_scan_path}")
-                Task.__request_plex_mate_scan(last_scan_path)
+                Task.__request_plex_mate_scan(config, last_scan_path)
 
 
     @staticmethod
-    def __file_move_logic(info, model_class):
+    def __file_move_logic(config, info, model_class):
         """실제 파일 이동, 중복 처리, DB 기록, 방송 등을 담당합니다."""
-        config = Task.config
         is_dry_run = config.get('드라이런', False)
 
         file = info['original_file']
@@ -860,11 +853,13 @@ class Task:
 
 
     @staticmethod
-    def _merge_and_standardize_media_info(set_infos, ext_config):
+    def _merge_and_standardize_media_info(set_infos, config):
         """
         분할 파일 세트의 미디어 정보를 '필드별'로 비교하여,
         '일치하는 정보만'을 포함하는 대표 미디어 딕셔너리를 생성합니다.
         """
+        ext_config = config.get('확장_ffprobe', {})
+
         # --- 1. 치명적 오류 검사 (비디오/오디오 스트림 부재) ---
         failed_files = []
         valid_media_infos = []
@@ -928,8 +923,8 @@ class Task:
 
 
     @staticmethod
-    def __get_target_with_meta_dvd(info):
-        config = Task.config
+    def __get_target_with_meta_dvd(config, info):
+
         if config is None:
             logger.error("Task.config가 초기화되지 않았습니다. 처리를 중단합니다.")
             return None, None
@@ -941,12 +936,13 @@ class Task:
 
         search_name = info['pure_code']
         label = search_name.split("-")[0]
-        meta_dvd_labels_exclude = map(str.strip, Task.config.get('메타매칭제외레이블', []))
+
+        meta_dvd_labels_exclude = map(str.strip, config.get('메타매칭제외레이블', []))
         if label in map(str.lower, meta_dvd_labels_exclude):
             logger.info("'정식발매 영상 제외 레이블'에 포함: %s", label)
             return None, None
 
-        target_root_str = Task.config.get('메타매칭시이동폴더', '').strip()
+        target_root_str = config.get('메타매칭시이동폴더', '').strip()
         if not target_root_str:
             raise ValueError("'정상 매칭시 이동 경로'가 지정되지 않았습니다.")
 
@@ -954,7 +950,7 @@ class Task:
         if not target_root_path.is_dir():
             raise NotADirectoryError(f"'정상 매칭시 이동 경로'가 존재하지 않음: {target_root_str}")
 
-        site_list_to_search = Task.config.get('사이트목록', [])
+        site_list_to_search = config.get('사이트목록', [])
         if not site_list_to_search:
             logger.warning("검색할 사이트 목록이 비어있습니다. 메타 검색을 건너뜁니다.")
             return None, None
@@ -976,10 +972,10 @@ class Task:
 
                     if meta_info:
                         current_target_root = target_root_path
-                        original_format = Task.config.get('이동폴더포맷')
+                        original_format = config.get('이동폴더포맷')
                         use_custom_format = False
 
-                        custom_rules = Task.config.get('커스텀경로규칙', [])
+                        custom_rules = config.get('커스텀경로규칙', [])
                         # 메타 정보가 있을 때는 메타의 레이블을 기준으로, 없으면 파싱된 레이블 기준
                         effective_info = info.copy()
                         effective_info['label'] = meta_info.get("originaltitle", info['pure_code']).split('-')[0]
@@ -993,14 +989,14 @@ class Task:
                                     config['이동폴더포맷'] = matched_rule['format']
                                     use_custom_format = True
 
-                        folders = Task.process_folder_format(info, meta_info)
+                        folders = Task.process_folder_format(config, info, config['이동폴더포맷'], meta_info)
 
                         if use_custom_format:
                             config['이동폴더포맷'] = original_format
 
                         vr_genres = ["고품질VR", "VR전용", "VR専用", "ハイクオリティVR"]
                         if any(x in (meta_info.get("genre") or []) for x in vr_genres):
-                            vr_path_str = Task.config.get('VR영상이동폴더', '').strip()
+                            vr_path_str = config.get('VR영상이동폴더', '').strip()
                             if vr_path_str:
                                 current_target_root = Path(vr_path_str)
 
@@ -1012,9 +1008,9 @@ class Task:
 
         logger.info(f"'{search_name}'에 대한 유효한(95점 이상) 메타 정보를 찾지 못했습니다.")
 
-        meta_dvd_labels_include = map(str.strip, Task.config.get('메타매칭포함레이블', []))
+        meta_dvd_labels_include = map(str.strip, config.get('메타매칭포함레이블', []))
         if label in map(str.lower, meta_dvd_labels_include):
-            folders = Task.process_folder_format(info)
+            folders = Task.process_folder_format(config, info, config['이동폴더포맷'])
             logger.info("메타 매칭에 실패했지만 '정식발매 영상 포함 레이블'에 해당되어 처리: %s", label)
             return target_root_path.joinpath(*folders), None
 
@@ -1022,8 +1018,8 @@ class Task:
 
 
     @staticmethod
-    def __get_target_with_meta(info):
-        target_dir, meta_info = Task.__get_target_with_meta_dvd(info)
+    def __get_target_with_meta(config, info):
+        target_dir, meta_info = Task.__get_target_with_meta_dvd(config, info)
         if target_dir is not None:
             return target_dir, "dvd", meta_info
 
@@ -1031,7 +1027,7 @@ class Task:
         move_type = "no_meta"
 
         # 설정에서 '메타 없는 영상 이동 경로'를 가져옴
-        no_meta_path_str = Task.config.get('메타매칭실패시이동폴더', '').strip()
+        no_meta_path_str = config.get('메타매칭실패시이동폴더', '').strip()
 
         final_path_obj = None
         # 1. 설정된 경로가 있고, 실제로 존재하는 디렉토리인지 확인
@@ -1041,7 +1037,7 @@ class Task:
             logger.info(f"메타 없음: 설정된 폴더로 이동합니다 - {final_path_obj}")
         else:
             # 2. 설정된 경로가 없거나 유효하지 않으면, '처리실패이동폴더' 아래에 [NO META] 폴더를 사용
-            temp_path_str = Task.config.get('처리실패이동폴더', '').strip()
+            temp_path_str = config.get('처리실패이동폴더', '').strip()
             # Task.start에서 temp_path_str의 유효성은 이미 검증됨
             final_path_obj = Path(temp_path_str).joinpath("[NO META]")
             logger.info(f"메타 없음: 기본 [NO META] 폴더로 이동합니다 - {final_path_obj}")
@@ -1050,12 +1046,12 @@ class Task:
 
 
     @staticmethod
-    def process_folder_format(info, meta_data=None):
+    def process_folder_format(config, info, format_str, meta_data=None):
         """
         파싱 정보(info)를 기반으로 폴더 경로를 생성합니다.
         메타 정보(meta_data)가 있으면 해당 정보를 우선적으로 사용합니다.
         """
-        folder_format = Task.config.get('이동폴더포맷', '').strip()
+        folder_format = format_str.strip()
         if not folder_format:
             return []
 
@@ -1092,7 +1088,7 @@ class Task:
 
         if base_label:
             if base_label[0].isdigit():
-                allowed_regex = Task.config.get('허용된숫자레이블')
+                allowed_regex = config.get('허용된숫자레이블')
                 if allowed_regex and re.match(allowed_regex, base_label, re.IGNORECASE):
                     label_1 = "09"
                     processed_label = base_label
@@ -1132,6 +1128,168 @@ class Task:
         folders = re.sub(r'\s{2,}', ' ', folders).strip()
         final_parts = [part for part in folders.split("/") if part]
         return final_parts
+
+
+    @staticmethod
+    def get_path_list(value):
+        tmps = map(str.strip, value)
+        ret = []
+        for t in tmps:
+            if not t or t.startswith("#"):
+                continue
+            if t.endswith("*"):
+                # os.path.dirname은 문자열을 반환하므로 Path()로 감싸줍니다.
+                dirname = Path(os.path.dirname(t)) 
+                if not dirname.is_dir():
+                    continue
+                listdirs = os.listdir(dirname)
+                for l in listdirs:
+                    # dirname이 이미 Path 객체이므로 .joinpath를 사용할 수 있습니다.
+                    ret.append(dirname.joinpath(l)) 
+            else:
+                # 문자열을 Path 객체로 변환하여 추가합니다.
+                ret.append(Path(t))
+        return ret
+
+
+    @staticmethod
+    def get_meta_module(module_name):
+        """[공용] 지정된 이름의 메타데이터 모듈을 로드하고 캐싱합니다."""
+        try:
+            if module_name not in Task.metadata_modules:
+                instance = F.PluginManager.get_plugin_instance("metadata")
+                if instance:
+                    Task.metadata_modules[module_name] = instance.get_module(module_name)
+                else:
+                    Task.metadata_modules[module_name] = None
+
+            return Task.metadata_modules[module_name]
+        except Exception as e:
+            logger.error(f"메타데이터 모듈 '{module_name}' 로딩 중 오류: {e}")
+            logger.debug(traceback.format_exc())
+            Task.metadata_modules[module_name] = None
+            return None
+
+
+    @staticmethod
+    def __request_plex_mate_scan(config, scan_path: Path, db_item=None):
+        """Plex Mate에 웹 API를 통해 스캔을 요청합니다."""
+        if config.get('드라이런', False):
+            logger.warning(f"[Dry Run] Plex Mate 스캔 요청 시뮬레이션: {scan_path}")
+            return
+
+        try:
+            base_url = config.get('PLEXMATE_URL')
+            if not base_url:
+                return
+
+            url = f"{base_url.rstrip('/')}/plex_mate/api/scan/do_scan"
+
+            callback_id = ''
+            if db_item and db_item.id:
+                callback_id = f"{P.package_name}_item_{db_item.id}"
+
+            data = {
+                'target': str(scan_path),
+                'apikey': F.SystemModelSetting.get('apikey'),
+                'mode': 'ADD',
+                # 'scanner': 'web',
+                'callback_id': callback_id
+            }
+
+            logger.debug(f"Plex Mate 스캔 API 호출: URL={url}, Data={data}")
+            res = requests.post(url, data=data, timeout=10)
+
+            if res.status_code == 200:
+                logger.info(f"Plex Mate 스캔 요청 성공: {res.json()}")
+            else:
+                logger.warning(f"Plex Mate 스캔 요청 실패: {res.status_code} - {res.text}")
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Plex Mate API 호출 중 네트워크 오류: {e}")
+        except Exception as e:
+            logger.error(f"Plex Mate 스캔 요청 중 알 수 없는 오류: {e}")
+            logger.error(traceback.format_exc())
+
+
+    @staticmethod
+    def __find_custom_path_rule(info, rules_list):
+        """규칙 리스트를 순회하며 파일 정보와 일치하는 첫 번째 커스텀 경로 규칙을 찾습니다."""
+        if not rules_list:
+            return None
+
+        file_label = info['label']
+        original_filename = info['original_file'].name
+
+        for rule in rules_list:
+            # 파일명 패턴 조건 확인
+            if rule['filename_pattern']:
+                try:
+                    if re.search(rule['filename_pattern'], original_filename, re.IGNORECASE):
+                        logger.info(f"커스텀 경로 규칙 '{rule['name']}' 매칭 (파일명패턴: {original_filename})")
+                        return rule
+                except re.error as e:
+                    logger.error(f"커스텀 경로 규칙 '{rule['name']}'의 파일명 정규식 오류: {e}")
+                    continue
+
+            # 레이블 패턴 조건 확인
+            if rule['label_pattern']:
+                try:
+                    if re.search('^' + rule['label_pattern'], file_label, re.IGNORECASE):
+                        logger.info(f"커스텀 경로 규칙 '{rule['name']}' 매칭 (레이블: {file_label})")
+                        return rule
+                except re.error as e:
+                    logger.error(f"커스텀 경로 규칙 '{rule['name']}'의 레이블 정규식 오류: {e}")
+                    continue
+        return None
+
+
+    @staticmethod
+    def _find_external_subtitle(config, info, sub_config):
+        """지정된 경로에서 품번에 해당하는 외부 자막 파일이 있는지 확인합니다."""
+        rule = sub_config.get('규칙', {})
+        base_path_str = rule.get('경로')
+        if not base_path_str: return None
+
+        base_path = Path(base_path_str)
+        if not base_path.is_dir():
+            logger.warning(f"자막 검색 경로가 유효하지 않습니다: {base_path}")
+            return None
+
+        # 폴더 구조 포맷 결정 (규칙에 없으면 기본 이동폴더포맷 사용)
+        folder_format = rule.get('폴더구조') or config.get('이동폴더포맷')
+        
+        # 메타 정보 없이 파싱 정보만으로 폴더 경로 생성
+        relative_folders = Task.process_folder_format(config, info, folder_format, meta_data=None)
+        target_sub_dir = base_path.joinpath(*relative_folders)
+
+        if not target_sub_dir.is_dir():
+            # logger.debug(f"예상 자막 폴더를 찾을 수 없습니다: {target_sub_dir}")
+            return None
+
+        code_with_hyphen = info['pure_code']
+        code_without_hyphen = info['pure_code'].replace('-', '')
+        boundary_pattern = r'(?![0-9])'
+
+        patterns = [
+            re.compile(re.escape(code_with_hyphen) + boundary_pattern, re.IGNORECASE),
+            re.compile(re.escape(code_without_hyphen) + boundary_pattern, re.IGNORECASE)
+        ]
+
+        for file in target_sub_dir.iterdir():
+            if file.suffix.lower() in sub_config['자막파일확장자']:
+                stem = file.stem
+                for pattern in patterns:
+                    if pattern.search(stem):
+                        logger.info(f"외부 자막 파일 발견: {file.name} (품번: {info['pure_code']})")
+                        return target_sub_dir
+        return None
+
+
+
+    # ====================================================================
+    # --- Legacy Functions ---
+    # ====================================================================
 
 
     @staticmethod
@@ -1201,160 +1359,4 @@ class Task:
             logger.error("Exception:%s", exception)
             logger.error(traceback.format_exc())
             return new_filename
-
-
-    @staticmethod
-    def get_path_list(value):
-        tmps = map(str.strip, value)
-        ret = []
-        for t in tmps:
-            if not t or t.startswith("#"):
-                continue
-            if t.endswith("*"):
-                # os.path.dirname은 문자열을 반환하므로 Path()로 감싸줍니다.
-                dirname = Path(os.path.dirname(t)) 
-                if not dirname.is_dir():
-                    continue
-                listdirs = os.listdir(dirname)
-                for l in listdirs:
-                    # dirname이 이미 Path 객체이므로 .joinpath를 사용할 수 있습니다.
-                    ret.append(dirname.joinpath(l)) 
-            else:
-                # 문자열을 Path 객체로 변환하여 추가합니다.
-                ret.append(Path(t))
-        return ret
-
-
-    @staticmethod
-    def get_meta_module(module_name):
-        """[공용] 지정된 이름의 메타데이터 모듈을 로드하고 캐싱합니다."""
-        try:
-            if module_name not in Task.metadata_modules:
-                instance = F.PluginManager.get_plugin_instance("metadata")
-                if instance:
-                    Task.metadata_modules[module_name] = instance.get_module(module_name)
-                else:
-                    Task.metadata_modules[module_name] = None
-
-            return Task.metadata_modules[module_name]
-        except Exception as e:
-            logger.error(f"메타데이터 모듈 '{module_name}' 로딩 중 오류: {e}")
-            logger.debug(traceback.format_exc())
-            Task.metadata_modules[module_name] = None
-            return None
-
-
-    @staticmethod
-    def __request_plex_mate_scan(scan_path: Path, db_item=None):
-        """Plex Mate에 웹 API를 통해 스캔을 요청합니다."""
-        if Task.config.get('드라이런', False):
-            logger.warning(f"[Dry Run] Plex Mate 스캔 요청 시뮬레이션: {scan_path}")
-            return
-
-        try:
-            base_url = Task.config.get('PLEXMATE_URL')
-            if not base_url:
-                return
-
-            url = f"{base_url.rstrip('/')}/plex_mate/api/scan/do_scan"
-
-            callback_id = ''
-            if db_item and db_item.id:
-                callback_id = f"{P.package_name}_item_{db_item.id}"
-
-            data = {
-                'target': str(scan_path),
-                'apikey': F.SystemModelSetting.get('apikey'),
-                'mode': 'ADD',
-                # 'scanner': 'web',
-                'callback_id': callback_id
-            }
-
-            logger.debug(f"Plex Mate 스캔 API 호출: URL={url}, Data={data}")
-            res = requests.post(url, data=data, timeout=10)
-
-            if res.status_code == 200:
-                logger.info(f"Plex Mate 스캔 요청 성공: {res.json()}")
-            else:
-                logger.warning(f"Plex Mate 스캔 요청 실패: {res.status_code} - {res.text}")
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Plex Mate API 호출 중 네트워크 오류: {e}")
-        except Exception as e:
-            logger.error(f"Plex Mate 스캔 요청 중 알 수 없는 오류: {e}")
-            logger.error(traceback.format_exc())
-
-
-    @staticmethod
-    def __find_custom_path_rule(info, rules_list):
-        """규칙 리스트를 순회하며 파일 정보와 일치하는 첫 번째 커스텀 경로 규칙을 찾습니다."""
-        if not rules_list:
-            return None
-
-        file_label = info['label']
-        original_filename = info['original_file'].name
-
-        for rule in rules_list:
-            # 파일명 패턴 조건 확인
-            if rule['filename_pattern']:
-                try:
-                    if re.search(rule['filename_pattern'], original_filename, re.IGNORECASE):
-                        logger.info(f"커스텀 경로 규칙 '{rule['name']}' 매칭 (파일명패턴: {original_filename})")
-                        return rule
-                except re.error as e:
-                    logger.error(f"커스텀 경로 규칙 '{rule['name']}'의 파일명 정규식 오류: {e}")
-                    continue
-
-            # 레이블 패턴 조건 확인
-            if rule['label_pattern']:
-                try:
-                    if re.search('^' + rule['label_pattern'], file_label, re.IGNORECASE):
-                        logger.info(f"커스텀 경로 규칙 '{rule['name']}' 매칭 (레이블: {file_label})")
-                        return rule
-                except re.error as e:
-                    logger.error(f"커스텀 경로 규칙 '{rule['name']}'의 레이블 정규식 오류: {e}")
-                    continue
-        return None
-
-
-    @staticmethod
-    def _find_external_subtitle(info, sub_config):
-        """지정된 경로에서 품번에 해당하는 외부 자막 파일이 있는지 확인합니다."""
-        rule = sub_config.get('규칙', {})
-        base_path_str = rule.get('경로')
-        if not base_path_str: return None
-
-        base_path = Path(base_path_str)
-        if not base_path.is_dir():
-            logger.warning(f"자막 검색 경로가 유효하지 않습니다: {base_path}")
-            return None
-
-        # 폴더 구조 포맷 결정 (규칙에 없으면 기본 이동폴더포맷 사용)
-        folder_format = rule.get('폴더구조') or Task.config.get('이동폴더포맷')
-        
-        # 메타 정보 없이 파싱 정보만으로 폴더 경로 생성
-        relative_folders = Task.process_folder_format(info)
-        target_sub_dir = base_path.joinpath(*relative_folders)
-
-        if not target_sub_dir.is_dir():
-            # logger.debug(f"예상 자막 폴더를 찾을 수 없습니다: {target_sub_dir}")
-            return None
-
-        code_with_hyphen = info['pure_code']
-        code_without_hyphen = info['pure_code'].replace('-', '')
-        boundary_pattern = r'(?![0-9])'
-
-        patterns = [
-            re.compile(re.escape(code_with_hyphen) + boundary_pattern, re.IGNORECASE),
-            re.compile(re.escape(code_without_hyphen) + boundary_pattern, re.IGNORECASE)
-        ]
-
-        for file in target_sub_dir.iterdir():
-            if file.suffix.lower() in sub_config['자막파일확장자']:
-                stem = file.stem
-                for pattern in patterns:
-                    if pattern.search(stem):
-                        logger.info(f"외부 자막 파일 발견: {file.name} (품번: {info['pure_code']})")
-                        return target_sub_dir
-        return None
 
