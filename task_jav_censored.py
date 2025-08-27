@@ -257,8 +257,8 @@ class Task:
 
                 duplicate_check_method = misc_settings.get('duplicate_check_method', 'flexible')
                 config['중복체크방식'] = duplicate_check_method
-                config['이미처리된파일명패턴'] = misc_settings.get('already_processed_pattern', r'^[a-zA-Z0-9-]+(\s\[.*\])$')
-                config['허용된숫자레이블'] = misc_settings.get('allowed_numeric_labels', None)
+                config['이미처리된파일명패턴'] = misc_settings.get('already_processed_pattern', r'^[a-zA-Z0-9]+-[a-zA-Z0-9-_]+(\s\[.*\](?:cd\d+)?)$')
+                config['허용된숫자레이블'] = misc_settings.get('allowed_numeric_labels', r'^(741).*?')
                 config['scan_with_no_meta'] = misc_settings.get('scan_with_no_meta', True)
 
                 # --- 커스텀 경로 규칙 ---
