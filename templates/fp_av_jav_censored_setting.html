@@ -46,11 +46,15 @@
 
   {{ macros.m_tab_content_start('filename', false) }}
     {{ macros.setting_checkbox('jav_censored_change_filename', '파일명 변경', value=arg['jav_censored_change_filename'], desc=['On : 파일명 변경', 'Off: 원본파일명 유지']) }}
-    {{ macros.setting_checkbox('jav_censored_process_part_files', '분할 파일 처리', value=arg['jav_censored_process_part_files'], desc=['On: 분할 파일명을 품번cd1(cd8 까지) 형태로 변환합니다. 원본 파일명은 제거됩니다.', 'Off: 분할파일 처리 없이 아래 원본파일명 처리 옵션을 따릅니다.']) }}
-    {{ macros.setting_checkbox('jav_censored_include_original_filename', '파일명 변경시 원본 파일명 처리', value=arg['jav_censored_include_original_filename'], desc=['On : 파일명 변경시 원본파일명을 포함합니다.', '내용은 같으나 품질이 다른 영상 처리시 유용합니다.', '변경파일명 [원본파일명처리].확장자', 'Off: 원본파일명은 지워짐']) }}
-    <div id="jav_censored_include_original_filename_div" class="collapse">
-    {{ macros.setting_radio_with_value('jav_censored_include_original_filename_option', '원본 파일명 형식', [['original', '원본파일명'], ['original_bytes', '원본파일명(파일크기-byte숫자)'], ['original_giga', '원본파일명(파일크기-GB)'], ['bytes', '파일크기-byte숫자']], value=arg['jav_censored_include_original_filename_option']) }}
 
+    {{ macros.setting_checkbox('jav_censored_process_part_files', '분할 파일 처리', value=arg['jav_censored_process_part_files'], desc=['On: 분할 파일명을 품번cd1(cd8 까지) 형태로 변환합니다. 원본 파일명은 제거됩니다.', 'Off: 분할파일 처리 없이 아래 원본파일명 처리 옵션을 따릅니다.']) }}
+
+    {{ macros.setting_checkbox('jav_censored_include_media_info_in_filename', '미디어 정보 추가', value=arg['jav_censored_include_media_info_in_filename'], desc=['On: ffprobe로 추출한 해상도, 코덱 등의 미디어 정보를 파일명에 추가합니다.', 'metadata_jav_settings.yaml 파일의 fp_filename_with_ffprobe 섹션에서 고급 설정이 가능하며, ffmpeg(ffprobe) 설치가 필요합니다.']) }}
+
+    {{ macros.setting_checkbox('jav_censored_include_original_filename', '파일명 변경시 원본 파일명 처리', value=arg['jav_censored_include_original_filename'], desc=['On : 파일명 변경시 원본파일명을 포함합니다.', '내용은 같으나 품질이 다른 영상 처리시 유용합니다.', '변경파일명 [원본파일명처리].확장자', 'Off: 원본파일명은 지워짐']) }}
+
+    <div id="jav_censored_include_original_filename_div" class="collapse">
+      {{ macros.setting_radio_with_value('jav_censored_include_original_filename_option', '원본 파일명 형식', [['original', '원본파일명'], ['original_bytes', '원본파일명(파일크기-byte숫자)'], ['original_giga', '원본파일명(파일크기-GB)'], ['bytes', '파일크기-byte숫자']], value=arg['jav_censored_include_original_filename_option']) }}
     </div>
     {{ macros.m_hr() }}
     {{ macros.setting_input_text_and_buttons('jav_censored_filename_test', '파일명 변경 테스트', [['jav_censored_filename_test_btn', '테스트']], value=arg['jav_censored_filename_test'], desc=None) }}
@@ -62,29 +66,29 @@
     {{ macros.setting_input_text('jav_censored_folder_format', '기본 폴더 구조', desc=['예) {label} : 레이블 폴더에 파일 이동', '예) {label}/{code} : 레이블폴더/품번폴더 생성 후 이동', '예) 품번별/{label} 처럼 문자와 / 사용 가능', '{label} {code} {studio} {label_1}'], value=arg['jav_censored_folder_format']) }}
     {{ macros.setting_radio_with_value('jav_censored_use_meta', '메타 검색 사용', [['not_using', '사용안함'], ['using', '사용']], value=arg['jav_censored_use_meta'], desc=['검색시 메타데이터 플러그인 설정을 사용합니다.']) }}
     <div id="jav_censored_use_meta_off_div" class="collapse">
-    {{ macros.setting_input_textarea('jav_censored_target_path', '라이브러리 폴더', desc=['Censored 영상 파일이 정리될 폴더입니다.', '2개 이상일 경우 구분자 Enter, #으로 시작하여 주석처리', '레이블 폴더들이 있는 폴더여야 하고 경로 마지막에 *가 있는 경우 이를 지원합니다.'], value=arg['jav_censored_target_path'], row='3') }}
+      {{ macros.setting_input_textarea('jav_censored_target_path', '라이브러리 폴더', desc=['Censored 영상 파일이 정리될 폴더입니다.', '2개 이상일 경우 구분자 Enter, #으로 시작하여 주석처리', '레이블 폴더들이 있는 폴더여야 하고 경로 마지막에 *가 있는 경우 이를 지원합니다.'], value=arg['jav_censored_target_path'], row='3') }}
     </div>
     <div id="jav_censored_use_meta_on_div" class="collapse">
-    {{ macros.setting_input_text('jav_censored_meta_dvd_path', '정상 매칭시 이동 경로', desc=['정상 매칭시 이동할 루트 폴더입니다.'], value=arg['jav_censored_meta_dvd_path']) }}
-    {{ macros.setting_input_text('jav_censored_meta_dvd_vr_path', 'VR영상 이동 경로', desc=['빈값이면 VR영상을 따로 분리하지 않습니다.'], value=arg['jav_censored_meta_dvd_vr_path']) }}
-    {{ macros.setting_checkbox('jav_censored_meta_dvd_use_dmm_only', '정상 매칭 판단에 DMM+MGS만 사용', value=arg['jav_censored_meta_dvd_use_dmm_only'], desc=['On: DMM+MGS 사용해서 정식 발매 여부를 판단', 'Off: 메타데이터 플러그인 설정을 따릅니다.']) }}
-    {{ macros.setting_input_text('jav_censored_folder_format_actor', '배우 검색시 폴더 구조', desc=['정상 매칭 영상이고 배우가 한명일 경우에만 작동할 폴더 구조입니다.', '예) 배우별/{actor}/{code} 배우별/배우폴더/품번폴더 생성 후 이동', '빈값이면 기본 폴더 구조를 사용합니다.'], value=arg['jav_censored_folder_format_actor']) }}
-    {{ macros.setting_input_textarea('jav_censored_meta_dvd_labels_exclude', '정상 매칭 제외 레이블', desc=['정상 매칭에서 제외할 레이블', '구분자: 콤마'], value=arg['jav_censored_meta_dvd_labels_exclude'], row='3') }}
-    {{ macros.setting_input_textarea('jav_censored_meta_dvd_labels_include', '정상 매칭 포함 레이블', desc=['정상 매칭에 실패해도 포함시킬 레이블', '구분자: 콤마'], value=arg['jav_censored_meta_dvd_labels_include'], row='3') }}
+      {{ macros.setting_input_text('jav_censored_meta_dvd_path', '정상 매칭시 이동 경로', desc=['정상 매칭시 이동할 루트 폴더입니다.'], value=arg['jav_censored_meta_dvd_path']) }}
+      {{ macros.setting_input_text('jav_censored_meta_dvd_vr_path', 'VR영상 이동 경로', desc=['빈값이면 VR영상을 따로 분리하지 않습니다.'], value=arg['jav_censored_meta_dvd_vr_path']) }}
+      {{ macros.setting_checkbox('jav_censored_meta_dvd_use_dmm_only', '정상 매칭 판단에 DMM+MGS만 사용', value=arg['jav_censored_meta_dvd_use_dmm_only'], desc=['On: DMM+MGS 사용해서 정식 발매 여부를 판단', 'Off: 메타데이터 플러그인 설정을 따릅니다.']) }}
+      {{ macros.setting_input_text('jav_censored_folder_format_actor', '배우 검색시 폴더 구조', desc=['정상 매칭 영상이고 배우가 한명일 경우에만 작동할 폴더 구조입니다.', '예) 배우별/{actor}/{code} 배우별/배우폴더/품번폴더 생성 후 이동', '빈값이면 기본 폴더 구조를 사용합니다.'], value=arg['jav_censored_folder_format_actor']) }}
+      {{ macros.setting_input_textarea('jav_censored_meta_dvd_labels_exclude', '정상 매칭 제외 레이블', desc=['정상 매칭에서 제외할 레이블', '구분자: 콤마'], value=arg['jav_censored_meta_dvd_labels_exclude'], row='3') }}
+      {{ macros.setting_input_textarea('jav_censored_meta_dvd_labels_include', '정상 매칭 포함 레이블', desc=['정상 매칭에 실패해도 포함시킬 레이블', '구분자: 콤마'], value=arg['jav_censored_meta_dvd_labels_include'], row='3') }}
 
-    {{ macros.m_hr() }}
+      {{ macros.m_hr() }}
 
-    {{ macros.setting_checkbox('jav_censored_meta_no_move', '메타 없는 영상 이동', value=arg['jav_censored_meta_no_move'], desc=['On: 메타 검색에 실패한 파일을 아래 경로로 이동시킵니다.', 'Off: 이동시키지 않고 원본 위치에 둡니다. (다음 스캔 시 다시 검색)']) }}
-    <div id="jav_censored_meta_no_move_div" class="collapse">
-      {{ macros.setting_checkbox('jav_censored_meta_no_change_filename', '메타 없는 영상 이동 시 파일명 변경', value=arg['jav_censored_meta_no_change_filename'], desc=['On: 품번 기반으로 파일명을 변경하여 이동합니다.', 'Off: 원본 파일명 그대로 이동합니다.']) }}
-      {{ macros.setting_input_text('jav_censored_meta_no_path', '메타 없는 영상 이동 경로', desc=['메타 없는 영상 파일이 이동할 루트 폴더입니다.', '비워두면 처리 실패시 폴더 아래에 [NO META] 폴더를 만들고 그 아래로 이동합니다'], value=arg['jav_censored_meta_no_path']) }}
-      {{ macros.setting_input_int('jav_censored_meta_no_retry_every', '메타 없는 영상 재시도 주기', value=arg['jav_censored_meta_no_retry_every'], min='0', placeholder='0', desc='메타 없는 것으로 분류된 영상 파일을 재시도 합니다. 0이면 재시도 하지 않음. 주기: 일') }}
-    </div>
+      {{ macros.setting_checkbox('jav_censored_meta_no_move', '메타 없는 영상 이동', value=arg['jav_censored_meta_no_move'], desc=['On: 메타 검색에 실패한 파일을 아래 경로로 이동시킵니다.', 'Off: 이동시키지 않고 원본 위치에 둡니다. (다음 스캔 시 다시 검색)']) }}
+      <div id="jav_censored_meta_no_move_div" class="collapse">
+        {{ macros.setting_checkbox('jav_censored_meta_no_change_filename', '메타 없는 영상 이동 시 파일명 변경', value=arg['jav_censored_meta_no_change_filename'], desc=['On: 품번 기반으로 파일명을 변경하여 이동합니다.', 'Off: 원본 파일명 그대로 이동합니다.']) }}
+        {{ macros.setting_input_text('jav_censored_meta_no_path', '메타 없는 영상 이동 경로', desc=['메타 없는 영상 파일이 이동할 루트 폴더입니다.', '비워두면 처리 실패시 폴더 아래에 [NO META] 폴더를 만들고 그 아래로 이동합니다'], value=arg['jav_censored_meta_no_path']) }}
+        {{ macros.setting_input_int('jav_censored_meta_no_retry_every', '메타 없는 영상 재시도 주기', value=arg['jav_censored_meta_no_retry_every'], min='0', placeholder='0', desc='메타 없는 것으로 분류된 영상 파일을 재시도 합니다. 0이면 재시도 하지 않음. 주기: 일') }}
+      </div>
 
-    {{ macros.m_hr() }}
-    {{ macros.setting_checkbox('jav_censored_make_yaml', 'YAML 파일 생성', value=arg['jav_censored_make_yaml'], desc=['On: 메타가 있을 경우 YAML 파일을 생성합니다.', '품번 폴더를 생성할 수 있게 폴더 구조가 {code}로 끝나야 합니다.']) }}
-    {{ macros.setting_checkbox('jav_censored_make_nfo', 'NFO 파일 생성', value=arg['jav_censored_make_nfo'], desc=None) }}
-    {{ macros.setting_checkbox('jav_censored_make_image', '이미지 파일 생성', value=arg['jav_censored_make_image'], desc=None) }}
+      {{ macros.m_hr() }}
+      {{ macros.setting_checkbox('jav_censored_make_yaml', 'YAML 파일 생성', value=arg['jav_censored_make_yaml'], desc=['On: 메타가 있을 경우 YAML 파일을 생성합니다.', '품번 폴더를 생성할 수 있게 폴더 구조가 {code}로 끝나야 합니다.']) }}
+      {{ macros.setting_checkbox('jav_censored_make_nfo', 'NFO 파일 생성', value=arg['jav_censored_make_nfo'], desc=None) }}
+      {{ macros.setting_checkbox('jav_censored_make_image', '이미지 파일 생성', value=arg['jav_censored_make_image'], desc=None) }}
 
     </div>
   {{ macros.m_tab_content_end() }}  
