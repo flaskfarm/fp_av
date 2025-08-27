@@ -21,13 +21,14 @@ class ModuleJavCensored(PluginModuleBase):
             # filename
             f"{self.name}_filename_not_allowed_list": "",
             f"{self.name}_filename_cleanup_list": "3xplanet|archive|bo99|boy999|ddr91|dioguitar|dioguitar23|fengniao|fengniao151|giogio99|im520|javonly|javplayer|javplayer200a|javsubs91|konoha57|love69|mosaic|removed|uncensored|nodrm|nomatch-2023|sis001|u3c3|wwg101|xplanet",
-            f"{self.name}_include_original_filename": "True",
+            f"{self.name}_change_filename": "False",
+            f"{self.name}_include_media_info_in_filename": "False",
             f"{self.name}_process_part_files": "True",
-            f"{self.name}_include_original_filename_option": "0",
+            f"{self.name}_include_original_filename": "True",
+            f"{self.name}_include_original_filename_option": "original",
             f"{self.name}_filename_test": "",
             # folders
             f"{self.name}_folder_format": "{label}/{code}",
-            f"{self.name}_change_filename": "False",
             f"{self.name}_use_meta": "not_using",
             # folders w/o meta
             f"{self.name}_target_path": "",
@@ -43,6 +44,7 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_meta_no_last_retry": "1970-01-01T00:00:00",
             f"{self.name}_meta_no_move": "False",
             f"{self.name}_meta_no_change_filename": "False",
+            # 부가파일 생성
             f"{self.name}_make_yaml": "False",
             f"{self.name}_make_nfo": "False",
             f"{self.name}_make_image": "False",
@@ -68,5 +70,3 @@ class ModuleJavCensored(PluginModuleBase):
         ret = self.start_celery(TaskBase.start, None, "default")
 
     ###################################################################
-    
-    
