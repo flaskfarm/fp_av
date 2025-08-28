@@ -24,7 +24,7 @@ class TaskBase:
         logger.info(args)
         job_type = args[0]
 
-        base_config = {
+        config = {
             "이름": job_type,
             "사용": True,
             # 기본 탭
@@ -62,13 +62,18 @@ class TaskBase:
             'PLEXMATE_URL': F.SystemModelSetting.get('ddns'),
         }
 
-        if job_type in ['default', 'dry_run']:
-            config = base_config.copy()
-            config["이름"] = job_type
-            if config.get('드라이런', False):
-                logger.warning(f"'{config['이름']}' 작업: Dry Run 모드가 활성화되었습니다.")
+        config['parse_mode'] = 'uncensored'
+        CensoredTask._load_extended_settings(config)
 
-            TaskBase.__task(config)
+        base_config_with_advanced = config
+
+        if job_type in ['default', 'dry_run']:
+            final_config = base_config_with_advanced.copy()
+            final_config["이름"] = job_type
+            if final_config.get('드라이런', False):
+                logger.warning(f"'{final_config['이름']}' 작업: Dry Run 모드가 활성화되었습니다.")
+
+            TaskBase.__task(final_config)
 
         elif job_type == 'yaml':
             yaml_filepath = args[1]
@@ -77,21 +82,19 @@ class TaskBase:
                 for job in yaml_data.get('작업', []):
                     if not job.get('사용', True): continue
 
-                    config = base_config.copy()
-                    config.update(job)
+                    final_config = base_config_with_advanced.copy()
+                    final_config.update(job)
 
-                    if config.get('드라이런', False):
-                        logger.warning(f"'{config.get('이름', 'YAML Job')}' 작업: Dry Run 모드가 활성화되었습니다.")
-
-                    TaskBase.__task(config)
+                    if final_config.get('드라이런', False):
+                        logger.warning(f"'{final_config.get('이름', 'YAML Job')}' 작업: Dry Run 모드가 활성화되었습니다.")
+                    TaskBase.__task(final_config)
             except Exception as e:
                 logger.error(f"YAML 파일 처리 중 오류 발생: {e}")
 
 
     @staticmethod
     def __task(config):
-        config['parse_mode'] = 'uncensored'
-        CensoredTask._load_extended_settings(config)
+        config['module_name'] = 'jav_uncensored'
 
         try:
             meta_module = CensoredTask.get_meta_module('jav_uncensored')
@@ -104,7 +107,6 @@ class TaskBase:
             logger.error(f"메타데이터 모듈에서 지원 레이블 목록 로드 실패: {e}")
             config['메타검색지원레이블'] = set()
 
-        # 실제 작업 시작
         Task.start(config)
 
 
@@ -182,28 +184,23 @@ class Task:
         # [최종 경로 결정]
         current_target_root = Path(str(target_root_str))
         original_format = config['이동폴더포맷']
-        use_custom_format = False
 
-        folder_format_to_use = config['이동폴더포맷']
-        custom_rules = config.get('커스텀경로규칙', [])
-        effective_info = info.copy()
-        if meta_info:
-            effective_info['label'] = meta_info.get("originaltitle", info['pure_code']).split('-')[0]
+        if config.get('커스텀경로활성화', False):
+            custom_rules = config.get('커스텀경로규칙', [])
+            effective_info = info.copy()
+            if meta_info:
+                effective_info['label'] = meta_info.get("originaltitle", info['pure_code']).split('-')[0]
 
-        matched_rule = CensoredTask.__find_custom_path_rule(effective_info, custom_rules)
-        if matched_rule:
-            custom_path = Path(matched_rule['path'])
-            if custom_path.is_dir():
-                current_target_root = custom_path
-                move_type = "custom_path"
-                if matched_rule['format']:
-                    config['이동폴더포맷'] = matched_rule['format']
-                    use_custom_format = True
+            matched_rule = CensoredTask.__find_custom_path_rule(effective_info, custom_rules)
+            if matched_rule:
+                custom_path_str = matched_rule.get('path', '').strip()
+                if custom_path_str:
+                    current_target_root = Path(custom_path_str)
+                    move_type = "custom_path"
+                    if matched_rule['format']:
+                        folder_format_to_use = matched_rule['format']
 
         folders = CensoredTask.process_folder_format(config, info, folder_format_to_use, meta_info)
-
-        if use_custom_format:
-            config['이동폴더포맷'] = original_format
 
         return current_target_root.joinpath(*folders), move_type, meta_info
 
