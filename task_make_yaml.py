@@ -231,6 +231,7 @@ class Task:
         if make_nfo and os.path.exists(filepath_nfo) == False:
             info['thumb'] = []
             info['extras'] = []
+            info['fanart'] = []
             from support_site import UtilNfo
             UtilNfo.make_nfo_movie(info, output='save', savepath=filepath_nfo)
         
