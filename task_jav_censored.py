@@ -167,32 +167,41 @@ class Task:
             Task.__process_part_sets(execution_plan)
 
         # 4. 파일명 조립을 위한 최종 데이터(final_media_info) 준비
-        from collections import defaultdict # <<< defaultdict import
-
+        # ffprobe 사용 여부를 먼저 확인
         ext_config = config.get('확장_ffprobe', {})
-        code_groups = defaultdict(list)
-        for info in execution_plan:
-            code_groups.setdefault(info['pure_code'], []).append(info)
+        use_media_info = config.get('파일명에미디어정보포함') and ext_config.get('enable')
 
-        for pure_code, group_infos in code_groups.items():
-            is_set = any(info.get('is_part_of_set') for info in group_infos)
-            if is_set:
-                if config.get('파일명에미디어정보포함'):
-                    merge_result = Task._merge_and_standardize_media_info(group_infos, config)
+        # ffprobe를 사용하지 않는 경우, 모든 파일의 final_media_info를 None으로 설정하고 종료
+        if not use_media_info:
+            for info in execution_plan:
+                info['final_media_info'] = None
+        else:
+            # ffprobe를 사용하는 경우에만 그룹화 및 미디어 정보 병합 로직 실행
+            from collections import defaultdict
+            code_groups = defaultdict(list)
+            for info in execution_plan:
+                code_groups[info['pure_code']].append(info)
+
+            for pure_code, group_infos in code_groups.items():
+                is_set = any(info.get('is_part_of_set') for info in group_infos)
+                
+                if is_set:
+                    merge_result = Task._merge_and_standardize_media_info(group_infos, ext_config) # ext_config 전달
                     if merge_result.get('is_valid_set'):
+                        # 세트가 유효하면 병합된 정보 사용
                         for info in group_infos:
                             info['final_media_info'] = merge_result['final_media']
                     else:
-                        logger.warning(f"'{pure_code}' 그룹에 미디어 정보가 없거나 유효하지 않은 파일이 있어, 세트 처리가 취소됩니다.")
+                        # 세트가 유효하지 않으면 그룹 해제하고 개별 정보 사용
+                        logger.warning(f"'{pure_code}' 그룹 미디어 정보 오류로 분할 세트 처리를 취소합니다.")
+                        failed_files_set = {f['original_file'].name for f in merge_result.get('failed_files', [])}
                         for info in group_infos:
-                            info['is_part_of_set'] = False
-                            info['final_media_info'] = info.get('media_info')
+                            info.update({'is_part_of_set': False, 'parsed_part_type': ''})
+                            info['final_media_info'] = {'is_valid': False} if info['original_file'].name in failed_files_set else info.get('media_info')
                 else:
+                    # 세트가 아닌 경우, 각자의 미디어 정보 사용
                     for info in group_infos:
-                        info['final_media_info'] = None
-            else:
-                for info in group_infos:
-                    info['final_media_info'] = info.get('media_info')
+                        info['final_media_info'] = info.get('media_info')
 
         # 5. 최종 파일명 조립 (tool.py 호출)
         for info in execution_plan:
@@ -457,6 +466,7 @@ class Task:
             'raw_part': parsed['part'],
             'ext': parsed['ext'],
             'meta_info': None,
+            'media_info': None
         }
         ext_config = config.get('확장_ffprobe', {})
         if config.get('파일명에미디어정보포함') and ext_config.get('enable') and info.get('file_type') == 'video':
