@@ -76,13 +76,12 @@ class ToolExpandFileProcess:
     # preprocess_listdir
     ##########################
     @classmethod
-    def preprocess_listdir(cls, source, errpath, config, min_size: int = 0, disallowed_keys=None):
+    def preprocess_listdir(cls, source, errpath, config):
+        is_dry_run = config.get('드라이런', False)
+
         source = Path(source)
         if not source.is_dir():
             return
-
-        if disallowed_keys is None:
-            disallowed_keys = []
 
         min_size = config.get('최소크기', 0)
         disallowed_keys = config.get('파일처리하지않을파일명', [])
@@ -105,9 +104,16 @@ class ToolExpandFileProcess:
                 continue
 
             if newdir is not None:
-                newdir.mkdir(exist_ok=True)
+                if not is_dry_run:
+                    newdir.mkdir(parents=True, exist_ok=True)
+
                 newfile = newdir.joinpath(file.name)
-                shutil.move(file, newfile)
+
+                if is_dry_run:
+                    logger.warning(f"[Dry Run] 전처리: '{file.name}' -> '{newfile}' (이동 예정)")
+                else:
+                    newdir.mkdir(parents=True, exist_ok=True)
+                    shutil.move(file, newfile)
 
         return files
 
@@ -581,7 +587,10 @@ class UtilFunc:
     @staticmethod
     def is_duplicate(src: Path, dst: Path, config: dict) -> bool:
         """설정에 따라 파일의 중복 여부를 결정합니다."""
-        
+
+        if not dst.parent.is_dir():
+            return False
+
         method = config.get('중복체크방식', 'flexible')
 
         # --- 1. 가장 엄격한 방식: 파일명과 크기가 모두 동일해야 함 ---

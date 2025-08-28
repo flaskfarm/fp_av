@@ -25,7 +25,7 @@ class TaskBase:
         logger.info(args)
         job_type = args[0]
 
-        base_config = {
+        config = {
             "이름": job_type,
             "사용": True,
             "처리실패이동폴더": ModelSetting.get("jav_censored_temp_path").strip(),
@@ -71,13 +71,18 @@ class TaskBase:
             'PLEXMATE_URL': F.SystemModelSetting.get('ddns'),
         }
 
-        if job_type in ['default', 'dry_run']:
-            config = base_config.copy()
-            config["이름"] = job_type
-            if config.get('드라이런', False):
-                logger.warning(f"'{config['이름']}' 작업: Dry Run 모드가 활성화되었습니다.")
+        config['parse_mode'] = 'censored'
+        Task._load_extended_settings(config)
 
-            TaskBase.__task(config)
+        base_config_with_advanced = config
+
+        if job_type in ['default', 'dry_run']:
+            final_config = base_config_with_advanced.copy()
+            final_config["이름"] = job_type
+            if final_config.get('드라이런', False):
+                logger.warning(f"'{final_config['이름']}' 작업: Dry Run 모드가 활성화되었습니다.")
+
+            TaskBase.__task(final_config)
 
         elif job_type == 'yaml':
             yaml_filepath = args[1]
@@ -86,21 +91,20 @@ class TaskBase:
                 for job in yaml_data.get('작업', []):
                     if not job.get('사용', True): continue
 
-                    config = base_config.copy()
-                    config.update(job)
+                    final_config = base_config_with_advanced.copy()
+                    final_config.update(job)
 
-                    if config.get('드라이런', False):
-                        logger.warning(f"'{config.get('이름', 'YAML Job')}' 작업: Dry Run 모드가 활성화되었습니다.")
+                    if final_config.get('드라이런', False):
+                        logger.warning(f"'{final_config.get('이름', 'YAML Job')}' 작업: Dry Run 모드가 활성화되었습니다.")
 
-                    TaskBase.__task(config)
+                    TaskBase.__task(final_config)
             except Exception as e:
                 logger.error(f"YAML 파일 처리 중 오류 발생: {e}")
 
 
     @staticmethod
     def __task(config):
-        config['parse_mode'] = 'censored'
-        Task._load_extended_settings(config)
+        config['module_name'] = 'jav_censored'
 
         Task.start(config)
 
@@ -125,15 +129,9 @@ class Task:
     def __start_shared_logic(config, task_context):
         """모든 JAV 파일 처리 작업의 공통 실행 흐름을 담당합니다."""
 
-        config['module_name'] = task_context.get('module_name')
-        config['parse_mode'] = task_context.get('parse_mode')
-
-        # 0. 파싱 규칙 및 확장 기능 설정 로드
-        Task._load_extended_settings(config)
-
         # 1. 파일 목록 수집
         logger.debug(f"처리 파일 목록 생성")
-        files = Task.__collect_initial_files(config, task_context['module_name'])
+        files = Task.__collect_initial_files(config, config['module_name'])
         if not files:
             logger.info("처리할 파일이 없습니다.")
             return
@@ -219,54 +217,58 @@ class Task:
     @staticmethod
     def _load_extended_settings(config):
         """jav_censored 메타 모듈에서 파싱 규칙 및 개별 확장 기능 설정을 로드합니다."""
+
         try:
             meta_module = Task.get_meta_module('jav_censored')
             if meta_module and hasattr(meta_module, 'get_jav_settings'):
                 jav_settings = meta_module.get_jav_settings()
 
-                config['파싱규칙'] = jav_settings.get('jav_parsing_rules', {})
-
                 # 기타 고급 설정(misc_settings)
                 misc_settings = jav_settings.get('misc_settings', {})
+                config.update(misc_settings) # 딕셔너리 전체를 업데이트
 
-                duplicate_check_method = misc_settings.get('duplicate_check_method', 'flexible')
-                config['중복체크방식'] = duplicate_check_method
+                config['파싱규칙'] = jav_settings.get('jav_parsing_rules', {})
+                config['중복체크방식'] = misc_settings.get('duplicate_check_method', config.get('중복체크방식'))
+                config['메타검색에사용할사이트'] = misc_settings.get('메타검색에사용할사이트', config.get('메타검색에사용할사이트'))
+
                 config['이미처리된파일명패턴'] = misc_settings.get('already_processed_pattern', r'^[a-zA-Z0-9]+-[a-zA-Z0-9-_]+(\s\[.*\](?:cd\d+)?)$')
                 config['허용된숫자레이블'] = misc_settings.get('allowed_numeric_labels', r'^(741|1pon|10mu).*?')
                 config['scan_with_no_meta'] = misc_settings.get('scan_with_no_meta', True)
-                config['메타검색에사용할사이트'] = misc_settings.get('메타검색에사용할사이트', None)
 
                 # --- 커스텀 경로 규칙 ---
-                custom_path_rules_yaml = jav_settings.get('meta_custom_path', [])
+                custom_path_section = jav_settings.get('meta_custom_path', {})
+                config['커스텀경로활성화'] = custom_path_section.get('처리활성화', False)
                 custom_rules_for_module = []
                 current_module = config.get('parse_mode')
 
-                if custom_path_rules_yaml:
-                    logger.debug(f"커스텀 경로 규칙 {len(custom_path_rules_yaml)}개를 로드합니다.")
-                    for rule_idx, rule in enumerate(custom_path_rules_yaml):
-                        target_module = rule.get('모듈', 'all').lower()
-                        if target_module != 'all' and target_module != current_module:
-                            continue
+                if config['커스텀경로활성화']:
+                    custom_path_rules_yaml = custom_path_section.get('규칙', [])
+                    if custom_path_rules_yaml:
+                        logger.debug(f"커스텀 경로 규칙 {len(custom_path_rules_yaml)}개를 로드합니다.")
+                        for rule_idx, rule in enumerate(custom_path_rules_yaml):
+                            target_module = rule.get('모듈', 'all').lower()
+                            if target_module != 'all' and target_module != current_module:
+                                continue
 
-                        path_str = rule.get('경로', '').strip()
-                        label_pattern = rule.get('레이블', '').strip()
-                        filename_pattern = rule.get('파일명패턴', '').strip()
-                        
-                        if not path_str or (not label_pattern and not filename_pattern):
-                            continue
-                        
-                        # 여러 줄로 작성된 정규식에서 공백과 개행문자 제거
-                        if label_pattern:
-                            label_pattern = re.sub(r'\s', '', label_pattern)
+                            path_str = rule.get('경로', '').strip()
+                            label_pattern = rule.get('레이블', '').strip()
+                            filename_pattern = rule.get('파일명패턴', '').strip()
 
-                        processed_rule = {
-                            'name': rule.get('이름', f'규칙 #{rule_idx+1}'),
-                            'path': path_str,
-                            'format': rule.get('폴더포맷', '').strip(),
-                            'label_pattern': label_pattern,
-                            'filename_pattern': filename_pattern
-                        }
-                        custom_rules_for_module.append(processed_rule)
+                            if not path_str or (not label_pattern and not filename_pattern):
+                                continue
+
+                            # 여러 줄로 작성된 정규식에서 공백과 개행문자 제거
+                            if label_pattern:
+                                label_pattern = re.sub(r'\s', '', label_pattern)
+
+                            processed_rule = {
+                                'name': rule.get('이름', f'규칙 #{rule_idx+1}'),
+                                'path': path_str,
+                                'format': rule.get('폴더포맷', '').strip(),
+                                'label_pattern': label_pattern,
+                                'filename_pattern': filename_pattern
+                            }
+                            custom_rules_for_module.append(processed_rule)
 
                 config['커스텀경로규칙'] = custom_rules_for_module
 
@@ -387,10 +389,12 @@ class Task:
     def __collect_initial_files(config, module_name):
         """파일 시스템에서 처리할 초기 파일 목록을 수집하고, 통계를 반환합니다."""
 
-        no_censored_path = Path(config['처리실패이동폴더'].strip())
-        if not no_censored_path.is_dir():
-            logger.warning("'처리 실패시 이동 폴더'가 유효하지 않아 작업을 중단합니다.")
-            return [] # 파일이 없으므로 빈 리스트 반환
+        temp_path_str = config.get('처리실패이동폴더', '').strip()
+        if not temp_path_str:
+            logger.warning("'처리 실패시 이동 폴더'가 설정되지 않아 작업을 중단합니다.")
+            return []
+
+        temp_path = Path(temp_path_str)
 
         src_list = Task.get_path_list(config['다운로드폴더'])
         src_list.extend(Task.__add_meta_no_path(module_name))
@@ -402,7 +406,7 @@ class Task:
                 config.get('최소크기', 0), 
                 config.get('최대기간', 0)
             )
-            _f = ToolExpandFileProcess.preprocess_listdir(src, no_censored_path, config)
+            _f = ToolExpandFileProcess.preprocess_listdir(src, temp_path, config)
             all_files.extend(_f or [])
 
         from collections import Counter
@@ -932,8 +936,8 @@ class Task:
             raise ValueError("'정상 매칭시 이동 경로'가 지정되지 않았습니다.")
 
         target_root_path = Path(target_root_str)
-        if not target_root_path.is_dir():
-            raise NotADirectoryError(f"'정상 매칭시 이동 경로'가 존재하지 않음: {target_root_str}")
+        # if not target_root_path.is_dir():
+        #     raise NotADirectoryError(f"'정상 매칭시 이동 경로'가 존재하지 않음: {target_root_str}")
 
         # 사용할 사이트 목록 및 점수 결정
         site_search_list = []
@@ -975,28 +979,23 @@ class Task:
                     meta_info = meta_module.info(best_match["code"], keyword=search_name, fp_meta_mode=False)
 
                     if meta_info:
-                        current_target_root = target_root_path
-                        original_format = config.get('이동폴더포맷')
-                        use_custom_format = False
+                        current_target_root = Path(config.get('메타매칭시이동폴더'))
+                        folder_format_to_use = config['이동폴더포맷']
 
-                        custom_rules = config.get('커스텀경로규칙', [])
-                        # 메타 정보가 있을 때는 메타의 레이블을 기준으로, 없으면 파싱된 레이블 기준
-                        effective_info = info.copy()
-                        effective_info['label'] = meta_info.get("originaltitle", info['pure_code']).split('-')[0]
+                        if config.get('커스텀경로활성화', False):
+                            custom_rules = config.get('커스텀경로규칙', [])
+                            effective_info = info.copy()
+                            effective_info['label'] = meta_info.get("originaltitle", info['pure_code']).split('-')[0]
+                            
+                            matched_rule = Task.__find_custom_path_rule(effective_info, custom_rules)
+                            if matched_rule:
+                                custom_path_str = matched_rule.get('path', '').strip()
+                                if custom_path_str:
+                                    current_target_root = Path(custom_path_str)
+                                    if matched_rule['format']:
+                                        folder_format_to_use = matched_rule['format']
 
-                        matched_rule = Task.__find_custom_path_rule(effective_info, custom_rules)
-                        if matched_rule:
-                            custom_path = Path(matched_rule['path'])
-                            if custom_path.is_dir():
-                                current_target_root = custom_path
-                                if matched_rule['format']:
-                                    config['이동폴더포맷'] = matched_rule['format']
-                                    use_custom_format = True
-
-                        folders = Task.process_folder_format(config, info, config['이동폴더포맷'], meta_info)
-
-                        if use_custom_format:
-                            config['이동폴더포맷'] = original_format
+                        folders = Task.process_folder_format(config, info, folder_format_to_use, meta_info)
 
                         vr_genres = ["고품질VR", "VR전용", "VR専用", "ハイクオリティVR"]
                         if any(x in (meta_info.get("genre") or []) for x in vr_genres):
