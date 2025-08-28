@@ -729,7 +729,6 @@ class Task:
             logger.warning(f"'{file.name}'의 최종 이동 경로를 결정할 수 없어 건너뜁니다.")
             return entity.set_move_type(None)
 
-        target_dir.mkdir(parents=True, exist_ok=True)
         newfile = target_dir.joinpath(newfilename)
 
         # Dry Run 모드일 경우, 로그만 남기고 조기 리턴
@@ -749,6 +748,8 @@ class Task:
 
             logger.warning(log_msg)
             return None # DB 저장을 막기 위해 None 반환
+
+        target_dir.mkdir(parents=True, exist_ok=True)
 
         # 1. 매칭 실패 (no_meta) 케이스 처리
         if move_type == "no_meta":
