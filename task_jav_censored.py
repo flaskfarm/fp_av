@@ -1126,9 +1126,19 @@ class Task:
         # 4. 안전한 포맷팅 및 후처리
         safe_fmt = SafeFormatter()
         folders = safe_fmt.format(folder_format, **data)
+        # 포맷팅 후에도 남아있는 {태그} 제거
         folders = re.sub(r'\{[a-zA-Z0-9_.-]+\}', '', folders)
-        folders = re.sub(r'\s{2,}', ' ', folders).strip()
-        final_parts = [part for part in folders.split("/") if part]
+        # 비어있는 모든 종류의 괄호 제거: (), [], {}
+        folders = folders.replace("()", "").replace("[]", "").replace("{}", "")
+        # 연속된 공백을 하나로 합치기
+        folders = re.sub(r'\s{2,}', ' ', folders)
+        # 폴더 구분자(/) 주변이나 문자열 끝의 불필요한 공백/특수문자 제거
+        # 예: "A / B / C " -> "A/B/C"
+        # 예: "A/ - B" -> "A/B"
+        final_parts = [part.strip(' ._-') for part in folders.split('/')]
+        # 비어있는 경로 세그먼트 제거
+        final_parts = [part for part in final_parts if part]
+
         return final_parts
 
 
