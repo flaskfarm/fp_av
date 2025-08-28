@@ -623,23 +623,22 @@ class Task:
 
                 # --- 자막 우선 처리 로직 ---
                 is_subbed_target = False
-                if sub_config.get('처리활성화') and sub_config.get('규칙'):
-                    # 1. 내장 자막 키워드 확인
-                    if any(kw in representative_info['original_file'].name.lower() for kw in sub_config['내장자막키워드']):
-                        is_subbed_target = True
-                    # 2. 외부 자막 파일 확인
-                    elif Task._find_external_subtitle(config, representative_info, sub_config):
-                        is_subbed_target = True
+
+                if config.get('자막우선처리활성화', True) is not False:
+                    if sub_config.get('처리활성화', False) and sub_config.get('규칙'):
+                        if any(kw in representative_info['original_file'].name.lower() for kw in sub_config.get('내장자막키워드', [])) or \
+                           Task._find_external_subtitle(config, representative_info, sub_config):
+                            is_subbed_target = True
 
                 if is_subbed_target:
                     logger.info(f"'{pure_code}' 그룹: 자막 파일 조건 충족, 우선 처리합니다.")
                     rule = sub_config['규칙']
                     base_path = Path(rule['경로'])
                     folder_format = rule.get('폴더구조') or config.get('이동폴더포맷')
-                    folders = Task.process_folder_format(config, representative_info, folder_format) # 그룹 대표 정보로 폴더 생성
+                    folders = Task.process_folder_format(config, representative_info, folder_format)
                     target_dir = base_path.joinpath(*folders)
                     move_type = "subbed"
-                    meta_info = None # 자막 우선 처리는 메타 검색 안 함
+                    meta_info = None
                 else:
                     # --- 일반 경로 결정 및 미디어 정보 처리 ---
                     # 1. 미디어 정보 사전 처리 및 그룹 유효성 검사

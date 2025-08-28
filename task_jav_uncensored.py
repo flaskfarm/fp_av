@@ -135,40 +135,32 @@ class Task:
     @staticmethod
     def __get_target_with_meta(config, info):
         """
-        [Uncensored 전용] 메타 검색 및 경로를 결정합니다.
-        Censored의 로직을 기반으로 하되, Uncensored의 특성을 반영합니다.
+        Uncensored 전용 메타 검색 및 경로를 결정합니다.
         """
         label = info['label'].lower()
         meta_info = None
         move_type = "default"
 
         # [Priority 1] 사용자 지정 레이블 폴더 (절대 경로)
-        # 이 규칙은 메타 검색 여부와 상관없이 최우선으로 적용됩니다.
         overrides_map = Task.__parse_key_value_text(config.get('사용자지정레이블폴더', ''))
         if label in overrides_map:
             user_defined_format = overrides_map[label]
             logger.info(f"'{label}' -> 사용자 지정 절대 경로 규칙 적용.")
-            # 임시로 폴더 포맷을 변경하여 경로 생성
-            original_format = config['이동폴더포맷']
-            config['이동폴더포맷'] = user_defined_format
-            folders = CensoredTask.process_folder_format(config, info, user_defined_format)
-            config['이동폴더포맷'] = original_format
+            folders = CensoredTask.process_folder_format(config, info, user_defined_format, meta_data=None)
 
-            # 절대 경로로 해석하여 반환
             return Path(os.path.join('/', *folders)), "override", None
 
         # [Priority 2] 메타 검색 로직
+        target_root_str = None
         if config.get('메타사용') == 'using' and label in config.get('메타검색지원레이블', set()):
             meta_module = CensoredTask.get_meta_module('jav_uncensored')
             meta_info = Task.__search_meta(config, meta_module, info['pure_code'])
 
             if meta_info:
-                # 메타 검색 성공
                 move_type = "meta_success"
                 target_root_str = config.get('메타매칭시이동폴더')
                 logger.info(f"메타 검색 성공: {meta_info.get('originaltitle')}")
             else:
-                # 메타 검색 실패
                 move_type = "meta_fail"
                 target_root_str = config.get('메타매칭실패시이동폴더')
                 logger.info(f"메타 검색 실패: {info['pure_code']}")
@@ -181,9 +173,9 @@ class Task:
             logger.error("이동할 대상 경로가 설정되지 않았습니다. 처리 실패 폴더로 이동합니다.")
             return Path(config['처리실패이동폴더']).joinpath("[NO TARGET PATH]"), "error", None
 
-        # [최종 경로 결정]
+        # [Priority 3 & 최종 경로 결정]
         current_target_root = Path(str(target_root_str))
-        original_format = config['이동폴더포맷']
+        folder_format_to_use = config['이동폴더포맷']
 
         if config.get('커스텀경로활성화', False):
             custom_rules = config.get('커스텀경로규칙', [])
@@ -200,6 +192,7 @@ class Task:
                     if matched_rule['format']:
                         folder_format_to_use = matched_rule['format']
 
+        # 최종적으로 결정된 경로와 포맷을 사용하여 폴더 목록 생성
         folders = CensoredTask.process_folder_format(config, info, folder_format_to_use, meta_info)
 
         return current_target_root.joinpath(*folders), move_type, meta_info
