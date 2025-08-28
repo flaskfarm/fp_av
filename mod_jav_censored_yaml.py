@@ -21,15 +21,18 @@ class ModuleJavCensoredYaml(PluginModuleBase):
         except Exception as e:
             logger.error(f'Exception:{str(e)}')
             return render_template('sample.html', title=f"{P.package_name}/{self.name}/{page_name}")
-    
+
     def process_command(self, command, arg1, arg2, arg3, req):
         if command == 'gds':
             ret = self.start_celery(TaskCensoredJavTool.start, None, command, arg1)
             return {"ret":"success", "message":"run task"}
-        
+
     def scheduler_function(self):
-        ret = self.start_celery(TaskBase.start, None, "yaml")
+        yaml_filepath = P.ModelSetting.get(f"{self.name}_filepath")
+        if not yaml_filepath or not os.path.exists(yaml_filepath):
+            logger.error(f"YAML 파일 경로가 유효하지 않습니다: {yaml_filepath}")
+            return
+
+        ret = self.start_celery(TaskBase.start, None, "yaml", yaml_filepath)
 
     ###################################################################
-    
-    

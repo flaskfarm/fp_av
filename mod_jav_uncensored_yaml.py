@@ -22,9 +22,11 @@ class ModuleJavUncensoredYaml(PluginModuleBase):
             return render_template('sample.html', title=f"{P.package_name}/{self.name}/{page_name}")
 
     def scheduler_function(self):
-        filepath_key = f"{self.name}_filepath"
-        ret = self.start_celery(TaskBase.start, None, "yaml", filepath_key)
+        yaml_filepath = P.ModelSetting.get(f"{self.name}_filepath")
+        if not yaml_filepath or not os.path.exists(yaml_filepath):
+            logger.error(f"YAML 파일 경로가 유효하지 않습니다: {yaml_filepath}")
+            return
+
+        ret = self.start_celery(TaskBase.start, None, "yaml", yaml_filepath)
 
     ###################################################################
-    
-    
