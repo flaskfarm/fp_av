@@ -114,6 +114,9 @@ class ToolExpandFileProcess:
                 else:
                     newdir.mkdir(parents=True, exist_ok=True)
                     shutil.move(file, newfile)
+            else:
+                if errpath is None:
+                    logger.warning(f"전처리 실패 파일 건너뛰기 (처리실패폴더 미지정): {file.name}")
 
         return files
 
@@ -391,9 +394,9 @@ class ToolExpandFileProcess:
         if not config.get('파일명변경', True):
             return info['original_file'].name
 
-        ext_config = config.get('확장_ffprobe', {})
+        ext_config = config.get('미디어정보설정', {})
         original_filename_stem = info['original_file'].stem
-        use_media_info = config.get('파일명에미디어정보포함') and ext_config.get('enable')
+        use_media_info = config.get('파일명에미디어정보포함', False)
 
         # 2. "미디어 정보 포함 OFF"일 때, 이미 처리된 파일인지 검사
         if not use_media_info:
@@ -411,7 +414,7 @@ class ToolExpandFileProcess:
                 media_info_str = cls._format_conditional_template(template, media_info_to_use)
 
         # 4. "미디어 정보 포함 ON"일 때, 재처리 로직 적용
-        if use_media_info and ext_config.get('enable_reprocessing', True):
+        if use_media_info and ext_config.get('enable_reprocessing', True) and media_info_str:
             skip_pattern = ext_config.get('reprocess_skip_pattern')
             insert_pattern = ext_config.get('reprocess_insert_pattern')
 
@@ -419,13 +422,16 @@ class ToolExpandFileProcess:
                 logger.debug(f"미디어 정보 포함 파일명으로 판단되어 재처리 건너뜁니다: {info['original_file'].name}")
                 return info['original_file'].name
 
-            if media_info_str and insert_pattern:
-                match = re.match(insert_pattern, original_filename_stem)
-                if match:
+            if insert_pattern and re.match(insert_pattern, original_filename_stem, re.IGNORECASE):
+                if media_info_str:
                     logger.debug(f"기존 파일명에 미디어 정보를 동적 삽입합니다: {info['original_file'].name}")
+                    match = re.match(insert_pattern, original_filename_stem)
                     base, prefix, suffix = match.groups()
                     final_base = f"{base}{prefix}{media_info_str} {suffix.lstrip()}"
                     return f"{final_base}{info['ext']}"
+                else:
+                    logger.warning(f"'{info['original_file'].name}': 유효한 미디어 정보가 없어 처리를 건너뜁니다.")
+                    return None
 
         # 5. 위 조건들에 해당하지 않는 일반적인 신규 파일명 생성
         base = info['pure_code']
