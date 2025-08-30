@@ -44,7 +44,6 @@ class TaskBase:
             "이동폴더포맷": ModelSetting.get("jav_uncensored_folder_format"),
             "처리실패이동폴더": ModelSetting.get("jav_uncensored_temp_path").strip(),
             "중복파일이동폴더": ModelSetting.get("jav_uncensored_remove_path").strip(),
-            "사용자지정레이블폴더": ModelSetting.get("jav_uncensored_label_path_overrides"),
             "메타사용": ModelSetting.get("jav_uncensored_use_meta"),
             "메타매칭시이동폴더": ModelSetting.get("jav_uncensored_meta_path").strip(),
             "메타매칭실패시이동폴더": ModelSetting.get("jav_uncensored_meta_no_path").strip(),
@@ -83,10 +82,30 @@ class TaskBase:
                     if not job.get('사용', True): continue
 
                     final_config = base_config_with_advanced.copy()
+                    user_subbed_override = job.get('자막우선처리', None)
                     final_config.update(job)
+
+                    if user_subbed_override is not None and isinstance(user_subbed_override, dict):
+                        final_config['자막우선처리'] = {**base_config_with_advanced.get('자막우선처리',{}), **user_subbed_override}
 
                     if final_config.get('드라이런', False):
                         logger.warning(f"'{final_config.get('이름', 'YAML Job')}' 작업: Dry Run 모드가 활성화되었습니다.")
+
+                    if '커스텀경로규칙' in job:
+                        if isinstance(job['커스텀경로규칙'], list):
+                            logger.debug("작업 YAML에 정의된 '커스텀경로규칙'을 직접 적용하고, 기능을 활성화합니다.")
+                            final_config['커스텀경로활성화'] = True
+                        else:
+                            logger.warning("작업 YAML의 '커스텀경로규칙'이 리스트 형식이 아니므로 무시합니다.")
+
+                    elif 'meta_custom_path' in job:
+                        logger.debug("작업 YAML에 정의된 meta_custom_path 설정을 파싱하여 적용합니다.")
+                        custom_path_section = job['meta_custom_path']
+                        current_module = final_config.get('parse_mode')
+                        is_enabled, rules = CensoredTask._parse_custom_path_rules(custom_path_section, current_module)
+                        final_config['커스텀경로활성화'] = is_enabled
+                        final_config['커스텀경로규칙'] = rules
+
                     TaskBase.__task(final_config)
             except Exception as e:
                 logger.error(f"YAML 파일 처리 중 오류 발생: {e}")
@@ -133,69 +152,73 @@ class Task:
 
 
     @staticmethod
-    def __get_target_with_meta(config, info):
+    def __get_target_path(config, info):
         """
-        Uncensored 전용 메타 검색 및 경로를 결정합니다.
+        Uncensored 전용 경로 결정 로직.
         """
-        label = info['label'].lower()
         meta_info = None
         move_type = "default"
 
-        # [Priority 1] 사용자 지정 레이블 폴더 (절대 경로)
-        overrides_map = Task.__parse_key_value_text(config.get('사용자지정레이블폴더', ''))
-        if label in overrides_map:
-            user_defined_format = overrides_map[label]
-            logger.info(f"'{label}' -> 사용자 지정 절대 경로 규칙 적용.")
-            folders = CensoredTask.process_folder_format(config, info, user_defined_format, meta_data=None)
-
-            return Path(os.path.join('/', *folders)), "override", None
-
-        # [Priority 2] 메타 검색 로직
-        target_root_str = None
-        if config.get('메타사용') == 'using' and label in config.get('메타검색지원레이블', set()):
+        # 1. 메타 검색 시도 (메타사용: 'using' 이고 지원 레이블일 경우)
+        if config.get('메타사용') == 'using' and info['label'].lower() in config.get('메타검색지원레이블', set()):
             meta_module = CensoredTask.get_meta_module('jav_uncensored')
             meta_info = Task.__search_meta(config, meta_module, info['pure_code'])
 
+        # 2. 커스텀 경로 규칙 확인
+        if config.get('커스텀경로활성화', False):
+            custom_rules = config.get('커스텀경로규칙', [])
+            effective_info = info.copy()
+            # 메타 성공 시, 메타 정보의 레이블로 규칙 매칭 시도
             if meta_info:
-                move_type = "meta_success"
-                target_root_str = config.get('메타매칭시이동폴더')
-                logger.info(f"메타 검색 성공: {meta_info.get('originaltitle')}")
-            else:
-                move_type = "meta_fail"
-                target_root_str = config.get('메타매칭실패시이동폴더')
-                logger.info(f"메타 검색 실패: {info['pure_code']}")
-        else:
-            # 메타 미사용 또는 지원되지 않는 레이블
+                meta_label = meta_info.get("originaltitle", info['pure_code']).split('-')[0]
+                effective_info['label'] = meta_label.lower()
+
+            # 일치하는 커스텀 규칙 찾기
+            matched_rule = CensoredTask._find_and_merge_custom_path_rules(effective_info, custom_rules)
+
+            if matched_rule:
+                # 규칙이 매칭되었을 때의 처리
+                use_custom_path = False
+                if meta_info: # 메타 성공 시 무조건 커스텀 경로 사용
+                    use_custom_path = True
+                elif matched_rule.get('force_on_meta_fail'): # 메타 실패했지만 강제 적용 옵션이 켜져 있을 때
+                    logger.debug(f"메타 검색에 실패했지만, '{matched_rule['name']}' 규칙의 '메타실패시강제적용' 옵션에 따라 커스텀 경로를 사용합니다.")
+                    use_custom_path = True
+
+                if use_custom_path:
+                    custom_path_str = (matched_rule.get('path') or matched_rule.get('경로', '')).strip()
+                    folder_format_to_use = (matched_rule.get('format') or matched_rule.get('폴더포맷')) or config['이동폴더포맷']
+
+                    if custom_path_str:
+                        target_root = Path(custom_path_str)
+                    else:
+                        if meta_info:
+                            target_root = Path(config.get('메타매칭시이동폴더'))
+                        else: # 메타 실패 & 강제 적용
+                            target_root = Path(config.get('메타매칭실패시이동폴더'))
+
+                    folders = CensoredTask.process_folder_format(config, info, folder_format_to_use, meta_info)
+                    return target_root.joinpath(*folders), "custom_path", meta_info
+
+        # 3. (커스텀 규칙 미적용 시) 일반 경로 결정
+        target_root_str = None
+        if meta_info:
+            move_type = "meta_success"
+            target_root_str = config.get('메타매칭시이동폴더')
+        else: # 메타 실패 (또는 미사용)
+            move_type = "meta_fail"
+            target_root_str = config.get('메타매칭실패시이동폴더')
+
+        if not target_root_str: # 라이브러리 폴더 (메타 미사용)
             library_paths = CensoredTask.get_path_list(config.get('라이브러리폴더', []))
             target_root_str = library_paths[0] if library_paths else None
 
         if not target_root_str:
-            logger.error("이동할 대상 경로가 설정되지 않았습니다. 처리 실패 폴더로 이동합니다.")
+            logger.error("이동할 대상 경로를 결정할 수 없습니다. 처리 실패 폴더로 이동합니다.")
             return Path(config['처리실패이동폴더']).joinpath("[NO TARGET PATH]"), "error", None
 
-        # [Priority 3 & 최종 경로 결정]
-        current_target_root = Path(str(target_root_str))
-        folder_format_to_use = config['이동폴더포맷']
-
-        if config.get('커스텀경로활성화', False):
-            custom_rules = config.get('커스텀경로규칙', [])
-            effective_info = info.copy()
-            if meta_info:
-                effective_info['label'] = meta_info.get("originaltitle", info['pure_code']).split('-')[0]
-
-            matched_rule = CensoredTask.__find_custom_path_rule(effective_info, custom_rules)
-            if matched_rule:
-                custom_path_str = matched_rule.get('path', '').strip()
-                if custom_path_str:
-                    current_target_root = Path(custom_path_str)
-                    move_type = "custom_path"
-                    if matched_rule['format']:
-                        folder_format_to_use = matched_rule['format']
-
-        # 최종적으로 결정된 경로와 포맷을 사용하여 폴더 목록 생성
-        folders = CensoredTask.process_folder_format(config, info, folder_format_to_use, meta_info)
-
-        return current_target_root.joinpath(*folders), move_type, meta_info
+        folders = CensoredTask.process_folder_format(config, info, config['이동폴더포맷'], meta_info)
+        return Path(target_root_str).joinpath(*folders), move_type, meta_info
 
 
     @staticmethod
@@ -203,7 +226,8 @@ class Task:
         """
         Uncensored 모듈의 최종 실행 함수. Censored와 로직 통일.
         """
-        sub_config = config.get('확장_자막우선처리', {})
+        sub_config = config.get('자막우선처리', {})
+        ext_config = config.get('미디어정보설정', {})
         
         code_groups = {}
         for info in execution_plan:
@@ -215,12 +239,11 @@ class Task:
         scan_enabled = config.get("PLEXMATE스캔", False)
         processed_count = 0
         last_scan_path = None
-        last_move_type = None # 마지막 이동 타입을 추적
+        last_move_type = None
 
         successful_move_types = {'subbed', 'override', 'meta_success', 'default', 'custom_path'}
         if config.get('scan_with_no_meta', True):
-            successful_move_types.add('meta_fail') # Uncensored는 no_meta가 별도로 없음
-            logger.debug(f"메타 없는 파일 스캔 활성화. 스캔 대상: {successful_move_types}")
+            successful_move_types.add('meta_fail')
 
         for idx, (pure_code, group_infos) in enumerate(code_groups.items()):
             try:
@@ -229,50 +252,30 @@ class Task:
 
                 # --- 자막 우선 처리 로직 ---
                 is_subbed_target = False
-                if sub_config.get('처리활성화') and sub_config.get('규칙'):
-                    if any(kw in representative_info['original_file'].name.lower() for kw in sub_config['내장자막키워드']) or \
-                       CensoredTask._find_external_subtitle(config, representative_info, sub_config):
-                        is_subbed_target = True
+                if config.get('자막우선처리', True) is not False:
+                    if sub_config.get('enable', False) and sub_config.get('규칙'):
+                        if any(kw in representative_info['original_file'].name.lower() for kw in sub_config.get('내장자막키워드', [])) or \
+                           CensoredTask._find_external_subtitle(config, representative_info, sub_config):
+                            is_subbed_target = True
 
                 if is_subbed_target:
                     logger.info(f"'{pure_code}' 그룹: 자막 파일 조건 충족, 우선 처리합니다.")
                     rule = sub_config['규칙']
                     base_path = Path(rule['경로'])
-                    # 자막 우선 처리 시에도 메타 검색은 선택적으로 수행
+                    # 자막 우선 처리 시에도 메타 검색 수행
                     if config.get('메타사용') == 'using' and representative_info['label'].lower() in config.get('메타검색지원레이블', set()):
                         meta_module = CensoredTask.get_meta_module('jav_uncensored')
                         meta_info = Task.__search_meta(config, meta_module, pure_code)
 
-                    folders = CensoredTask.process_folder_format(config, representative_info, meta_info)
+                    folder_format = rule.get('폴더구조') or config.get('이동폴더포맷')
+                    folders = CensoredTask.process_folder_format(config, representative_info, folder_format, meta_info)
                     target_dir = base_path.joinpath(*folders)
                     move_type = "subbed"
                 else:
-                    # --- 일반 경로 결정 및 미디어 정보 처리 ---
-                    # (Censored와 동일한 로직을 여기에 직접 포함)
-                    is_set = any(info.get('is_part_of_set') for info in group_infos)
-                    ext_config = config.get('확장_ffprobe', {})
-                    use_media_info_in_filename = config.get('파일명에미디어정보포함') and ext_config.get('enable')
-
-                    if is_set and use_media_info_in_filename:
-                        merge_result = CensoredTask._merge_and_standardize_media_info(group_infos, ext_config)
-                        if merge_result.get('is_valid_set'):
-                            for info in group_infos: info['final_media_info'] = merge_result['final_media']
-                        else:
-                            logger.warning(f"'{pure_code}' 그룹 미디어 오류로 분할 세트 처리를 취소합니다.")
-                            failed_files_set = {f['original_file'].name for f in merge_result.get('failed_files', [])}
-                            for info in group_infos:
-                                info.update({'is_part_of_set': False, 'parsed_part_type': ''})
-                                info['final_media_info'] = {'is_valid': False} if info['original_file'].name in failed_files_set else info.get('media_info')
-                    else:
-                        for info in group_infos:
-                            info['final_media_info'] = info.get('media_info') if use_media_info_in_filename else None
-
-                    # Uncensored 전용 경로 결정 헬퍼 호출
-                    target_dir, move_type, meta_info = Task.__get_target_with_meta(config, representative_info)
+                    # --- 일반 경로 결정 로직 ---
+                    target_dir, move_type, meta_info = Task.__get_target_path(config, representative_info)
 
                 # --- 스캔 요청 전 조건 확인 ---
-                successful_move_types = {'subbed', 'override', 'meta_success', 'default', 'custom_path'}
-
                 if scan_enabled and target_dir != last_scan_path and last_scan_path is not None:
                     if last_move_type in successful_move_types:
                         CensoredTask.__request_plex_mate_scan(config, last_scan_path)
@@ -282,43 +285,52 @@ class Task:
                     processed_count += 1
                     logger.info(f"[{processed_count:03d}/{total_files:03d}] {info['original_file'].name}")
 
-                    info['newfilename'] = ToolExpandFileProcess.assemble_filename(config, info)
-                    info['target_dir'] = target_dir
-                    info['move_type'] = move_type
-                    info['meta_info'] = meta_info
+                    current_target_dir = target_dir
+                    current_move_type = move_type
+
+                    new_filename = None
+                    if info.get('file_type') == 'subtitle' or info.get('file_type') == 'etc':
+                        new_filename = info['original_file'].name
+                        logger.debug(f"'{info['original_file'].name}' ({info.get('file_type')}) 파일은 원본 파일명을 유지합니다.")
+
+                    elif info.get('file_type') == 'video':
+                        use_media_info = config.get('파일명에미디어정보포함', False)
+
+                        if use_media_info and not info.get('final_media_info', {}).get('is_valid', True):
+                            current_move_type = "failed_video"
+                            current_target_dir = Path(config['처리실패이동폴더']).joinpath("[FAILED VIDEO]")
+                            new_filename = info['original_file'].name
+                        else:
+                            new_filename = ToolExpandFileProcess.assemble_filename(config, info)
+                    else:
+                        new_filename = info['original_file'].name
+
+                    if new_filename is None:
+                        continue
+
+                    info['newfilename'] = new_filename
+
+                    info.update({
+                        'target_dir': current_target_dir,
+                        'move_type': current_move_type,
+                        'meta_info': meta_info
+                    })
 
                     entity = CensoredTask.__file_move_logic(config, info, db_model)
                     if entity and entity.move_type is not None:
                         entity.save()
 
-                # --- 마지막 스캔 경로 및 타입 업데이트 ---
                 if scan_enabled and target_dir is not None:
                     last_scan_path = target_dir
                     last_move_type = move_type
-
             except Exception as e:
                 logger.error(f"'{pure_code}' 그룹 처리 중 예외 발생: {e}")
                 logger.error(traceback.format_exc())
 
-        # --- 모든 작업 완료 후 최종 스캔 요청 ---
         if scan_enabled and last_scan_path is not None:
-            successful_move_types = {'subbed', 'override', 'meta_success', 'default', 'custom_path'}
             if last_move_type in successful_move_types:
                 logger.info(f"모든 파일 처리 완료. 마지막 경로 스캔 요청: {last_scan_path}")
                 CensoredTask.__request_plex_mate_scan(config, last_scan_path)
-
-
-    @staticmethod
-    def __parse_key_value_text(text_data: str) -> dict:
-        """사용자 지정 레이블 폴더 설정을 파싱하는 헬퍼 함수."""
-        if not text_data: return {}
-        result = {}
-        for line in text_data.strip().splitlines():
-            line = line.strip()
-            if not line or line.startswith('#'): continue
-            parts = [part.strip() for part in line.split(':', 1)]
-            if len(parts) == 2 and parts[0]: result[parts[0].lower()] = parts[1]
-        return result
 
 
     @staticmethod
@@ -335,7 +347,7 @@ class Task:
             if search_result:
                 best_match = next((item for item in search_result if item.get('score', 0) >= 95), None)
                 if best_match:
-                    return meta_module.info(best_match["code"], fp_meta_mode=True)
+                    return meta_module.info(best_match["code"], fp_meta_mode=False)
         except Exception as e:
             logger.error(f"'{pure_code}' 메타 검색 중 예외: {e}")
         return None

@@ -67,28 +67,24 @@
     {{ macros.setting_input_text('jav_uncensored_folder_format', '기본 폴더 구조', value=arg['jav_uncensored_folder_format'], desc=['예) {label}/{code} : 레이블폴더/품번폴더 생성 후 이동', '{studio}: 제작사 / {label_1}: 레이블 첫 글자']) }}
 
     {{ macros.m_hr() }}
-    {{ macros.info_text('path_priority_info', '처리 경로 우선순위', value='', desc=['아래 사용자 설정의 경로와 구조로 이동합니다.']) }}
-
-    {{ macros.setting_input_textarea('jav_uncensored_label_path_overrides', '1. 사용자 지정 레이블별 이동 경로', value=arg['jav_uncensored_label_path_overrides'], row='3', desc=['"레이블: 절대경로" 형식으로 입력하세요. 이 규칙은 아래 모든 규칙보다 우선합니다.', '[추가 옵션]', '{year4}: 1pon, carib 처럼 MMDDYY 형식 품번일 때 YYYY 형식 폴더 생성', '{num_X_Y}: 품번의 넘버 파트 자리수 앞 일부를 폴더로 생성. {num_3_7}이면 7자리 패딩에 앞 3자리 숫자를 폴더로 생성(fc2)']) }}
-
-    {{ macros.setting_radio_with_value('jav_uncensored_use_meta', '2. 메타 검색 사용', [['not_using', '사용안함'], ['using', '사용']], value=arg['jav_uncensored_use_meta'], desc=['메타 검색에 성공한 파일이 이동할 경로입니다.', '메타 검색이 가능한 레이블만 매칭을 시도합니다.']) }}
+    {{ macros.setting_radio_with_value('jav_uncensored_use_meta', '메타 검색 사용', [['not_using', '사용안함'], ['using', '사용']], value=arg['jav_uncensored_use_meta'], desc=['메타 검색에 성공한 파일이 이동할 경로입니다.', '메타 검색이 가능한 레이블만 매칭을 시도합니다.']) }}
 
     <div id="jav_uncensored_use_meta_on_div" class="collapse">
-      {{ macros.setting_input_text('jav_uncensored_meta_path', 'ㄴ 매칭 성공 시 이동 경로', value=arg['jav_uncensored_meta_path'], desc=['메타 검색을 성공한 파일이 이동할 경로입니다.']) }}
+      {{ macros.setting_input_text('jav_uncensored_meta_path', '매칭 성공 시 이동 경로', value=arg['jav_uncensored_meta_path'], desc=['메타 검색을 성공한 파일이 이동할 경로입니다.']) }}
 
-      {{ macros.setting_input_text('jav_uncensored_meta_no_path', 'ㄴ 매칭 실패 시 이동 경로', value=arg['jav_uncensored_meta_no_path'], desc=['메타 검색을 시도했으나 실패한 파일이 이동할 경로입니다.', '비워두면 \'처리 실패시 이동 경로\' 아래 [NO META] 폴더로 이동합니다.']) }}
+      {{ macros.setting_input_text('jav_uncensored_meta_no_path', '매칭 실패 시 이동 경로', value=arg['jav_uncensored_meta_no_path'], desc=['메타 검색을 시도했으나 실패한 파일이 이동할 경로입니다.', '비워두면 \'처리 실패시 이동 경로\' 아래 [NO META] 폴더로 이동합니다.']) }}
 
-      {{ macros.setting_checkbox('jav_uncensored_meta_no_change_filename', 'ㄴ 매칭 실패 영상 이동 시 파일명 변경', value=arg['jav_uncensored_meta_no_change_filename'], desc=['On: 품번 기반으로 파일명을 변경하여 이동합니다.', 'Off: 원본 파일명 그대로 이동합니다.']) }}
+      {{ macros.setting_checkbox('jav_uncensored_meta_no_change_filename', '매칭 실패 영상 이동 시 파일명 변경', value=arg['jav_uncensored_meta_no_change_filename'], desc=['On: 품번 기반으로 파일명을 변경하여 이동합니다.', 'Off: 원본 파일명 그대로 이동합니다.']) }}
 
-      {{ macros.setting_input_int('jav_uncensored_meta_no_retry_every', 'ㄴ 매칭 실패 영상 재시도 주기 (일)', value=arg['jav_uncensored_meta_no_retry_every'], min='0', placeholder='0', desc='매칭 실패로 분류된 영상을 주기적으로 재시도합니다. 0이면 재시도 안 함. 주기: 일') }}
+      {{ macros.setting_input_int('jav_uncensored_meta_no_retry_every', '매칭 실패 영상 재시도 주기 (일)', value=arg['jav_uncensored_meta_no_retry_every'], min='0', placeholder='0', desc='매칭 실패로 분류된 영상을 주기적으로 재시도합니다. 0이면 재시도 안 함. 주기: 일') }}
 
       {{ macros.m_hr() }}
-      {{ macros.setting_checkbox('jav_uncensored_make_yaml', 'ㄴ YAML 파일 생성', value=arg['jav_uncensored_make_yaml'], desc=['On: 메타가 있을 경우 YAML 파일을 생성합니다.', '폴더 구조가 {code}로 끝나야 합니다.']) }}
-      {{ macros.setting_checkbox('jav_uncensored_make_nfo', 'ㄴ NFO 파일 생성', value=arg['jav_uncensored_make_nfo'], desc=None) }}
-      {{ macros.setting_checkbox('jav_uncensored_make_image', 'ㄴ 이미지 파일 생성', value=arg['jav_uncensored_make_image'], desc=None) }}
+      {{ macros.setting_checkbox('jav_uncensored_make_yaml', 'YAML 파일 생성', value=arg['jav_uncensored_make_yaml'], desc=['On: 메타가 있을 경우 YAML 파일을 생성합니다.', '폴더 구조가 {code}로 끝나야 합니다.']) }}
+      {{ macros.setting_checkbox('jav_uncensored_make_nfo', 'NFO 파일 생성', value=arg['jav_uncensored_make_nfo'], desc=None) }}
+      {{ macros.setting_checkbox('jav_uncensored_make_image', '이미지 파일 생성', value=arg['jav_uncensored_make_image'], desc=None) }}
     </div>
 
-    {{ macros.setting_input_text('jav_uncensored_target_path', '3. 기본 이동 경로', value=arg['jav_uncensored_target_path'], desc=['위 조건에 해당하지 않고, 품번이 정상적으로 파싱된 파일이 이동할 기본 경로입니다.']) }}
+    {{ macros.setting_input_text('jav_uncensored_target_path', '기본 이동 경로', value=arg['jav_uncensored_target_path'], desc=['위 조건에 해당하지 않고, 품번이 정상적으로 파싱된 파일이 이동할 기본 경로입니다.']) }}
 
   {{ macros.m_tab_content_end() }}  
 
