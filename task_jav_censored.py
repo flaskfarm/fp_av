@@ -92,10 +92,29 @@ class TaskBase:
                     if not job.get('사용', True): continue
 
                     final_config = base_config_with_advanced.copy()
+                    user_subbed_override = job.get('자막우선처리', None)
                     final_config.update(job)
+
+                    if user_subbed_override is not None and isinstance(user_subbed_override, dict):
+                        final_config['자막우선처리'] = {**base_config_with_advanced['자막우선처리'], **user_subbed_override}
 
                     if final_config.get('드라이런', False):
                         logger.warning(f"'{final_config.get('이름', 'YAML Job')}' 작업: Dry Run 모드가 활성화되었습니다.")
+
+                    if '커스텀경로규칙' in job:
+                        if isinstance(job['커스텀경로규칙'], list):
+                            logger.debug("작업 YAML에 정의된 '커스텀경로규칙'을 직접 적용하고, 기능을 활성화합니다.")
+                            final_config['커스텀경로활성화'] = True
+                        else:
+                            logger.warning("작업 YAML의 '커스텀경로규칙'이 리스트 형식이 아니므로 무시합니다.")
+
+                    elif 'meta_custom_path' in job:
+                        logger.debug("작업 YAML에 정의된 meta_custom_path 설정을 파싱하여 적용합니다.")
+                        custom_path_section = job['meta_custom_path']
+                        current_module = final_config.get('parse_mode')
+                        is_enabled, rules = Task._parse_custom_path_rules(custom_path_section, current_module)
+                        final_config['커스텀경로활성화'] = is_enabled
+                        final_config['커스텀경로규칙'] = rules
 
                     TaskBase.__task(final_config)
             except Exception as e:
@@ -131,17 +150,19 @@ class Task:
 
         # 1. 파일 목록 수집
         logger.debug(f"처리 파일 목록 생성")
-        files = Task.__collect_initial_files(config, config['module_name'])
-        if not files:
+        all_files = Task.__collect_initial_files(config, config['module_name'])
+        if not all_files:
             logger.info("처리할 파일이 없습니다.")
             return
+
+        files_to_process = all_files
 
         # 2. 파싱 및 기본 정보 추출, 목록 분리
         logger.debug(f"파싱 및 기본 정보 추출")
         execution_plan = []
         unparsed_infos = []
 
-        for file in files:
+        for file in files_to_process:
             info = Task.__prepare_initial_info(config, file)
 
             if info.get('is_parsed'):
@@ -155,6 +176,23 @@ class Task:
             for info in unparsed_infos:
                 Task.__move_to_no_label_folder(config, info['original_file'])
 
+        # 2-2. (Subbed Path) 자막 파일 우선 처리 "Fast Lane"
+        sub_config = config.get('자막우선처리', {})
+        if sub_config.get('enable', False):
+            subtitle_fast_lane = []
+            remaining_files = []
+            for info in execution_plan:
+                if info.get('file_type') == 'subtitle':
+                    subtitle_fast_lane.append(info)
+                else:
+                    remaining_files.append(info)
+
+            # 자막 파일 우선 처리 로직 실행
+            Task._process_subtitle_fast_lane(config, subtitle_fast_lane, task_context['db_model'])
+
+            # 다음 단계를 위해 처리 목록을 자막이 제외된 목록으로 교체
+            execution_plan = remaining_files
+
         if not execution_plan:
             logger.debug("파싱에 성공한 파일이 없어 작업을 종료합니다.")
             return
@@ -165,16 +203,13 @@ class Task:
             Task.__process_part_sets(execution_plan)
 
         # 4. 파일명 조립을 위한 최종 데이터(final_media_info) 준비
-        # ffprobe 사용 여부를 먼저 확인
-        ext_config = config.get('확장_ffprobe', {})
-        use_media_info = config.get('파일명에미디어정보포함') and ext_config.get('enable')
+        ext_config = config.get('미디어정보설정', {})
+        use_media_info = config.get('파일명에미디어정보포함')
 
-        # ffprobe를 사용하지 않는 경우, 모든 파일의 final_media_info를 None으로 설정하고 종료
         if not use_media_info:
             for info in execution_plan:
                 info['final_media_info'] = None
         else:
-            # ffprobe를 사용하는 경우에만 그룹화 및 미디어 정보 병합 로직 실행
             from collections import defaultdict
             code_groups = defaultdict(list)
             for info in execution_plan:
@@ -184,7 +219,7 @@ class Task:
                 is_set = any(info.get('is_part_of_set') for info in group_infos)
                 
                 if is_set:
-                    merge_result = Task._merge_and_standardize_media_info(group_infos, ext_config) # ext_config 전달
+                    merge_result = Task._merge_and_standardize_media_info(group_infos, ext_config)
                     if merge_result.get('is_valid_set'):
                         # 세트가 유효하면 병합된 정보 사용
                         for info in group_infos:
@@ -215,6 +250,47 @@ class Task:
 
 
     @staticmethod
+    def _parse_custom_path_rules(custom_path_section, current_module):
+        """커스텀 경로 규칙 섹션을 파싱하여 활성화 여부와 규칙 리스트를 반환합니다."""
+        if not custom_path_section or not isinstance(custom_path_section, dict):
+            return False, []
+
+        is_enabled = custom_path_section.get('enable', False)
+        custom_rules_for_module = []
+
+        if is_enabled:
+            custom_path_rules_yaml = custom_path_section.get('규칙', [])
+            if custom_path_rules_yaml:
+                logger.debug(f"커스텀 경로 규칙 {len(custom_path_rules_yaml)}개를 로드합니다.")
+                for rule_idx, rule in enumerate(custom_path_rules_yaml):
+                    target_module = rule.get('모듈', 'all').lower()
+                    if target_module != 'all' and target_module != current_module:
+                        continue
+
+                    path_str = rule.get('경로', '').strip()
+                    label_pattern = rule.get('레이블', '').strip()
+                    filename_pattern = rule.get('파일명패턴', '').strip()
+
+                    if not label_pattern and not filename_pattern:
+                        continue
+
+                    if label_pattern:
+                        label_pattern = re.sub(r'\s', '', label_pattern)
+
+                    processed_rule = {
+                        'name': rule.get('이름', f'규칙 #{rule_idx+1}'),
+                        'path': path_str,
+                        'format': rule.get('폴더포맷', '').strip(),
+                        'label_pattern': label_pattern,
+                        'filename_pattern': filename_pattern,
+                        'force_on_meta_fail': rule.get('메타실패시강제적용', False)
+                    }
+                    custom_rules_for_module.append(processed_rule)
+
+        return is_enabled, custom_rules_for_module
+
+
+    @staticmethod
     def _load_extended_settings(config):
         """jav_censored 메타 모듈에서 파싱 규칙 및 개별 확장 기능 설정을 로드합니다."""
 
@@ -223,58 +299,27 @@ class Task:
             if meta_module and hasattr(meta_module, 'get_jav_settings'):
                 jav_settings = meta_module.get_jav_settings()
 
+                config['파싱규칙'] = jav_settings.get('jav_parsing_rules', {})
+
                 # 기타 고급 설정(misc_settings)
                 misc_settings = jav_settings.get('misc_settings', {})
-                config.update(misc_settings) # 딕셔너리 전체를 업데이트
 
-                config['파싱규칙'] = jav_settings.get('jav_parsing_rules', {})
-                config['중복체크방식'] = misc_settings.get('duplicate_check_method', config.get('중복체크방식'))
-                config['메타검색에사용할사이트'] = misc_settings.get('메타검색에사용할사이트', config.get('메타검색에사용할사이트'))
-
+                config['중복체크방식'] = misc_settings.get('duplicate_check_method', 'flexible')
+                config['메타검색에사용할사이트'] = misc_settings.get('메타검색에사용할사이트', None)
                 config['이미처리된파일명패턴'] = misc_settings.get('already_processed_pattern', r'^[a-zA-Z0-9]+-[a-zA-Z0-9-_]+(\s\[.*\](?:cd\d+)?)$')
                 config['허용된숫자레이블'] = misc_settings.get('allowed_numeric_labels', r'^(741|1pon|10mu).*?')
                 config['scan_with_no_meta'] = misc_settings.get('scan_with_no_meta', True)
+                config['자막파일별도처리'] = misc_settings.get('자막파일별도처리', True)
 
                 # --- 커스텀 경로 규칙 ---
                 custom_path_section = jav_settings.get('meta_custom_path', {})
-                config['커스텀경로활성화'] = custom_path_section.get('처리활성화', False)
-                custom_rules_for_module = []
                 current_module = config.get('parse_mode')
-
-                if config['커스텀경로활성화']:
-                    custom_path_rules_yaml = custom_path_section.get('규칙', [])
-                    if custom_path_rules_yaml:
-                        logger.debug(f"커스텀 경로 규칙 {len(custom_path_rules_yaml)}개를 로드합니다.")
-                        for rule_idx, rule in enumerate(custom_path_rules_yaml):
-                            target_module = rule.get('모듈', 'all').lower()
-                            if target_module != 'all' and target_module != current_module:
-                                continue
-
-                            path_str = rule.get('경로', '').strip()
-                            label_pattern = rule.get('레이블', '').strip()
-                            filename_pattern = rule.get('파일명패턴', '').strip()
-
-                            if not path_str or (not label_pattern and not filename_pattern):
-                                continue
-
-                            # 여러 줄로 작성된 정규식에서 공백과 개행문자 제거
-                            if label_pattern:
-                                label_pattern = re.sub(r'\s', '', label_pattern)
-
-                            processed_rule = {
-                                'name': rule.get('이름', f'규칙 #{rule_idx+1}'),
-                                'path': path_str,
-                                'format': rule.get('폴더포맷', '').strip(),
-                                'label_pattern': label_pattern,
-                                'filename_pattern': filename_pattern
-                            }
-                            custom_rules_for_module.append(processed_rule)
-
-                config['커스텀경로규칙'] = custom_rules_for_module
+                is_enabled, rules = Task._parse_custom_path_rules(custom_path_section, current_module)
+                config['커스텀경로활성화'] = is_enabled
+                config['커스텀경로규칙'] = rules
 
                 # --- ffprobe 관련 설정 로드 ---
-                default_ffprobe_config = {
-                    'enable': False,
+                default_media_info_config = {
                     'ffprobe_path': '/usr/bin/ffprobe',
                     'tolerance': { 'audio_bitrate': 5, 'fps': 0.01 },
                     'standard_fps_values': [23.976, 24, 25, 29.97, 30, 59.94, 60],
@@ -289,51 +334,48 @@ class Task:
                     'reprocess_skip_pattern': r'\[(FHD|HD|SD|4K|8K|H264|H265|HEVC|AAC|AC3|OPUS)',
                     'reprocess_insert_pattern': r'^([a-zA-Z0-9-]+)(\s\[)(.*\])$'
                 }
-                ffprobe_config_yaml = jav_settings.get('fp_filename_with_ffprobe', {})
+                media_info_config = jav_settings.get('filename_with_media_info', {})
                 # nested dict update
-                default_ffprobe_config.update({k: v for k, v in ffprobe_config_yaml.items() if not isinstance(v, dict)})
-                default_ffprobe_config.get('tolerance', {}).update(ffprobe_config_yaml.get('tolerance', {}))
-                config['확장_ffprobe'] = default_ffprobe_config
-
-                logger.debug(f"ffprobe 확장 활성화: {config['확장_ffprobe'].get('enable')}")
+                default_media_info_config.update({k: v for k, v in media_info_config.items() if not isinstance(v, dict)})
+                default_media_info_config.get('tolerance', {}).update(media_info_config.get('tolerance', {}))
+                config['미디어정보설정'] = default_media_info_config
 
                 # --- 자막 우선 처리(subbed_path) 설정 로드 ---
-                default_subbed_config = {
-                    '처리활성화': False,
+                default_subbed_path_config = {
+                    'enable': False,
                     '자막파일확장자': {'ass', 'ssa', 'idx', 'sub', 'sup', 'smi', 'srt', 'ttml', 'vtt'},
                     '내장자막키워드': [],
                     '규칙': {}
                 }
-                subbed_config_yaml = jav_settings.get('subbed_path', {})
-                if subbed_config_yaml and subbed_config_yaml.get('처리활성화'):
-                    default_subbed_config['처리활성화'] = True
+                subbed_path_config_yaml = jav_settings.get('subbed_path', {})
+                if subbed_path_config_yaml and subbed_path_config_yaml.get('enable'):
+                    default_subbed_path_config['enable'] = True
 
-                    ext_str = subbed_config_yaml.get('자막파일확장자', 'ass ssa idx sub sup smi srt ttml vtt')
-                    default_subbed_config['자막파일확장자'] = {f".{ext.strip()}" for ext in ext_str.split()}
+                    ext_str = subbed_path_config_yaml.get('자막파일확장자', 'ass ssa idx sub sup smi srt ttml vtt')
+                    default_subbed_path_config['자막파일확장자'] = {f".{ext.strip()}" for ext in ext_str.split()}
 
-                    keyword_str = subbed_config_yaml.get('내장자막키워드', '')
+                    keyword_str = subbed_path_config_yaml.get('내장자막키워드', '')
                     if keyword_str:
-                        default_subbed_config['내장자막키워드'] = [kw.strip().lower() for kw in keyword_str.split()]
+                        default_subbed_path_config['내장자막키워드'] = [kw.strip().lower() for kw in keyword_str.split()]
 
                     # 현재 모듈에 맞는 규칙만 저장
                     current_module = config.get('parse_mode')
-                    for rule in subbed_config_yaml.get('규칙', []):
+                    for rule in subbed_path_config_yaml.get('규칙', []):
                         if rule.get('모듈', '').lower() == current_module:
-                            default_subbed_config['규칙'] = rule
+                            default_subbed_path_config['규칙'] = rule
                             logger.debug(f"자막 우선 처리 규칙 로드: 모듈={current_module}, 경로={rule.get('경로')}")
                             break
 
-                config['확장_자막우선처리'] = default_subbed_config
+                config['자막우선처리'] = default_subbed_path_config
 
             else:
                 logger.warning("메타데이터 플러그인을 찾을 수 없어 파싱 규칙 및 확장 설정을 로드하지 못했습니다.")
                 config['파싱규칙'] = {}
-                config['확장_ffprobe'] = {'enable': False}
-                config['확장_자막우선처리'] = {'처리활성화': False}
+                config['자막우선처리'] = {'enable': False}
         except Exception as e:
             logger.error(f"확장 설정 로드 중 오류: {e}")
             config['파싱규칙'] = {}
-            config['확장_ffprobe'] = {'enable': False}
+            config['자막우선처리'] = {'enable': False}
 
 
     @staticmethod
@@ -346,13 +388,18 @@ class Task:
             return
 
         target_dir = Path(target_root_str).joinpath("[NO LABEL]")
+        target_file = target_dir.joinpath(file_path.name)
+
+        is_dry_run = config.get('드라이런', False)
+        if is_dry_run:
+            log_msg = f"[Dry Run] 품번 추출 실패: '{file_path.name}' -> '{target_file}' (이동 예정)"
+            logger.warning(log_msg)
+            return
 
         try:
             target_dir.mkdir(parents=True, exist_ok=True)
-            target_file = target_dir.joinpath(file_path.name)
 
             if target_file.exists():
-                # is_duplicate 대신 간단한 존재 여부만 체크
                 logger.warning(f"NO LABEL 폴더에 동일 파일명이 존재하여 원본을 삭제합니다: {file_path.name}")
                 file_path.unlink()
                 return
@@ -391,10 +438,10 @@ class Task:
 
         temp_path_str = config.get('처리실패이동폴더', '').strip()
         if not temp_path_str:
-            logger.warning("'처리 실패시 이동 폴더'가 설정되지 않아 작업을 중단합니다.")
-            return []
-
-        temp_path = Path(temp_path_str)
+            logger.warning("'처리실패이동폴더'가 설정되지 않았습니다. 전처리 중 발생하는 실패 파일은 이동되지 않습니다.")
+            temp_path = None
+        else:
+            temp_path = Path(temp_path_str)
 
         src_list = Task.get_path_list(config['다운로드폴더'])
         src_list.extend(Task.__add_meta_no_path(module_name))
@@ -472,8 +519,8 @@ class Task:
             'meta_info': None,
             'media_info': None
         }
-        ext_config = config.get('확장_ffprobe', {})
-        if config.get('파일명에미디어정보포함') and ext_config.get('enable') and info.get('file_type') == 'video':
+        ext_config = config.get('미디어정보설정', {})
+        if config.get('파일명에미디어정보포함') and info.get('file_type') == 'video':
             info['media_info'] = ToolExpandFileProcess._get_media_info(file, ext_config)
 
         return info
@@ -594,8 +641,8 @@ class Task:
         """
         최종 실행 함수.
         """
-        ext_config = config.get('확장_ffprobe', {})
-        sub_config = config.get('확장_자막우선처리', {})
+        ext_config = config.get('미디어정보설정', {})
+        sub_config = config.get('자막우선처리', {})
 
         # 품번 그룹화
         code_groups = {}
@@ -625,7 +672,7 @@ class Task:
                 is_subbed_target = False
 
                 if config.get('자막우선처리활성화', True) is not False:
-                    if sub_config.get('처리활성화', False) and sub_config.get('규칙'):
+                    if sub_config.get('enable', False) and sub_config.get('규칙'):
                         if any(kw in representative_info['original_file'].name.lower() for kw in sub_config.get('내장자막키워드', [])) or \
                            Task._find_external_subtitle(config, representative_info, sub_config):
                             is_subbed_target = True
@@ -643,7 +690,7 @@ class Task:
                     # --- 일반 경로 결정 및 미디어 정보 처리 ---
                     # 1. 미디어 정보 사전 처리 및 그룹 유효성 검사
                     is_set = any(info.get('is_part_of_set') for info in group_infos)
-                    use_media_info_in_filename = config.get('파일명에미디어정보포함') and ext_config.get('enable')
+                    use_media_info_in_filename = config.get('파일명에미디어정보포함', False)
 
                     if is_set and use_media_info_in_filename:
                         merge_result = Task._merge_and_standardize_media_info(group_infos, ext_config)
@@ -685,17 +732,28 @@ class Task:
                     current_move_type = move_type
                     current_target_dir = target_dir
 
-                    # 자막 우선 처리가 아닌 경우에만 미디어 유효성 재검사
-                    if not is_subbed_target:
-                        use_media_info_in_filename = config.get('파일명에미디어정보포함') and ext_config.get('enable')
-                        if use_media_info_in_filename and not info.get('final_media_info', {}).get('is_valid', True):
+                    new_filename = None
+                    if info.get('file_type') == 'subtitle' or info.get('file_type') == 'etc':
+                        new_filename = info['original_file'].name
+                        logger.debug(f"'{info['original_file'].name}' ({info.get('file_type')}) 파일은 원본 파일명을 유지합니다.")
+
+                    elif info.get('file_type') == 'video':
+                        use_media_info = config.get('파일명에미디어정보포함', False)
+                        ext_config = config.get('미디어정보설정', {})
+
+                        if use_media_info and not info.get('final_media_info', {}).get('is_valid', True):
                             current_move_type = "failed_video"
                             current_target_dir = Path(config['처리실패이동폴더']).joinpath("[FAILED VIDEO]")
-                            info['newfilename'] = info['original_file'].name
+                            new_filename = info['original_file'].name
                         else:
-                            info['newfilename'] = ToolExpandFileProcess.assemble_filename(config, info)
-                    else: # 자막 우선 처리 시에는 파일명만 조립
-                        info['newfilename'] = ToolExpandFileProcess.assemble_filename(config, info)
+                            new_filename = ToolExpandFileProcess.assemble_filename(config, info)
+                    else:
+                        new_filename = info['original_file'].name
+
+                    if new_filename is None:
+                        continue
+
+                    info['newfilename'] = new_filename
 
                     info.update({
                         'target_dir': current_target_dir,
@@ -729,7 +787,6 @@ class Task:
     def __file_move_logic(config, info, model_class):
         """실제 파일 이동, 중복 처리, DB 기록, 방송 등을 담당합니다."""
         is_dry_run = config.get('드라이런', False)
-
         file = info['original_file']
         newfilename = info.get('newfilename', file.name)
         target_dir = info.get('target_dir')
@@ -749,36 +806,54 @@ class Task:
             log_msg = f"[Dry Run] 원본: {file}\n"
             log_msg += f"         이동: {newfile} (타입: {move_type})\n"
 
-            # 중복 검사도 시뮬레이션
-            if UtilFunc.is_duplicate(file, newfile, config):
-                remove_path_str = config.get('중복파일이동폴더', '').strip()
+            if move_type == "no_meta" and not config.get('메타매칭실패시이동폴더', ''):
+                log_msg += f"         결과: '메타매칭실패시이동폴더'가 비어있어 건너뛸 예정"
+            elif move_type == "failed_video" and not config.get('처리실패이동폴더', ''):
+                log_msg += f"         결과: '처리실패이동폴더'가 비어있어 건너뛸 예정"
+            elif UtilFunc.is_duplicate(file, newfile, config):
+                remove_path_str = config.get('중복파일이동폴더', '')
                 if not remove_path_str:
-                    log_msg += f"         결과: 중복 파일로 감지되어 삭제될 예정"
+                    log_msg += f"         결과: 중복 파일, '중복파일이동폴더'가 비어있어 건너뛸 예정"
                 else:
-                    log_msg += f"         결과: 중복 파일로 감지되어 {remove_path_str}로 이동될 예정"
+                    log_msg += f"         결과: 중복 파일, {remove_path_str}로 이동될 예정"
             else:
                 log_msg += f"         결과: 정상적으로 이동될 예정"
 
             logger.warning(log_msg)
-            return None # DB 저장을 막기 위해 None 반환
+            return None
 
-        target_dir.mkdir(parents=True, exist_ok=True)
+        # 미디어 분석 실패(failed_video) 처리
+        if move_type == "failed_video":
+            failed_video_path_str = config.get('처리실패이동폴더', '').strip()
+            if not failed_video_path_str:
+                logger.info(f"미디어 분석 실패: '처리실패이동폴더'가 비어있어 이동을 건너뜁니다: {file.name}")
+                return entity.set_move_type("failed_video_skipped")
 
-        # 1. 매칭 실패 (no_meta) 케이스 처리
+            target_dir.mkdir(parents=True, exist_ok=True)
+            shutil.move(file, newfile)
+            logger.info(f"미디어 분석 실패 파일을 이동했습니다: {newfile}")
+
+            return entity.set_target(newfile).set_move_type(move_type)
+
+        # 매칭 실패 (no_meta) 케이스 처리
         if move_type == "no_meta":
+            no_meta_path_str = config.get('메타매칭실패시이동폴더', '').strip()
+            if not no_meta_path_str:
+                logger.info(f"메타 없음: '메타매칭실패시이동폴더'가 비어있어 이동을 건너뜁니다: {file.name}")
+                return entity.set_move_type("no_meta_skipped")
+
             if not config.get('메타매칭실패시이동', False):
                 return entity.set_move_type(None)
 
-            # no_meta의 경우 newfilename은 조립된 이름/원본명 중 하나.
+            target_dir.mkdir(parents=True, exist_ok=True)
             if newfile.exists():
-                logger.warning(f"메타 없는 영상 이동 경로에 동일 파일이 존재하여 삭제합니다: {newfile}")
                 file.unlink()
                 return entity.set_move_type("no_meta_deleted_due_to_duplication")
             else:
                 shutil.move(file, newfile)
                 return entity.set_target(newfile).set_move_type(move_type)
 
-        # 2. 타겟 경로 내 중복 처리
+        # 타겟 경로 내 중복 처리
         if UtilFunc.is_duplicate(file, newfile, config):
             logger.info(f"타겟 경로에 동일 파일이 존재합니다: {newfile}")
             remove_path_str = config.get('중복파일이동폴더', '').strip()
@@ -787,12 +862,11 @@ class Task:
                 return entity.set_move_type("already_processed_by_other")
 
             if not remove_path_str:
-                file.unlink()
-                logger.info("중복 파일을 삭제했습니다.")
-                return entity.set_move_type(move_type + "_deleted_due_to_duplication")
+                logger.info(f"중복 파일: '중복파일이동폴더'가 비어있어 이동/삭제를 건너뜁니다: {file.name}")
+                return entity.set_move_type("duplicate_skipped")
             else:
                 remove_path = Path(remove_path_str)
-                if not remove_path.exists(): remove_path.mkdir(parents=True)
+                remove_path.mkdir(parents=True, exist_ok=True)
 
                 final_dup_path = remove_path.joinpath(newfilename)
                 if final_dup_path.exists():
@@ -802,12 +876,14 @@ class Task:
 
                 shutil.move(file, final_dup_path)
                 logger.info(f"중복 파일을 다음 경로로 이동했습니다: {final_dup_path}")
+
                 return entity.set_target(final_dup_path).set_move_type(move_type + "_already_exist")
 
         # 3. 최종 라이브러리로 이동
         if file.exists():
             try:
                 # 3a. 파일 이동
+                target_dir.mkdir(parents=True, exist_ok=True)
                 shutil.move(file, newfile)
                 logger.info(f"파일 이동 성공: -> {newfile}")
 
@@ -846,7 +922,7 @@ class Task:
         분할 파일 세트의 미디어 정보를 '필드별'로 비교하여,
         '일치하는 정보만'을 포함하는 대표 미디어 딕셔너리를 생성합니다.
         """
-        ext_config = config.get('확장_ffprobe', {})
+        ext_config = config.get('미디어정보설정', {})
 
         # --- 1. 치명적 오류 검사 (비디오/오디오 스트림 부재) ---
         failed_files = []
@@ -985,14 +1061,15 @@ class Task:
                             custom_rules = config.get('커스텀경로규칙', [])
                             effective_info = info.copy()
                             effective_info['label'] = meta_info.get("originaltitle", info['pure_code']).split('-')[0]
-                            
-                            matched_rule = Task.__find_custom_path_rule(effective_info, custom_rules)
+
+                            matched_rule = Task._find_and_merge_custom_path_rules(effective_info, custom_rules)
                             if matched_rule:
-                                custom_path_str = matched_rule.get('path', '').strip()
+                                custom_path_str = (matched_rule.get('path') or matched_rule.get('경로', '')).strip()
                                 if custom_path_str:
                                     current_target_root = Path(custom_path_str)
-                                    if matched_rule['format']:
-                                        folder_format_to_use = matched_rule['format']
+
+                                if matched_rule['format']:
+                                    folder_format_to_use = (matched_rule.get('format') or matched_rule.get('폴더포맷')) or config['이동폴더포맷']
 
                         folders = Task.process_folder_format(config, info, folder_format_to_use, meta_info)
 
@@ -1107,8 +1184,11 @@ class Task:
 
         data['label_1'] = label_1
         data['label'] = processed_label.upper()
-        if "studio" not in data:
+        data['label_lower'] = processed_label.lower()
+        data['code_lower'] = data['code'].lower()
+        if "studio" not in (meta_data or {}):
             data['studio'] = processed_label.upper()
+            data['studio_lower'] = processed_label.lower()
 
         # 3. {num_X_Y}, {year4} 등 추가 변수 처리
         try:
@@ -1117,9 +1197,18 @@ class Task:
                 for match in re.finditer(r'\{num_(\d+)_(\d+)\}', folder_format):
                     x, y = map(int, match.groups())
                     data[f'num_{x}_{y}'] = main_number_part.zfill(y)[:x]
-                if '{year4}' in folder_format and re.match(r'^\d{6}$', main_number_part):
-                    yy = main_number_part[4:6]
-                    data['year4'] = f"20{yy}" if int(yy) < 50 else f"19{yy}"
+                # 6자리 숫자 코드에 대한 특수 처리
+                if re.match(r'^\d{6}$', main_number_part):
+                    # {year4} 처리
+                    if '{year4}' in folder_format:
+                        yy = main_number_part[4:6]
+                        data['year4'] = f"20{yy}" if int(yy) < 50 else f"19{yy}"
+                    # {yymm} 처리
+                    # MMDDYY 형식에서 YYMM 형식으로 변환 (예: 083025 -> 2508)
+                    if '{yymm}' in folder_format:
+                        mm = main_number_part[:2]
+                        yy = main_number_part[4:6]
+                        data['yymm'] = f"{yy}{mm}"
         except Exception as e:
             logger.error(f"폴더 포맷 변수 처리 중 오류: {e}")
 
@@ -1225,35 +1314,58 @@ class Task:
 
 
     @staticmethod
-    def __find_custom_path_rule(info, rules_list):
-        """규칙 리스트를 순회하며 파일 정보와 일치하는 첫 번째 커스텀 경로 규칙을 찾습니다."""
+    def _find_and_merge_custom_path_rules(info, rules_list):
+        """
+        규칙 리스트를 순회하며 파일 정보와 일치하는 모든 규칙을 찾아 병합합니다.
+        리스트의 아래에 있는 규칙이 더 높은 우선순위를 가집니다.
+        """
         if not rules_list:
             return None
 
-        file_label = info['label']
+        file_label = info['label'].lower()
         original_filename = info['original_file'].name
+        # logger.debug(f"규칙 매칭 시작: 레이블='{file_label}', 파일명='{original_filename}'")
 
-        for rule in rules_list:
-            # 파일명 패턴 조건 확인
-            if rule['filename_pattern']:
+        merged_rule = {}
+        has_any_match = False
+
+        for i, rule in enumerate(rules_list):
+            is_match = False
+            rule_name = rule.get('name', f'규칙 #{i+1}')
+
+            filename_pattern = rule.get('filename_pattern') or rule.get('파일명패턴')
+            if filename_pattern:
                 try:
-                    if re.search(rule['filename_pattern'], original_filename, re.IGNORECASE):
-                        logger.info(f"커스텀 경로 규칙 '{rule['name']}' 매칭 (파일명패턴: {original_filename})")
-                        return rule
+                    if re.search(filename_pattern, original_filename, re.IGNORECASE):
+                        is_match = True
+                        # logger.debug(f"  - 매칭 성공! (파일명패턴) 규칙: '{rule_name}', 패턴: '{filename_pattern}'")
                 except re.error as e:
-                    logger.error(f"커스텀 경로 규칙 '{rule['name']}'의 파일명 정규식 오류: {e}")
+                    logger.error(f"커스텀 경로 규칙 '{rule_name}'의 파일명 정규식 오류: {e}")
                     continue
 
-            # 레이블 패턴 조건 확인
-            if rule['label_pattern']:
+            label_pattern = rule.get('label_pattern') or rule.get('레이블')
+            if not is_match and label_pattern:
                 try:
-                    if re.search('^' + rule['label_pattern'], file_label, re.IGNORECASE):
-                        logger.info(f"커스텀 경로 규칙 '{rule['name']}' 매칭 (레이블: {file_label})")
-                        return rule
+                    strict_pattern = f"^({label_pattern})$"
+                    # logger.debug(f"  - [{rule.get('name')}] 레이블 패턴 검사: r'{strict_pattern}' vs '{file_label}'")
+
+                    if re.search(strict_pattern, file_label, re.IGNORECASE):
+                        is_match = True
+                        # logger.debug(f"  - 매칭 성공 (레이블): '{rule.get('name')}'")
                 except re.error as e:
-                    logger.error(f"커스텀 경로 규칙 '{rule['name']}'의 레이블 정규식 오류: {e}")
+                    logger.error(f"커스텀 경로 규칙 '{rule_name}'의 레이블 정규식 오류: {e}")
                     continue
-        return None
+
+            if is_match:
+                has_any_match = True
+                merged_rule.update(rule)
+
+        # if has_any_match:
+        #     logger.debug(f"최종 병합된 규칙: {merged_rule}")
+        # else:
+        #     logger.debug("일치하는 커스텀 경로 규칙 없음.")
+
+        return merged_rule if has_any_match else None
 
 
     @staticmethod
@@ -1297,6 +1409,40 @@ class Task:
                         return target_sub_dir
         return None
 
+
+    @staticmethod
+    def _process_subtitle_fast_lane(config, subtitle_infos, db_model):
+        """subbed_path가 활성화됐을 때 자막 파일을 우선적으로 이동시킵니다."""
+        if not subtitle_infos:
+            return
+
+        logger.info(f"자막 우선 처리 (subbed_path): {len(subtitle_infos)}개의 자막 파일을 먼저 이동합니다.")
+        sub_config = config.get('자막우선처리', {})
+        rule = sub_config.get('규칙', {})
+        base_path_str = rule.get('경로')
+
+        if not base_path_str:
+            logger.warning("자막 우선 처리 경로(subbed_path)가 설정되지 않아 건너뜁니다.")
+            return
+
+        base_path = Path(base_path_str)
+        folder_format = rule.get('폴더구조') or config.get('이동폴더포맷')
+
+        for info in subtitle_infos:
+            # 자막 파일은 메타 검색을 하지 않으므로 meta_data=None으로 경로 생성
+            folders = Task.process_folder_format(config, info, folder_format, meta_data=None)
+            target_dir = base_path.joinpath(*folders)
+
+            # 자막 파일은 파일명을 변경하지 않음
+            info['newfilename'] = info['original_file'].name
+            info['target_dir'] = target_dir
+            info['move_type'] = 'subbed_fast_lane'
+            info['meta_info'] = None
+
+            # 기존 파일 이동 로직 재사용
+            entity = Task.__file_move_logic(config, info, db_model)
+            if entity and entity.move_type is not None:
+                entity.save()
 
 
     # ====================================================================

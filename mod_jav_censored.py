@@ -1,6 +1,6 @@
 from .setup import *
 from .model_jav_censored import ModelJavCensoredItem
-from .task_jav_censored import TaskBase
+from .task_jav_censored import TaskBase, Task
 
 class ModuleJavCensored(PluginModuleBase):
     def __init__(self, P):
@@ -58,6 +58,17 @@ class ModuleJavCensored(PluginModuleBase):
     def process_menu(self, page_name, req):
         arg = P.ModelSetting.to_dict()
         try:
+            arg['jav_settings_filepath'] = ''
+            try:
+                jav_meta_module = Task.get_meta_module('jav_censored')
+                if jav_meta_module:
+                    filepath = jav_meta_module.P.ModelSetting.get('jav_settings_filepath')
+                    arg['jav_settings_filepath'] = filepath
+                else:
+                    logger.warning("메타데이터의 jav_censored 모듈을 로드할 수 없습니다.")
+            except Exception as e:
+                logger.error(f"메타데이터 플러그인에서 JAV 설정 파일 경로를 가져오는 중 오류: {e}")
+
             arg['is_include'] = F.scheduler.is_include(self.get_scheduler_name())
             arg['is_running'] = F.scheduler.is_running(self.get_scheduler_name())
             return render_template(f'{P.package_name}_{self.name}_{page_name}.html', arg=arg)

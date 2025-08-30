@@ -31,7 +31,6 @@ class ModuleJavUncensored(PluginModuleBase):
             f"{self.name}_folder_format": "{label}/{code}",
             f"{self.name}_temp_path": "",
             f"{self.name}_remove_path": "",
-            f"{self.name}_label_path_overrides": "",
             f"{self.name}_use_meta": "using",
             f"{self.name}_meta_path": "",
             f"{self.name}_meta_no_path": "",

@@ -18,8 +18,8 @@
   <div class="tab-content mb-4" id="nav-tabContent">
   {{ macros.m_tab_content_start('basic', true) }}
     {{ macros.setting_input_textarea('jav_censored_download_path', '다운로드 폴더', desc=['Censored 영상을 다운받은 폴더. 필수', '2개 이상일 경우 구분자 Enter, #으로 시작하여 주석처리'], value=arg['jav_censored_download_path'], row='3') }}
-    {{ macros.setting_input_text('jav_censored_temp_path', '처리 실패시 이동 폴더', desc=['처리 실패시 영상 파일이 이동할 폴더입니다. 필수'], value=arg['jav_censored_temp_path']) }}
-    {{ macros.setting_input_text('jav_censored_remove_path', '중복인 경우 이동 폴더', desc=['파일명이나 파일크기 기준 중복인 경우 이동할 폴더입니다', '빈값이거나, 폴더를 지정해도 정상 경로 이외의 중복 파일은 삭제합니다.'], value=arg['jav_censored_remove_path']) }}
+    {{ macros.setting_input_text('jav_censored_temp_path', '처리 실패시 이동 폴더', desc=['처리 실패시 영상 파일이 이동할 폴더입니다.', '비워둘 경우 이동되지 않습니다.'], value=arg['jav_censored_temp_path']) }}
+    {{ macros.setting_input_text('jav_censored_remove_path', '중복인 경우 이동 폴더', desc=['파일명이나 파일크기 기준 중복인 경우 이동할 폴더입니다', '정상 경로 이외의 중복 파일은 삭제합니다.'], value=arg['jav_censored_remove_path']) }}
     {{ macros.m_hr() }}
 
     {{ macros.info_text('preprocess_1', '전처리 1단계', value='', desc=['다운로드 폴더의 depth=1인 자식들을 탐색하여 유효한 파일이 아니거나 그것을 포함하지 않은 폴더를 삭제. 유효한 파일은 아래 조건에 의해 결정.']) }}
@@ -40,6 +40,17 @@
 
     {{ macros.m_hr() }}
     {{ macros.setting_checkbox('jav_censored_dry_run', 'DRY RUN 모드', value=arg['jav_censored_dry_run'], desc=['On: 상단의 "1회 실행/즉시 실행" 버튼을 눌렀을 때 Dry Run 모드로 실행됩니다.', '실제 파일 이동이나 DB 저장 없이, 처리 과정을 로그로만 확인합니다.']) }}
+
+    {{ macros.m_hr() }}
+    {{ macros.setting_input_text_and_buttons(
+      'jav_settings_filepath', 
+      'JAV 고급 설정 파일', 
+      [
+        ['globalEditBtn', '편집', [['file', arg['jav_settings_filepath']]] ]
+      ], 
+      value=arg['jav_settings_filepath'],
+      desc=['품번 파싱 규칙, 파일처리 관련 고급 설정을 YAML 파일에서 직접 관리합니다.', '품번 파싱 규칙 변경시에는 메타데이터 설정에서 새로고침이 필요합니다.']
+    ) }}
 
   {{ macros.m_tab_content_end() }}
 
@@ -116,8 +127,9 @@
 $(document).ready(function(){
   use_collapse("jav_censored_include_original_filename");
   use_meta("{{arg['jav_censored_use_meta']}}");
-
   use_collapse("jav_censored_meta_no_move");
+
+  $('#jav_settings_filepath').prop('disabled', true);
 });
 
 $('#jav_censored_include_original_filename').change(function() {
