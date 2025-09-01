@@ -1353,7 +1353,7 @@ class Task:
 
             if is_match:
                 has_any_match = True
-                logger.debug(f"규칙 병합: '{rule_name}' 규칙이 일치하여 속성을 병합합니다.")
+                # logger.debug(f"규칙 병합: '{rule_name}' 규칙이 일치하여 속성을 병합합니다.")
 
                 # 값이 있는(truthy) 키만 골라서 업데이트
                 for key, value in rule.items():
@@ -1368,11 +1368,11 @@ class Task:
                         # 나머지 키는 값이 존재할 때만(None, '', [] 등이 아닐 때) 덮어쓴다.
                         merged_rule[key] = value
 
-        if has_any_match:
-            logger.debug(f"최종 병합된 규칙: {merged_rule}")
-        else:
-            logger.debug("일치하는 커스텀 경로 규칙 없음.")
-            
+        #if has_any_match:
+        #    logger.debug(f"최종 병합된 규칙: {merged_rule}")
+        #else:
+        #    logger.debug("일치하는 커스텀 경로 규칙 없음.")
+
         return merged_rule if has_any_match else None
 
 
