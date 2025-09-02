@@ -202,21 +202,35 @@ class Task:
 
         # 3. (커스텀 규칙 미적용 시) 일반 경로 결정
         target_root_str = None
-        if meta_info:
+        move_type = "default"
+
+        if meta_info: # 메타 검색 성공
             move_type = "meta_success"
             target_root_str = config.get('메타매칭시이동폴더')
-        else: # 메타 실패 (또는 미사용)
+
+        else: # 메타 실패
             move_type = "meta_fail"
             target_root_str = config.get('메타매칭실패시이동폴더')
 
-        if not target_root_str: # 라이브러리 폴더 (메타 미사용)
+            if target_root_str:
+                logger.debug(f"메타 실패: 폴더 포맷 미적용, '{target_root_str}'로 이동합니다.")
+                return Path(target_root_str), move_type, meta_info
+            else:
+                logger.error("메타 매칭에 실패했으며, '메타매칭실패시이동폴더'도 설정되지 않았습니다.")
+                return Path(config['처리실패이동폴더']).joinpath("[NO META PATH]"), "error", None
+
+        # target_root_str이 결정되지 않은 경우 (메타 미사용 모드)
+        if not target_root_str:
+            move_type = "default" # 메타 미사용 시의 이동 타입
             library_paths = CensoredTask.get_path_list(config.get('라이브러리폴더', []))
             target_root_str = library_paths[0] if library_paths else None
 
+        # 최종적으로 이동할 경로가 없는 경우 에러 처리
         if not target_root_str:
             logger.error("이동할 대상 경로를 결정할 수 없습니다. 처리 실패 폴더로 이동합니다.")
             return Path(config['처리실패이동폴더']).joinpath("[NO TARGET PATH]"), "error", None
 
+        # 메타 성공 또는 메타 미사용 시에만 이 로직에 도달하여 폴더 포맷팅 수행
         folders = CensoredTask.process_folder_format(config, info, config['이동폴더포맷'], meta_info)
         return Path(target_root_str).joinpath(*folders), move_type, meta_info
 

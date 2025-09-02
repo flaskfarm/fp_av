@@ -363,7 +363,7 @@ class Task:
                     for rule in subbed_path_config_yaml.get('규칙', []):
                         if rule.get('모듈', '').lower() == current_module:
                             default_subbed_path_config['규칙'] = rule
-                            logger.debug(f"자막 우선 처리 규칙 로드: 모듈={current_module}, 경로={rule.get('경로')}")
+                            # logger.debug(f"자막 우선 처리 규칙 로드: 모듈={current_module}, 경로={rule.get('경로')}")
                             break
 
                 config['자막우선처리'] = default_subbed_path_config
@@ -835,8 +835,8 @@ class Task:
 
             return entity.set_target(newfile).set_move_type(move_type)
 
-        # 매칭 실패 (no_meta) 케이스 처리
-        if move_type == "no_meta":
+        # 매칭 실패 (no_meta 또는 meta_fail) 케이스 처리
+        if move_type in ["no_meta", "meta_fail"]:
             no_meta_path_str = config.get('메타매칭실패시이동폴더', '').strip()
             if not no_meta_path_str:
                 logger.info(f"메타 없음: '메타매칭실패시이동폴더'가 비어있어 이동을 건너뜁니다: {file.name}")
