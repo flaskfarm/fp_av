@@ -159,80 +159,73 @@ class Task:
         meta_info = None
         move_type = "default"
 
-        # 1. 메타 검색 시도 (메타사용: 'using' 이고 지원 레이블일 경우)
-        if config.get('메타사용') == 'using' and info['label'].lower() in config.get('메타검색지원레이블', set()):
-            meta_module = CensoredTask.get_meta_module('jav_uncensored')
-            meta_info = Task.__search_meta(config, meta_module, info['pure_code'])
-
-        # 2. 커스텀 경로 규칙 확인
+        # --- 1. 커스텀 경로 규칙을 최우선으로 확인 ---
         if config.get('커스텀경로활성화', False):
             custom_rules = config.get('커스텀경로규칙', [])
-            effective_info = info.copy()
-            # 메타 성공 시, 메타 정보의 레이블로 규칙 매칭 시도
-            if meta_info:
-                meta_label = meta_info.get("originaltitle", info['pure_code']).split('-')[0]
-                effective_info['label'] = meta_label.lower()
-
-            # 일치하는 커스텀 규칙 찾기
-            matched_rule = CensoredTask._find_and_merge_custom_path_rules(effective_info, custom_rules)
+            # 커스텀 규칙은 항상 파일 원본의 레이블로 먼저 매칭 시도
+            matched_rule = CensoredTask._find_and_merge_custom_path_rules(info, custom_rules)
 
             if matched_rule:
-                # 규칙이 매칭되었을 때의 처리
-                use_custom_path = False
-                if meta_info: # 메타 성공 시 무조건 커스텀 경로 사용
-                    use_custom_path = True
-                elif matched_rule.get('force_on_meta_fail'): # 메타 실패했지만 강제 적용 옵션이 켜져 있을 때
-                    logger.debug(f"메타 검색에 실패했지만, '{matched_rule['name']}' 규칙의 '메타실패시강제적용' 옵션에 따라 커스텀 경로를 사용합니다.")
-                    use_custom_path = True
+                # 커스텀 규칙이 매칭되었다면, 메타 검색은 선택적으로 수행
+                if config.get('메타사용') == 'using' and info['label'].lower() in config.get('메타검색지원레이블', set()):
+                    meta_module = CensoredTask.get_meta_module('jav_uncensored')
+                    meta_info = Task.__search_meta(config, meta_module, info['pure_code'])
 
-                if use_custom_path:
-                    custom_path_str = (matched_rule.get('path') or matched_rule.get('경로', '')).strip()
+                # 메타 실패 시 강제 적용 옵션 확인
+                if not meta_info and not (matched_rule.get('force_on_meta_fail') or matched_rule.get('메타실패시강제적용')):
+                    # 강제 적용 옵션이 없고 메타에 실패하면, 커스텀 규칙을 무시하고 일반 실패 로직으로 넘어감
+                    pass
+                else:
+                    # 커스텀 규칙 적용 확정
+                    move_type = "custom_path"
+                    target_root_str = (matched_rule.get('path') or matched_rule.get('경로', '')).strip()
                     folder_format_to_use = (matched_rule.get('format') or matched_rule.get('폴더포맷')) or config['이동폴더포맷']
 
-                    if custom_path_str:
-                        target_root = Path(custom_path_str)
-                    else:
+                    # 경로가 규칙에 없으면, 상황에 맞는 기본 경로를 사용
+                    if not target_root_str:
                         if meta_info:
-                            target_root = Path(config.get('메타매칭시이동폴더'))
-                        else: # 메타 실패 & 강제 적용
-                            target_root = Path(config.get('메타매칭실패시이동폴더'))
+                            target_root_str = config.get('메타매칭시이동폴더')
+                        else: # 메타 실패(강제적용) 또는 메타 미사용
+                            library_paths = CensoredTask.get_path_list(config.get('라이브러리폴더', []))
+                            target_root_str = library_paths[0] if library_paths else None
+
+                    if not target_root_str:
+                        logger.error("커스텀 규칙에 따른 이동 경로를 결정할 수 없습니다.")
+                        return Path(config['처리실패이동폴더']).joinpath("[NO CUSTOM PATH]"), "error", None
 
                     folders = CensoredTask.process_folder_format(config, info, folder_format_to_use, meta_info)
-                    return target_root.joinpath(*folders), "custom_path", meta_info
+                    return Path(target_root_str).joinpath(*folders), move_type, meta_info
 
-        # 3. (커스텀 규칙 미적용 시) 일반 경로 결정
-        target_root_str = None
-        move_type = "default"
+        # --- 2. (커스텀 규칙 미적용 시) 일반 경로 결정 ---
 
-        if meta_info: # 메타 검색 성공
-            move_type = "meta_success"
-            target_root_str = config.get('메타매칭시이동폴더')
+        # 메타 사용 모드일 때만 메타 검색 실행
+        if config.get('메타사용') == 'using':
+            if info['label'].lower() in config.get('메타검색지원레이블', set()):
+                meta_module = CensoredTask.get_meta_module('jav_uncensored')
+                meta_info = Task.__search_meta(config, meta_module, info['pure_code'])
 
-        else: # 메타 실패
-            move_type = "meta_fail"
-            target_root_str = config.get('메타매칭실패시이동폴더')
-
-            if target_root_str:
-                logger.debug(f"메타 실패: 폴더 포맷 미적용, '{target_root_str}'로 이동합니다.")
-                return Path(target_root_str), move_type, meta_info
+            if meta_info:
+                move_type = "meta_success"
+                target_root_path = Path(config.get('메타매칭시이동폴더'))
+                folders = CensoredTask.process_folder_format(config, info, config['이동폴더포맷'], meta_info)
+                return target_root_path.joinpath(*folders), move_type, meta_info
             else:
-                logger.error("메타 매칭에 실패했으며, '메타매칭실패시이동폴더'도 설정되지 않았습니다.")
-                return Path(config['처리실패이동폴더']).joinpath("[NO META PATH]"), "error", None
+                move_type = "meta_fail"
+                target_root_path = Path(config.get('메타매칭실패시이동폴더'))
+                if target_root_path.name:
+                    return target_root_path, move_type, meta_info
+                # 메타 실패 폴더가 없으면 아래 라이브러리 폴더 로직으로 넘어감
 
-        # target_root_str이 결정되지 않은 경우 (메타 미사용 모드)
-        if not target_root_str:
-            move_type = "default" # 메타 미사용 시의 이동 타입
-            library_paths = CensoredTask.get_path_list(config.get('라이브러리폴더', []))
-            target_root_str = library_paths[0] if library_paths else None
-
-        # 최종적으로 이동할 경로가 없는 경우 에러 처리
-        if not target_root_str:
-            logger.error("이동할 대상 경로를 결정할 수 없습니다. 처리 실패 폴더로 이동합니다.")
+        # 메타 미사용 모드 또는 위에서 경로 결정이 안 된 모든 경우
+        move_type = "default"
+        library_paths = CensoredTask.get_path_list(config.get('라이브러리폴더', []))
+        if not library_paths:
+            logger.error("이동할 라이브러리 폴더가 설정되지 않았습니다.")
             return Path(config['처리실패이동폴더']).joinpath("[NO TARGET PATH]"), "error", None
 
-        # 메타 성공 또는 메타 미사용 시에만 이 로직에 도달하여 폴더 포맷팅 수행
-        folders = CensoredTask.process_folder_format(config, info, config['이동폴더포맷'], meta_info)
-        return Path(target_root_str).joinpath(*folders), move_type, meta_info
+        target_root_path = Path(library_paths[0])
+        folders = CensoredTask.process_folder_format(config, info, config['이동폴더포맷'], meta_info) # meta_info는 None일 것
+        return target_root_path.joinpath(*folders), move_type, meta_info
 
 
     @staticmethod

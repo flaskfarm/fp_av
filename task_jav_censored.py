@@ -1068,8 +1068,9 @@ class Task:
                                 if custom_path_str:
                                     current_target_root = Path(custom_path_str)
 
-                                if matched_rule['format']:
-                                    folder_format_to_use = (matched_rule.get('format') or matched_rule.get('폴더포맷')) or config['이동폴더포맷']
+                                custom_format_str = matched_rule.get('format') or matched_rule.get('폴더포맷')
+                                if custom_format_str:
+                                    folder_format_to_use = custom_format_str
 
                         folders = Task.process_folder_format(config, info, folder_format_to_use, meta_info)
 
