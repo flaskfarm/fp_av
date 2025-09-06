@@ -363,6 +363,7 @@ class Task:
                     for rule in subbed_path_config_yaml.get('규칙', []):
                         if rule.get('모듈', '').lower() == current_module:
                             default_subbed_path_config['규칙'] = rule
+                            default_subbed_path_config['규칙']['이동제외패턴'] = rule.get('이동제외패턴', '').strip()
                             # logger.debug(f"자막 우선 처리 규칙 로드: 모듈={current_module}, 경로={rule.get('경로')}")
                             break
 
@@ -731,6 +732,17 @@ class Task:
 
                     current_move_type = move_type
                     current_target_dir = target_dir
+
+                    if move_type == "subbed":
+                        rule = config.get('자막우선처리', {}).get('규칙', {})
+                        exclude_pattern = rule.get('이동제외패턴')
+                        if exclude_pattern:
+                            try:
+                                if re.search(exclude_pattern, info['original_file'].name, re.IGNORECASE):
+                                    logger.info(f"  -> 파일 '{info['original_file'].name}'은(는) 제외 패턴과 일치하여 'subbed_path' 대신 일반 경로로 재지정합니다.")
+                                    current_target_dir, current_move_type, _ = Task.__get_target_with_meta(config, info)
+                            except re.error as e:
+                                logger.error(f"subbed 경로 처리의 '이동제외패턴' 정규식 오류: {e}")
 
                     new_filename = None
                     if info.get('file_type') == 'subtitle' or info.get('file_type') == 'etc':
@@ -1429,6 +1441,7 @@ class Task:
         sub_config = config.get('자막우선처리', {})
         rule = sub_config.get('규칙', {})
         base_path_str = rule.get('경로')
+        exclude_pattern = rule.get('이동제외패턴')
 
         if not base_path_str:
             logger.warning("자막 우선 처리 경로(subbed_path)가 설정되지 않아 건너뜁니다.")
@@ -1438,6 +1451,13 @@ class Task:
         folder_format = rule.get('폴더구조') or config.get('이동폴더포맷')
 
         for info in subtitle_infos:
+            if exclude_pattern:
+                try:
+                    if re.search(exclude_pattern, info['original_file'].name, re.IGNORECASE):
+                        logger.debug(f"자막 우선 처리 건너뛰기 (제외 패턴 일치): {info['original_file'].name}")
+                        continue # 이 자막 파일은 건너뛰고 다음 파일로
+                except re.error as e:
+                    logger.error(f"자막 우선 처리의 '이동제외패턴' 정규식 오류: {e}")
             # 자막 파일은 메타 검색을 하지 않으므로 meta_data=None으로 경로 생성
             folders = Task.process_folder_format(config, info, folder_format, meta_data=None)
             target_dir = base_path.joinpath(*folders)

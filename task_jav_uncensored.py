@@ -295,6 +295,17 @@ class Task:
                     current_target_dir = target_dir
                     current_move_type = move_type
 
+                    if move_type == "subbed":
+                        rule = config.get('자막우선처리', {}).get('규칙', {})
+                        exclude_pattern = rule.get('이동제외패턴')
+                        if exclude_pattern:
+                            try:
+                                if re.search(exclude_pattern, info['original_file'].name, re.IGNORECASE):
+                                    # logger.info(f"  -> 파일 '{info['original_file'].name}'은(는) 제외 패턴과 일치하여 'subbed_path' 대신 일반 경로로 재지정합니다.")
+                                    current_target_dir, current_move_type, _ = Task.__get_target_path(config, info)
+                            except re.error as e:
+                                logger.error(f"subbed 경로 처리의 '이동제외패턴' 정규식 오류: {e}")
+
                     new_filename = None
                     if info.get('file_type') == 'subtitle' or info.get('file_type') == 'etc':
                         new_filename = info['original_file'].name
