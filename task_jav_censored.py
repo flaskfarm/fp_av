@@ -49,13 +49,13 @@ class TaskBase:
             "메타검색에공식사이트만사용": ModelSetting.get_bool("jav_censored_meta_dvd_use_dmm_only"),
             "메타매칭시이동폴더": ModelSetting.get("jav_censored_meta_dvd_path").strip(),
             "VR영상이동폴더": ModelSetting.get("jav_censored_meta_dvd_vr_path").strip(),
-            "메타매칭실패시이동폴더": ModelSetting.get("jav_censored_meta_no_path").strip(),
 
             "메타매칭제외레이블": ModelSetting.get_list("jav_censored_meta_dvd_labels_exclude", ","),
             "메타매칭포함레이블": ModelSetting.get_list("jav_censored_meta_dvd_labels_include", ','),
             "배우조건매칭시이동폴더포맷": ModelSetting.get("jav_censored_folder_format_actor").strip(),
             "메타매칭실패시이동": ModelSetting.get_bool("jav_censored_meta_no_move"),
             "메타매칭실패시파일명변경": ModelSetting.get_bool("jav_censored_meta_no_change_filename"),
+            "메타매칭실패시이동폴더": ModelSetting.get("jav_censored_meta_no_path").strip(),
 
             "재시도": True,
             "방송": False,
@@ -717,6 +717,10 @@ class Task:
                         folders = Task.process_folder_format(config, representative_info, config['이동폴더포맷'])
                         target_dir = Path(target_paths[0]).joinpath(*folders) if target_paths else None
 
+                    if target_dir is None:
+                        logger.debug(f"'{pure_code}' 그룹: 이동할 경로가 결정되지 않아 처리를 건너뜁니다.")
+                        continue
+
                 # --- 스캔 요청 전 조건 확인 ---
                 successful_move_types = {'dvd', 'normal', 'subbed'}
 
@@ -847,22 +851,14 @@ class Task:
 
             return entity.set_target(newfile).set_move_type(move_type)
 
-        # 매칭 실패 (no_meta 또는 meta_fail) 케이스 처리
         if move_type in ["no_meta", "meta_fail"]:
-            no_meta_path_str = config.get('메타매칭실패시이동폴더', '').strip()
-            if not no_meta_path_str:
-                logger.info(f"메타 없음: '메타매칭실패시이동폴더'가 비어있어 이동을 건너뜁니다: {file.name}")
-                return entity.set_move_type("no_meta_skipped")
-
-            if not config.get('메타매칭실패시이동', False):
-                return entity.set_move_type(None)
-
             target_dir.mkdir(parents=True, exist_ok=True)
             if newfile.exists():
                 file.unlink()
                 return entity.set_move_type("no_meta_deleted_due_to_duplication")
             else:
                 shutil.move(file, newfile)
+                logger.info(f"메타 매칭 실패 파일을 이동했습니다: {newfile}")
                 return entity.set_target(newfile).set_move_type(move_type)
 
         # 타겟 경로 내 중복 처리
@@ -1118,21 +1114,27 @@ class Task:
         # 'no_meta' 처리 케이스
         move_type = "no_meta"
 
-        # 설정에서 '메타 없는 영상 이동 경로'를 가져옴
+        if not config.get('메타매칭실패시이동', False):
+            logger.debug(f"메타 없음: '{info['pure_code']}' - '메타 없는 영상 이동' 옵션이 꺼져 있어 이동하지 않습니다.")
+            return None, move_type, None # move_type은 남겨서 로그에 표시되도록 할 수 있음
+
+        # "메타 없는 영상 이동" 옵션이 켜져 있을 때만 아래 로직 실행
         no_meta_path_str = config.get('메타매칭실패시이동폴더', '').strip()
 
         final_path_obj = None
-        # 1. 설정된 경로가 있고, 실제로 존재하는 디렉토리인지 확인
-        if no_meta_path_str and Path(no_meta_path_str).is_dir():
-            # 유효한 경로이므로 Path 객체로 변환하여 사용
+        if no_meta_path_str:
+            # 설정된 경로가 있을 경우
             final_path_obj = Path(no_meta_path_str)
             logger.info(f"메타 없음: 설정된 폴더로 이동합니다 - {final_path_obj}")
         else:
-            # 2. 설정된 경로가 없거나 유효하지 않으면, '처리실패이동폴더' 아래에 [NO META] 폴더를 사용
+            # 설정된 경로가 없으면, '처리실패이동폴더' 아래에 [NO META] 폴더 사용
             temp_path_str = config.get('처리실패이동폴더', '').strip()
-            # Task.start에서 temp_path_str의 유효성은 이미 검증됨
-            final_path_obj = Path(temp_path_str).joinpath("[NO META]")
-            logger.info(f"메타 없음: 기본 [NO META] 폴더로 이동합니다 - {final_path_obj}")
+            if temp_path_str:
+                final_path_obj = Path(temp_path_str).joinpath("[NO META]")
+                logger.info(f"메타 없음: 기본 [NO META] 폴더로 이동합니다 - {final_path_obj}")
+            else:
+                logger.warning(f"메타 없음: 이동할 '메타매칭실패시이동폴더' 또는 '처리실패이동폴더'가 설정되지 않아 이동을 건너뜁니다.")
+                return None, None, None
 
         return final_path_obj, move_type, None
 
