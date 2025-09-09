@@ -1067,16 +1067,16 @@ class Task:
 
                         if config.get('커스텀경로활성화', False):
                             custom_rules = config.get('커스텀경로규칙', [])
-                            effective_info = info.copy()
-                            effective_info['label'] = meta_info.get("originaltitle", info['pure_code']).split('-')[0]
-
-                            matched_rule = Task._find_and_merge_custom_path_rules(effective_info, custom_rules)
+                            # meta_info를 함께 전달하여 규칙 찾기
+                            matched_rule = Task._find_and_merge_custom_path_rules(info, custom_rules, meta_info)
+                            
                             if matched_rule:
+                                logger.debug(f"'{info['pure_code']}'에 커스텀 경로 규칙 '{matched_rule.get('name')}' 적용.")
                                 custom_path_str = (matched_rule.get('path') or matched_rule.get('경로', '')).strip()
                                 if custom_path_str:
                                     current_target_root = Path(custom_path_str)
 
-                                custom_format_str = matched_rule.get('format') or matched_rule.get('폴더포맷')
+                                custom_format_str = (matched_rule.get('format') or matched_rule.get('폴더포맷', '')).strip()
                                 if custom_format_str:
                                     folder_format_to_use = custom_format_str
 
@@ -1161,13 +1161,15 @@ class Task:
             number_part_raw = code_parts[1] if len(code_parts) > 1 else ''
             actor_list = meta_data.get('actor') or []
             actor_names = [actor.get('name', '') for actor in actor_list[:3] if actor.get('name')]
+            year_str = str(meta_data.get("year")) if meta_data.get("year") is not None else ""
+            studio_str = meta_data.get("studio") or "NO_STUDIO"
             data.update({
-                "studio": meta_data.get("studio", "NO_STUDIO"),
+                "studio": studio_str,
                 "code": original_title,
                 "actor": f"{','.join(actor_names[:1])}",
                 "actor_2": f"{','.join(actor_names[:2])}",
                 "actor_3": f"{','.join(actor_names[:3])}",
-                "year": meta_data.get("year", ""),
+                "year": year_str,
             })
         else:
             base_label = info['label']
@@ -1329,7 +1331,7 @@ class Task:
 
 
     @staticmethod
-    def _find_and_merge_custom_path_rules(info, rules_list):
+    def _find_and_merge_custom_path_rules(info, rules_list, meta_info=None):
         """
         규칙 리스트를 순회하며 파일 정보와 일치하는 모든 규칙을 찾아 병합합니다.
         값이 비어있지 않은 속성만 덮어쓰며, 리스트의 아래 규칙이 우선순위를 가집니다.
@@ -1340,53 +1342,71 @@ class Task:
         merged_rule = {}
         has_any_match = False
 
-        file_label = info['label'].lower()
         original_filename = info['original_file'].name
+        label_to_check = info['label'].lower()
+        actors_to_check = []
+        studio_to_check = ""
+
+        if meta_info:
+            if meta_info.get("originaltitle"):
+                label_to_check = meta_info.get("originaltitle").split('-')[0].lower()
+            if meta_info.get("actor"):
+                actors_to_check = [a.get('name', '').strip() for a in meta_info.get('actor') if a.get('name', '').strip()]
+            if meta_info.get("studio"):
+                studio_to_check = meta_info.get("studio").strip()
 
         for rule in rules_list:
             is_match = False
             rule_name = rule.get('name') or rule.get('이름', '이름 없는 규칙')
-            
+
             filename_pattern = rule.get('filename_pattern') or rule.get('파일명패턴')
             if filename_pattern:
                 try:
                     if re.search(filename_pattern, original_filename, re.IGNORECASE):
                         is_match = True
+                        logger.debug(f"규칙 매칭: '{rule_name}' (파일명패턴)")
                 except re.error as e:
                     logger.error(f"커스텀 경로 규칙 '{rule_name}'의 파일명 정규식 오류: {e}")
                     continue
 
             label_pattern = rule.get('label_pattern') or rule.get('레이블')
-            if not is_match and label_pattern:
+            if not is_match and label_pattern and label_to_check:
                 try:
-                    strict_pattern = f"^({label_pattern})$"
-                    if re.search(strict_pattern, file_label, re.IGNORECASE):
+                    if re.fullmatch(label_pattern, label_to_check, re.IGNORECASE):
                         is_match = True
+                        logger.debug(f"규칙 매칭: '{rule_name}' (레이블: {label_to_check})")
                 except re.error as e:
                     logger.error(f"커스텀 경로 규칙 '{rule_name}'의 레이블 정규식 오류: {e}")
                     continue
 
+            actor_pattern = rule.get('actor_pattern') or rule.get('배우')
+            if not is_match and actor_pattern and actors_to_check:
+                try:
+                    if any(re.search(actor_pattern, actor_name, re.IGNORECASE) for actor_name in actors_to_check):
+                        is_match = True
+                        matched_actors = [name for name in actors_to_check if re.search(actor_pattern, name, re.IGNORECASE)]
+                        logger.debug(f"규칙 매칭: '{rule_name}' (배우: {matched_actors})")
+                except re.error as e:
+                    logger.error(f"규칙 '{rule_name}'의 배우 정규식 오류: {e}")
+
+            studio_pattern = rule.get('studio_pattern') or rule.get('스튜디오')
+            if not is_match and studio_pattern and studio_to_check:
+                try:
+                    if re.search(studio_pattern, studio_to_check, re.IGNORECASE):
+                        is_match = True
+                        logger.debug(f"규칙 매칭: '{rule_name}' (스튜디오: {studio_to_check})")
+                except re.error as e:
+                    logger.error(f"규칙 '{rule_name}'의 스튜디오 정규식 오류: {e}")
+
             if is_match:
                 has_any_match = True
-                # logger.debug(f"규칙 병합: '{rule_name}' 규칙이 일치하여 속성을 병합합니다.")
-
-                # 값이 있는(truthy) 키만 골라서 업데이트
+                boolean_keys = ['force_on_meta_fail', '메타실패시강제적용']
                 for key, value in rule.items():
-                    # '메타실패시강제적용'과 같은 boolean 값은 False도 유효한 값이므로 예외 처리
-                    # (규칙에서 이 값을 명시적으로 False로 설정하여 상위 규칙의 True를 덮어쓸 수 있도록 함)
-                    boolean_keys = ['force_on_meta_fail', '메타실패시강제적용']
                     if key in boolean_keys:
-                        # boolean 키는 값이 존재하면(None이 아니면) 항상 덮어쓴다.
                         if value is not None:
                             merged_rule[key] = value
                     elif value: 
-                        # 나머지 키는 값이 존재할 때만(None, '', [] 등이 아닐 때) 덮어쓴다.
                         merged_rule[key] = value
-
-        #if has_any_match:
-        #    logger.debug(f"최종 병합된 규칙: {merged_rule}")
-        #else:
-        #    logger.debug("일치하는 커스텀 경로 규칙 없음.")
 
         return merged_rule if has_any_match else None
 
