@@ -141,6 +141,7 @@ class Task:
             'parse_mode': 'uncensored',
             'execute_plan': Task.__execute_plan,
             'db_model': ModelJavUncensoredItem,
+            'get_target_path_function': Task.__get_target_path,
         }
 
         CensoredTask.__start_shared_logic(config, task_context)
@@ -234,7 +235,6 @@ class Task:
         Uncensored 모듈의 최종 실행 함수. Censored와 로직 통일.
         """
         sub_config = config.get('자막우선처리', {})
-        ext_config = config.get('미디어정보설정', {})
         
         code_groups = {}
         for info in execution_plan:
@@ -259,7 +259,7 @@ class Task:
 
                 # --- 자막 우선 처리 로직 ---
                 is_subbed_target = False
-                if config.get('자막우선처리', True) is not False:
+                if config.get('자막우선처리활성화', True) is not False:
                     if sub_config.get('enable', False) and sub_config.get('규칙'):
                         if any(kw in representative_info['original_file'].name.lower() for kw in sub_config.get('내장자막키워드', [])) or \
                            CensoredTask._find_external_subtitle(config, representative_info, sub_config):
@@ -281,6 +281,10 @@ class Task:
                 else:
                     # --- 일반 경로 결정 로직 ---
                     target_dir, move_type, meta_info = Task.__get_target_path(config, representative_info)
+
+                if target_dir is None:
+                    logger.debug(f"'{pure_code}' 그룹: 이동할 경로가 결정되지 않아 처리를 건너뜁니다.")
+                    continue
 
                 # --- 스캔 요청 전 조건 확인 ---
                 if scan_enabled and target_dir != last_scan_path and last_scan_path is not None:
@@ -307,14 +311,10 @@ class Task:
                                 logger.error(f"subbed 경로 처리의 '이동제외패턴' 정규식 오류: {e}")
 
                     new_filename = None
-                    if info.get('file_type') == 'subtitle' or info.get('file_type') == 'etc':
+                    if info.get('file_type') in ['subtitle', 'etc']:
                         new_filename = info['original_file'].name
-                        logger.debug(f"'{info['original_file'].name}' ({info.get('file_type')}) 파일은 원본 파일명을 유지합니다.")
-
                     elif info.get('file_type') == 'video':
-                        use_media_info = config.get('파일명에미디어정보포함', False)
-
-                        if use_media_info and not info.get('final_media_info', {}).get('is_valid', True):
+                        if config.get('파일명에미디어정보포함') and not info.get('final_media_info', {}).get('is_valid', True):
                             current_move_type = "failed_video"
                             current_target_dir = Path(config['처리실패이동폴더']).joinpath("[FAILED VIDEO]")
                             new_filename = info['original_file'].name
