@@ -58,7 +58,7 @@
   {{ macros.m_tab_content_start('filename', false) }}
     {{ macros.setting_checkbox('jav_censored_change_filename', '파일명 변경', value=arg['jav_censored_change_filename'], desc=['On : 파일명 변경', 'Off: 원본파일명 유지']) }}
 
-    {{ macros.setting_checkbox('jav_censored_process_part_files', '분할 파일 처리', value=arg['jav_censored_process_part_files'], desc=['On: 분할 파일명을 품번cd1(cd8 까지) 형태로 변환합니다. 원본 파일명은 제거됩니다.', 'Off: 분할파일 처리 없이 아래 원본파일명 처리 옵션을 따릅니다.']) }}
+    {{ macros.setting_checkbox('jav_censored_process_part_files', '분할 파일 처리', value=arg['jav_censored_process_part_files'], desc=['On: 명확한 분할파일 조건에 해당하면 분할파일명을 품번cdN 형태로 변환합니다.', 'Off: 분할파일 처리 없이 아래 원본파일명 처리 옵션을 따릅니다.']) }}
 
     {{ macros.setting_checkbox('jav_censored_include_media_info_in_filename', '미디어 정보 추가', value=arg['jav_censored_include_media_info_in_filename'], desc=['On: ffprobe로 추출한 해상도, 코덱 등의 미디어 정보를 파일명에 추가합니다.', 'metadata_jav_settings.yaml 파일의 fp_filename_with_ffprobe 섹션에서 고급 설정이 가능하며, ffmpeg(ffprobe) 설치가 필요합니다.']) }}
 
