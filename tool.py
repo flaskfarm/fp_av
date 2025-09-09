@@ -390,48 +390,49 @@ class ToolExpandFileProcess:
     def assemble_filename(cls, config, info):
         """주어진 config와 info를 바탕으로 최종 파일명을 조립합니다."""
 
-        # 1. 파일명 변경 옵션 자체가 꺼져있으면 즉시 원본명 반환
         if not config.get('파일명변경', True):
             return info['original_file'].name
 
-        ext_config = config.get('미디어정보설정', {})
         original_filename_stem = info['original_file'].stem
+        ext_config = config.get('미디어정보설정', {})
         use_media_info = config.get('파일명에미디어정보포함', False)
 
-        # 이미 처리된 분할 파일 (is_already_parted)
-        if info.get('is_already_parted'):
-            logger.debug(f"이미 처리된 분할 파일입니다: {info['original_file'].name}")
-            if use_media_info:
-                # 미디어 정보 추가 옵션이 켜져 있을 때만 처리
+        processed_pattern = config.get('이미처리된파일명패턴')
+        is_already_processed = processed_pattern and re.match(processed_pattern, original_filename_stem)
+
+        if is_already_processed:
+            logger.debug(f"이미 처리된 파일 형식입니다: {info['original_file'].name}")
+
+            # "미디어 정보 추가" 및 "재처리" 옵션이 모두 켜져 있을 때만 삽입 시도
+            if use_media_info and ext_config.get('enable_reprocessing', True):
+                # 미디어 정보가 이미 있는지 먼저 확인
+                skip_pattern = ext_config.get('reprocess_skip_pattern')
+                if skip_pattern and re.search(skip_pattern, original_filename_stem, re.IGNORECASE):
+                    logger.debug(" -> 미디어 정보가 이미 포함되어 있어 건너뜁니다.")
+                    return info['original_file'].name
+
+                # 추가할 미디어 정보 생성
                 media_info_str = ""
                 media_info_to_use = info.get('final_media_info')
                 if media_info_to_use and media_info_to_use.get('is_valid', True):
                     template = ext_config.get('media_info_template', '')
                     media_info_str = cls._format_conditional_template(template, media_info_to_use)
 
-                # 미디어 정보가 이미 있는지 확인
-                skip_pattern = ext_config.get('reprocess_skip_pattern')
-                if skip_pattern and re.search(skip_pattern, original_filename_stem, re.IGNORECASE):
-                    logger.debug(f"  -> 미디어 정보가 이미 포함되어 있어 파일명 변경을 건너뜁니다.")
-                    return info['original_file'].name
-
-                # 미디어 정보 삽입
                 if media_info_str:
-                    match = re.match(r'^(?P<base>[a-zA-Z0-9-]+)\s\[(?P<original>.*)\](?P<part>cd\d+)$', original_filename_stem)
-                    if match:
-                        parts = match.groupdict()
-                        logger.debug(f"  -> 기존 분할 파일명에 미디어 정보를 삽입합니다.")
-                        final_stem = f"{parts['base']} [{media_info_str} {parts['original']}]{parts['part']}"
-                        return f"{final_stem}{info['ext']}"
-                    else:
-                        # 패턴에 맞지 않으면, 원본명 유지하고 종료
-                        logger.warning(f"  -> 미디어 정보를 삽입할 패턴을 찾지 못했습니다. 원본 파일명을 유지합니다.")
-                        return info['original_file'].name
+                    insert_pattern = ext_config.get('reprocess_insert_pattern')
+                    if insert_pattern:
+                        match = re.match(insert_pattern, original_filename_stem)
+                        if match:
+                            logger.debug(" -> 기존 파일명에 미디어 정보를 동적 삽입합니다.")
+                            base, prefix, suffix = match.groups()
+                            final_base = f"{base}{prefix}{media_info_str} {suffix.lstrip()}"
+                            return f"{final_base}{info['ext']}"
 
-            # 미디어 정보 추가 옵션이 꺼져 있거나, 추가할 정보가 없으면 원본명 그대로 반환
+            # 위 조건에 해당하지 않는 모든 "이미 처리된" 파일은 원본명 그대로 반환
             return info['original_file'].name
 
-        # 신규 분할 파일, 단일 파일
+        # 새로운 파일에 대해서만 이름 생성 로직 실행
+
         # 미디어 정보 생성
         media_info_str = ""
         if use_media_info:
@@ -448,7 +449,7 @@ class ToolExpandFileProcess:
                 template = f"{info.get('part_set_prefix', '')}{info.get('part_set_number', '')}{info.get('part_set_suffix', '')}"
                 file_size_info = SupportUtil.sizeof_fmt(info.get('part_set_total_size', 0))
                 original_part_str = f"{template.strip(' _.-')}({file_size_info})"
-            else: # 단일 파일
+            else: # 신규 단일 파일
                 option = config.get('원본파일명처리옵션', 'original')
                 ori_name = info['original_file'].stem.replace("[", "(").replace("]", ")").strip()
                 if option == "original": original_part_str = ori_name
@@ -462,7 +463,7 @@ class ToolExpandFileProcess:
         if combined_info:
             final_base += f" [{combined_info}]"
 
-        part = info.get('parsed_part_type', '')
+        part = info.get('parsed_part_type', '') # 신규 분할 파일의 cdN
         return f"{final_base}{part}{info['ext']}"
 
 
