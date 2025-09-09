@@ -398,68 +398,71 @@ class ToolExpandFileProcess:
         original_filename_stem = info['original_file'].stem
         use_media_info = config.get('파일명에미디어정보포함', False)
 
-        # 2. "미디어 정보 포함 OFF"일 때, 이미 처리된 파일인지 검사
-        if not use_media_info:
-            processed_pattern = config.get('이미처리된파일명패턴')
-            if processed_pattern and re.match(processed_pattern, original_filename_stem):
-                logger.debug(f"이미 처리된 파일명 형식으로 판단되어 파일명 변경을 건너뜁니다: {info['original_file'].name}")
-                return info['original_file'].name
+        # 이미 처리된 분할 파일 (is_already_parted)
+        if info.get('is_already_parted'):
+            logger.debug(f"이미 처리된 분할 파일입니다: {info['original_file'].name}")
+            if use_media_info:
+                # 미디어 정보 추가 옵션이 켜져 있을 때만 처리
+                media_info_str = ""
+                media_info_to_use = info.get('final_media_info')
+                if media_info_to_use and media_info_to_use.get('is_valid', True):
+                    template = ext_config.get('media_info_template', '')
+                    media_info_str = cls._format_conditional_template(template, media_info_to_use)
 
-        # 3. 미디어 정보 문자열 생성
+                # 미디어 정보가 이미 있는지 확인
+                skip_pattern = ext_config.get('reprocess_skip_pattern')
+                if skip_pattern and re.search(skip_pattern, original_filename_stem, re.IGNORECASE):
+                    logger.debug(f"  -> 미디어 정보가 이미 포함되어 있어 파일명 변경을 건너뜁니다.")
+                    return info['original_file'].name
+
+                # 미디어 정보 삽입
+                if media_info_str:
+                    match = re.match(r'^(?P<base>[a-zA-Z0-9-]+)\s\[(?P<original>.*)\](?P<part>cd\d+)$', original_filename_stem)
+                    if match:
+                        parts = match.groupdict()
+                        logger.debug(f"  -> 기존 분할 파일명에 미디어 정보를 삽입합니다.")
+                        final_stem = f"{parts['base']} [{media_info_str} {parts['original']}]{parts['part']}"
+                        return f"{final_stem}{info['ext']}"
+                    else:
+                        # 패턴에 맞지 않으면, 원본명 유지하고 종료
+                        logger.warning(f"  -> 미디어 정보를 삽입할 패턴을 찾지 못했습니다. 원본 파일명을 유지합니다.")
+                        return info['original_file'].name
+
+            # 미디어 정보 추가 옵션이 꺼져 있거나, 추가할 정보가 없으면 원본명 그대로 반환
+            return info['original_file'].name
+
+        # 신규 분할 파일, 단일 파일
+        # 미디어 정보 생성
         media_info_str = ""
         if use_media_info:
             media_info_to_use = info.get('final_media_info')
-            if media_info_to_use:
+            if media_info_to_use and media_info_to_use.get('is_valid', True):
                 template = ext_config.get('media_info_template', '')
                 media_info_str = cls._format_conditional_template(template, media_info_to_use)
 
-        # 4. "미디어 정보 포함 ON"일 때, 재처리 로직 적용
-        if use_media_info and ext_config.get('enable_reprocessing', True) and media_info_str:
-            skip_pattern = ext_config.get('reprocess_skip_pattern')
-            insert_pattern = ext_config.get('reprocess_insert_pattern')
-
-            if skip_pattern and re.search(skip_pattern, original_filename_stem, re.IGNORECASE):
-                logger.debug(f"미디어 정보 포함 파일명으로 판단되어 재처리 건너뜁니다: {info['original_file'].name}")
-                return info['original_file'].name
-
-            if insert_pattern and re.match(insert_pattern, original_filename_stem, re.IGNORECASE):
-                if media_info_str:
-                    logger.debug(f"기존 파일명에 미디어 정보를 동적 삽입합니다: {info['original_file'].name}")
-                    match = re.match(insert_pattern, original_filename_stem)
-                    base, prefix, suffix = match.groups()
-                    final_base = f"{base}{prefix}{media_info_str} {suffix.lstrip()}"
-                    return f"{final_base}{info['ext']}"
-                else:
-                    logger.warning(f"'{info['original_file'].name}': 유효한 미디어 정보가 없어 처리를 건너뜁니다.")
-                    return None
-
-        # 5. 위 조건들에 해당하지 않는 일반적인 신규 파일명 생성
+        # 원본 파일명 부분 생성
         base = info['pure_code']
         original_part_str = ""
         if config.get('원본파일명포함여부', True):
-            if info.get('is_part_of_set'):
-                # 분할 세트일 때 원본 파일명 부분 생성
-                template = f"{info['part_set_prefix']}{info['part_set_number']}_{info['part_set_suffix']}"
-                file_size_info = info['part_set_total_size']
-                original_part_str = f"{template}({file_size_info})"
-            else:
-                # 개별 파일일 때 원본 파일명 부분 생성
+            if info.get('is_part_of_set'): # 신규 분할 파일
+                template = f"{info.get('part_set_prefix', '')}{info.get('part_set_number', '')}{info.get('part_set_suffix', '')}"
+                file_size_info = SupportUtil.sizeof_fmt(info.get('part_set_total_size', 0))
+                original_part_str = f"{template.strip(' _.-')}({file_size_info})"
+            else: # 단일 파일
                 option = config.get('원본파일명처리옵션', 'original')
                 ori_name = info['original_file'].stem.replace("[", "(").replace("]", ")").strip()
                 if option == "original": original_part_str = ori_name
                 elif option == "original_bytes": original_part_str = f"{ori_name}({info['file_size']})"
-                elif option == "original_giga": original_part_str = f"{ori_name}({SupportUtil.sizeof_fmt(info['file_size'])})"
+                elif option == "original_giga": original_part_str = f"{ori_name}(SupportUtil.sizeof_fmt(info['file_size']))"
                 elif option == "bytes": original_part_str = str(info['file_size'])
 
+        # 최종 조립
         combined_info = ' '.join(filter(None, [media_info_str, original_part_str]))
         final_base = base
         if combined_info:
             final_base += f" [{combined_info}]"
 
-        part = ""
-        if info.get('is_part_of_set'):
-            part = info.get('parsed_part_type', '')
-
+        part = info.get('parsed_part_type', '')
         return f"{final_base}{part}{info['ext']}"
 
 

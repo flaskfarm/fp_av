@@ -534,33 +534,35 @@ class Task:
         """
         from collections import defaultdict
 
-        # 0. 동영상 파일 중, 이미 처리된 'cdN' 형식의 파일은 제외
         unprocessed_infos = []
+        # --- 1. 이미 처리된 cdN 파일 식별 및 플래그 추가 ---
         video_infos = [info for info in execution_plan if info.get('file_type') == 'video']
         for info in video_infos:
-            if re.search(r'cd\d+$', info['original_file'].stem, re.IGNORECASE):
-                logger.debug(f"분할 파일 세트 처리에서 제외: 이미 처리된 파일명 형식입니다 - {info['original_file'].name}")
+            match = re.search(r'(cd\d+)$', info['original_file'].stem, re.IGNORECASE)
+            if match:
+                part_type = match.group(1).lower()
+                logger.debug(f"이미 처리된 분할 파일로 인식: {info['original_file'].name}")
+                info['is_part_of_set'] = True
+                info['parsed_part_type'] = part_type
+                info['is_already_parted'] = True  # '기존 분할 파일' 꼬리표 추가
             else:
+                # 처리되지 않은 파일만 새로운 세트 탐색 대상으로 추가
                 unprocessed_infos.append(info)
 
+        # --- 2. 처리되지 않은 파일들을 대상으로 새로운 분할 세트 탐색 ---
         potential_sets = defaultdict(list)
-
         for info in unprocessed_infos:
             stem = info['original_file'].stem
             raw_number_part = info.get('raw_number')
             if not raw_number_part:
                 continue
 
-            # 1. 원본 stem에서 파싱된 number가 나타나는 모든 위치를 찾음
             indices = [m.start() for m in re.finditer(re.escape(raw_number_part), stem, re.IGNORECASE)]
             if not indices:
                 continue
 
             for idx in indices:
-                # 2. number의 각 위치를 기준으로 뒷부분(tail)을 자름
                 tail_part = stem[idx + len(raw_number_part):]
-
-                # 3. tail에서 숫자 파트 또는 알파벳 파트 패턴을 찾음
                 pattern = r'^(?:(?P<part_num>[-_.\s]\d{1,2})(?!\d)|(?P<part_alpha>[-_.\s]?[a-zA-Z])(?![a-zA-Z]))(?P<suffix>.*)$'
                 match = re.match(pattern, tail_part, re.IGNORECASE)
 
@@ -576,10 +578,8 @@ class Task:
                     if not (part_str.isdigit() or (part_str.isalpha() and len(part_str) == 1)):
                         continue
 
-                    # 4. 유효한 파트를 찾았으면, 정보를 수집하고 루프 탈출
                     prefix_part = stem[:idx]
                     suffix_part = parts['suffix']
-
                     part_type = 'digit' if part_str.isdigit() else 'alpha'
                     group_key = (prefix_part.lower(), info['pure_code'], suffix_part.lower(), part_type)
 
@@ -589,52 +589,68 @@ class Task:
                         'original_number': raw_number_part,
                         'original_suffix': suffix_part
                     })
-                    break # 가장 먼저 발견된 유효한 조합을 사용
+                    break
 
-        # 5. 세트 검증 및 정보 주입
+        # 신규 세트 검증 및 정보 주입
         for group_key, items in potential_sets.items():
             if len(items) < 2:
                 continue
-
             part_type = group_key[3]
-
-            # 5a. 파트 넘버를 수치로 변환
             numeric_parts = []
             for item in items:
                 part_str = item['part_str']
                 if part_type == 'digit':
                     numeric_parts.append(int(part_str))
-                else: # alpha
+                else:
                     numeric_parts.append(ord(part_str.lower()))
 
-            # 5b. 시퀀스 시작점 및 연속성 검사
             sorted_numeric = sorted(numeric_parts)
-
             starts_correctly = (part_type == 'digit' and sorted_numeric[0] == 1) or \
-                               (part_type == 'alpha' and sorted_numeric[0] == ord('a'))
-
+                            (part_type == 'alpha' and sorted_numeric[0] == ord('a'))
             is_continuous = all(sorted_numeric[i] == sorted_numeric[0] + i for i in range(len(sorted_numeric)))
 
             if not (starts_correctly and is_continuous):
-                logger.debug(f"'{items[0]['info']['pure_code']}' 그룹은 유효한 시퀀스(시작점/연속성)가 아님: {[item['part_str'] for item in items]}")
+                logger.debug(f"'{items[0]['info']['pure_code']}' 그룹은 유효한 시퀀스가 아님: {[item['part_str'] for item in items]}")
                 continue
 
-            # 5c. 세트 확정 및 정보 주입
             representative_code = items[0]['info']['pure_code']
-            logger.info(f"'{representative_code}' 그룹에서 유효한 분할 파일 세트를 발견했습니다.")
+            logger.info(f"'{representative_code}' 그룹에서 새로운 분할 파일 세트를 발견했습니다.")
             total_size = sum(item['info']['file_size'] for item in items)
-
             sorted_items = sorted(zip(numeric_parts, items), key=lambda x: x[0])
 
             for i, (_, item) in enumerate(sorted_items):
                 info = item['info']
                 info['is_part_of_set'] = True
                 info['parsed_part_type'] = f"cd{i + 1}"
-                info['part_set_code'] = representative_code
                 info['part_set_total_size'] = total_size
                 info['part_set_prefix'] = item['original_prefix']
                 info['part_set_number'] = item['original_number']
                 info['part_set_suffix'] = item['original_suffix']
+
+        # --- 3. 최종 정리: 모든 분할 파일 그룹에 대표 코드 및 총 크기 할당 ---
+        part_groups = defaultdict(list)
+        for info in execution_plan:
+            if info.get('is_part_of_set'):
+                part_groups[info['pure_code']].append(info)
+
+        for pure_code, group_infos in part_groups.items():
+            # 그룹 내에 기존 파일에서 파싱된 총 크기 정보가 있는지 확인
+            existing_total_size = None
+            for info in group_infos:
+                if 'part_set_total_size' in info:
+                    existing_total_size = info['part_set_total_size']
+                    logger.debug(f"'{pure_code}' 그룹: 기존 파일에서 파싱된 총 크기({existing_total_size})를 사용합니다.")
+                    break
+
+            # 그룹 내에 총 크기 정보가 없으면 (모두 신규 파일일 경우) 새로 계산
+            if existing_total_size is None:
+                existing_total_size = sum(info['file_size'] for info in group_infos)
+                logger.debug(f"'{pure_code}' 그룹: 새로 분할 파일 세트의 총 크기({existing_total_size})를 계산합니다.")
+
+            # 그룹 내 모든 파일에 대표 코드와 최종 총 크기를 할당
+            for info in group_infos:
+                info['part_set_code'] = pure_code
+                info['part_set_total_size'] = existing_total_size
 
 
     @staticmethod
