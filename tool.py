@@ -445,26 +445,17 @@ class ToolExpandFileProcess:
         base = info['pure_code']
         original_part_str = ""
         if config.get('원본파일명포함여부', True):
-            option = config.get('원본파일명처리옵션', 'original')
-            is_part_set = info.get('is_part_of_set')
-
-            if is_part_set:
-                ori_name = f"{info.get('part_set_prefix', '')}{info.get('part_set_number', '')}{info.get('part_set_suffix', '')}"
-                ori_name = ori_name.strip(' _.-')
-            else:
+            if info.get('is_part_of_set'): # 신규 분할 파일
+                template = f"{info.get('part_set_prefix', '')}{info.get('part_set_number', '')}{info.get('part_set_suffix', '')}"
+                file_size_info = SupportUtil.sizeof_fmt(info.get('part_set_total_size', 0))
+                original_part_str = f"{template.strip(' _.-')}({file_size_info})"
+            else: # 신규 단일 파일
+                option = config.get('원본파일명처리옵션', 'original')
                 ori_name = info['original_file'].stem.replace("[", "(").replace("]", ")").strip()
-
-            file_size = info.get('part_set_total_size') if is_part_set else info.get('file_size')
-
-            # 사용자 옵션에 따라 최종 문자열을 조립합니다.
-            if option == "original":
-                original_part_str = ori_name
-            elif option == "original_bytes":
-                original_part_str = f"{ori_name}({file_size})"
-            elif option == "original_giga":
-                original_part_str = f"{ori_name}({SupportUtil.sizeof_fmt(file_size)})"
-            elif option == "bytes":
-                original_part_str = str(file_size)
+                if option == "original": original_part_str = ori_name
+                elif option == "original_bytes": original_part_str = f"{ori_name}({info['file_size']})"
+                elif option == "original_giga": original_part_str = f"{ori_name}(SupportUtil.sizeof_fmt(info['file_size']))"
+                elif option == "bytes": original_part_str = str(info['file_size'])
 
         # 최종 조립
         combined_info = ' '.join(filter(None, [media_info_str, original_part_str]))
