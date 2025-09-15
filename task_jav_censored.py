@@ -178,7 +178,7 @@ class Task:
 
         # 2-2. (Subbed Path) 자막 파일 우선 처리 "Fast Lane"
         sub_config = config.get('자막우선처리', {})
-        if sub_config.get('enable', False):
+        if sub_config.get('처리활성화', False):
             subtitle_fast_lane = []
             remaining_files = []
             for info in execution_plan:
@@ -241,7 +241,7 @@ class Task:
             info['newfilename'] = ToolExpandFileProcess.assemble_filename(config, info)
 
         # 6. 실제 파일 이동 (각 모듈의 __execute_plan 호출)
-        task_context['execute_plan'](config, execution_plan, task_context['db_model'])
+        task_context['execute_plan'](config, execution_plan, task_context['db_model'], task_context)
 
 
     # ====================================================================
@@ -309,7 +309,6 @@ class Task:
                 config['이미처리된파일명패턴'] = misc_settings.get('already_processed_pattern', r'^[a-zA-Z0-9]+-[a-zA-Z0-9-_]+(\s\[.*\](?:cd\d+)?)$')
                 config['허용된숫자레이블'] = misc_settings.get('allowed_numeric_labels', r'^(741|1pon|10mu).*?')
                 config['scan_with_no_meta'] = misc_settings.get('scan_with_no_meta', True)
-                config['자막파일별도처리'] = misc_settings.get('자막파일별도처리', True)
 
                 # --- 커스텀 경로 규칙 ---
                 custom_path_section = jav_settings.get('meta_custom_path', {})
@@ -342,14 +341,14 @@ class Task:
 
                 # --- 자막 우선 처리(subbed_path) 설정 로드 ---
                 default_subbed_path_config = {
-                    'enable': False,
+                    '처리활성화': False,
                     '자막파일확장자': {'ass', 'ssa', 'idx', 'sub', 'sup', 'smi', 'srt', 'ttml', 'vtt'},
                     '내장자막키워드': [],
                     '규칙': {}
                 }
                 subbed_path_config_yaml = jav_settings.get('subbed_path', {})
-                if subbed_path_config_yaml and subbed_path_config_yaml.get('enable'):
-                    default_subbed_path_config['enable'] = True
+                if subbed_path_config_yaml and subbed_path_config_yaml.get('처리활성화'):
+                    default_subbed_path_config['처리활성화'] = True
 
                     ext_str = subbed_path_config_yaml.get('자막파일확장자', 'ass ssa idx sub sup smi srt ttml vtt')
                     default_subbed_path_config['자막파일확장자'] = {f".{ext.strip()}" for ext in ext_str.split()}
@@ -372,11 +371,11 @@ class Task:
             else:
                 logger.warning("메타데이터 플러그인을 찾을 수 없어 파싱 규칙 및 확장 설정을 로드하지 못했습니다.")
                 config['파싱규칙'] = {}
-                config['자막우선처리'] = {'enable': False}
+                config['자막우선처리'] = {'처리활성화': False}
         except Exception as e:
             logger.error(f"확장 설정 로드 중 오류: {e}")
             config['파싱규칙'] = {}
-            config['자막우선처리'] = {'enable': False}
+            config['자막우선처리'] = {'처리활성화': False}
 
 
     @staticmethod
@@ -654,10 +653,13 @@ class Task:
 
 
     @staticmethod
-    def __execute_plan(config, execution_plan, db_model):
+    def __execute_plan(config, execution_plan, db_model, task_context=None):
         """
         최종 실행 함수.
         """
+        if task_context is None:
+            task_context = {}
+
         ext_config = config.get('미디어정보설정', {})
         sub_config = config.get('자막우선처리', {})
 
@@ -689,7 +691,7 @@ class Task:
                 is_subbed_target = False
 
                 if config.get('자막우선처리활성화', True) is not False:
-                    if sub_config.get('enable', False) and sub_config.get('규칙'):
+                    if sub_config.get('처리활성화', False) and sub_config.get('규칙'):
                         if any(kw in representative_info['original_file'].name.lower() for kw in sub_config.get('내장자막키워드', [])) or \
                            Task._find_external_subtitle(config, representative_info, sub_config):
                             is_subbed_target = True
