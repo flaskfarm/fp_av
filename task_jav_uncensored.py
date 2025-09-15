@@ -260,7 +260,7 @@ class Task:
                 # --- 자막 우선 처리 로직 ---
                 is_subbed_target = False
                 if config.get('자막우선처리활성화', True) is not False:
-                    if sub_config.get('enable', False) and sub_config.get('규칙'):
+                    if sub_config.get('처리활성화', False) and sub_config.get('규칙'):
                         if any(kw in representative_info['original_file'].name.lower() for kw in sub_config.get('내장자막키워드', [])) or \
                            CensoredTask._find_external_subtitle(config, representative_info, sub_config):
                             is_subbed_target = True
