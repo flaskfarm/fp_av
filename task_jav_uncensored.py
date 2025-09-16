@@ -230,12 +230,15 @@ class Task:
 
 
     @staticmethod
-    def __execute_plan(config, execution_plan, db_model):
+    def __execute_plan(config, execution_plan, db_model, task_context=None):
         """
         Uncensored 모듈의 최종 실행 함수. Censored와 로직 통일.
         """
+        if task_context is None:
+            task_context = {}
+
         sub_config = config.get('자막우선처리', {})
-        
+
         code_groups = {}
         for info in execution_plan:
             code_groups.setdefault(info['pure_code'], []).append(info)
