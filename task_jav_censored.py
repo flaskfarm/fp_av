@@ -1014,7 +1014,9 @@ class Task:
 
     @staticmethod
     def __get_target_with_meta_dvd(config, info):
-
+        """
+        Censored 메타 검색 및 경로 결정을 담당합니다.
+        """
         if config is None:
             logger.error("Task.config가 초기화되지 않았습니다. 처리를 중단합니다.")
             return None, None
@@ -1025,102 +1027,111 @@ class Task:
             return None, None
 
         search_name = info['pure_code']
-        label = search_name.split("-")[0]
+        label = search_name.split("-")[0].lower()
 
-        meta_dvd_labels_exclude = map(str.strip, config.get('메타매칭제외레이블', []))
-        if label in map(str.lower, meta_dvd_labels_exclude):
-            logger.info("'정식발매 영상 제외 레이블'에 포함: %s", label)
+        # --- 1. 제외 레이블 확인 ---
+        meta_dvd_labels_exclude = [l.strip().lower() for l in config.get('메타매칭제외레이블', [])]
+        if label in meta_dvd_labels_exclude:
+            logger.info(f"'{label}'은(는) '정상 매칭 제외 레이블'에 포함되어 메타 검색을 건너뜁니다.")
             return None, None
 
-        target_root_str = config.get('메타매칭시이동폴더', '').strip()
-        if not target_root_str:
-            raise ValueError("'정상 매칭시 이동 경로'가 지정되지 않았습니다.")
-
-        target_root_path = Path(target_root_str)
-        # if not target_root_path.is_dir():
-        #     raise NotADirectoryError(f"'정상 매칭시 이동 경로'가 존재하지 않음: {target_root_str}")
-
-        # 사용할 사이트 목록 및 점수 결정
-        site_search_list = []
+        # --- 2. 메타 정보 획득 ---
+        meta_info = None
         custom_search_settings = config.get('메타검색에사용할사이트')
 
-        if custom_search_settings: # 고급 설정이 있을 경우
-            logger.debug("고급 메타 검색 설정을 사용하여 검색합니다.")
+        if custom_search_settings:
+            # --- 시나리오 A: 사용자가 사이트를 직접 지정한 경우 (search2 사용) ---
+            logger.debug(f"'{search_name}': 사용자 지정 사이트 목록으로 검색합니다: {[s.get('사이트') for s in custom_search_settings]}")
             site_search_list = custom_search_settings
             if config.get('메타검색에공식사이트만사용', False):
-                site_search_list = [s for s in site_search_list if s['사이트'] in ['dmm', 'mgstage']]
-                logger.debug(f"공식 사이트만 사용: {site_search_list}")
-        else: # 고급 설정이 없을 경우 (기본 동작)
+                site_search_list = [s for s in site_search_list if s.get('사이트') in ['dmm', 'mgstage']]
+
+            for search_rule in site_search_list:
+                site_name = search_rule.get('사이트')
+                if not site_name: continue
+                min_score = search_rule.get('점수', 95)
+                try:
+                    search_result_list = meta_module.search2(search_name, site_name, manual=False)
+                    if not search_result_list: continue
+
+                    best_match = next((item for item in search_result_list if item.get('score', 0) >= min_score), None)
+                    if best_match:
+                        logger.info(f"매칭 성공! (search2) 사이트=[{site_name}], 코드=[{best_match['code']}], 점수=[{best_match['score']}]")
+                        meta_info = meta_module.info(best_match["code"], keyword=search_name, fp_meta_mode=False)
+                        if meta_info: break # 유효한 메타 정보 획득 시 루프 종료
+                except Exception as e:
+                    logger.error(f"'{site_name}' 사이트 검색 중 예외 발생: {e}")
+                    logger.debug(traceback.format_exc())
+        else:
+            # --- 시나리오 B: 사용자가 사이트를 지정하지 않은 경우 (metadata의 통합 search 사용) ---
+            # logger.debug(f"'{search_name}': 메타데이터 플러그인의 통합 검색(search)을 사용합니다.")
             try:
-                site_order = meta_module.P.ModelSetting.get_list('jav_censored_order', ',')
-                site_search_list = [{'사이트': site, '점수': 95} for site in site_order]
+                search_results = meta_module.search(search_name, manual=False)
+                if search_results:
+                    best_match = search_results[0]
+                    if best_match.get('score', 0) >= 95:
+                        logger.info(f"매칭 성공! (search) 사이트=[{best_match.get('site')}], 코드=[{best_match['code']}], 점수=[{best_match['score']}]")
+                        meta_info = meta_module.info(best_match["code"], keyword=search_name, fp_meta_mode=False)
             except Exception as e:
-                logger.warning(f"메타데이터 플러그인에서 사이트 순서 로드 실패: {e}")
-                site_search_list = [{'사이트': 'dmm', '점수': 95}, {'사이트': 'mgstage', '점수': 95}]
-
-        if not site_search_list:
-            logger.warning("검색할 사이트 목록이 비어있습니다. 메타 검색을 건너뜁니다.")
-            return None, None
-
-        # 결정된 목록으로 순차 검색
-        search_name = info['pure_code']
-        for search_rule in site_search_list:
-            site_name = search_rule['사이트']
-            min_score = search_rule['점수']
-            try:
-                search_result_list = meta_module.search2(search_name, site_name, manual=False)
-                if not search_result_list:
-                    continue
-
-                best_match = next((item for item in search_result_list if item.get('score', 0) >= min_score), None)
-                if best_match:
-                    logger.info(f"매칭 성공! 사이트=[{site_name}], 검색어=[{search_name}], 코드=[{best_match['code']}], 점수=[{best_match['score']}] (기준: {min_score})")
-                    # 메타검색시 파일처리용으로, 프로세스 단순화 목적으로 fp_meta_mode를 추가했지만,
-                    # NFO/YAML 생성 등을 고려하지 않았음...필요하면 추후 로직 업데이트 고려. 지금은 False로 비활성화
-                    meta_info = meta_module.info(best_match["code"], keyword=search_name, fp_meta_mode=False)
-
-                    if meta_info:
-                        current_target_root = Path(config.get('메타매칭시이동폴더'))
-                        folder_format_to_use = config['이동폴더포맷']
-
-                        if config.get('커스텀경로활성화', False):
-                            custom_rules = config.get('커스텀경로규칙', [])
-                            # meta_info를 함께 전달하여 규칙 찾기
-                            matched_rule = Task._find_and_merge_custom_path_rules(info, custom_rules, meta_info)
-                            
-                            if matched_rule:
-                                logger.debug(f"'{info['pure_code']}'에 커스텀 경로 규칙 '{matched_rule.get('name')}' 적용.")
-                                custom_path_str = (matched_rule.get('path') or matched_rule.get('경로', '')).strip()
-                                if custom_path_str:
-                                    current_target_root = Path(custom_path_str)
-
-                                custom_format_str = (matched_rule.get('format') or matched_rule.get('폴더포맷', '')).strip()
-                                if custom_format_str:
-                                    folder_format_to_use = custom_format_str
-
-                        folders = Task.process_folder_format(config, info, folder_format_to_use, meta_info)
-
-                        vr_genres = ["고품질VR", "VR전용", "VR専用", "ハイクオリティVR"]
-                        if any(x in (meta_info.get("genre") or []) for x in vr_genres):
-                            vr_path_str = config.get('VR영상이동폴더', '').strip()
-                            if vr_path_str:
-                                current_target_root = Path(vr_path_str)
-
-                        return current_target_root.joinpath(*folders), meta_info
-
-            except Exception as e:
-                logger.error(f"'{site_name}' 사이트 검색 중 예외 발생: {e}")
+                logger.error(f"메타데이터 통합 검색(search) 중 예외 발생: {e}")
                 logger.debug(traceback.format_exc())
 
-        logger.info(f"'{search_name}'에 대한 유효한 메타 정보를 찾지 못했습니다.")
+        # --- 3. 메타 정보 기반 경로 결정 ---
+        if meta_info:
+            # --- 3A. 메타 성공 시 ---
+            # 폴더명 생성을 위한 배우 이름 사전 번역
+            actors = meta_info.get("actor") or []
+            if actors:
+                # logger.debug(f"폴더명 생성을 위해 '{info['pure_code']}'의 배우 이름 번역을 미리 수행합니다.")
+                for actor_item in actors:
+                    try:
+                        meta_module.process_actor(actor_item)
+                    except Exception as e:
+                        logger.error(f"배우 '{actor_item.get('originalname')}' 이름 사전 번역 중 오류: {e}")
 
-        meta_dvd_labels_include = map(str.strip, config.get('메타매칭포함레이블', []))
-        if label in map(str.lower, meta_dvd_labels_include):
-            folders = Task.process_folder_format(config, info, config['이동폴더포맷'])
-            logger.info("메타 매칭에 실패했지만 '정식발매 영상 포함 레이블'에 해당되어 처리: %s", label)
-            return target_root_path.joinpath(*folders), None
+            # 기본 경로 및 포맷 설정
+            current_target_root = Path(config.get('메타매칭시이동폴더'))
+            folder_format_to_use = config['이동폴더포맷']
 
-        return None, None
+            # 커스텀 경로 규칙 적용
+            if config.get('커스텀경로활성화', False):
+                custom_rules = config.get('커스텀경로규칙', [])
+                matched_rule = Task._find_and_merge_custom_path_rules(info, custom_rules, meta_info)
+                if matched_rule:
+                    logger.debug(f"'{info['pure_code']}'에 커스텀 경로 규칙 '{matched_rule.get('name')}' 적용.")
+                    custom_path_str = (matched_rule.get('path') or matched_rule.get('경로', '')).strip()
+                    if custom_path_str:
+                        current_target_root = Path(custom_path_str)
+
+                    custom_format_str = (matched_rule.get('format') or matched_rule.get('폴더포맷'))
+                    if custom_format_str:
+                        folder_format_to_use = custom_format_str
+
+            # VR 경로 처리
+            vr_genres = ["고품질VR", "VR전용", "VR専用", "ハイクオリティVR"]
+            if any(x in (meta_info.get("genre") or []) for x in vr_genres):
+                vr_path_str = config.get('VR영상이동폴더', '').strip()
+                if vr_path_str:
+                    current_target_root = Path(vr_path_str)
+
+            # 최종 경로 생성
+            folders = Task.process_folder_format(config, info, folder_format_to_use, meta_info)
+            return current_target_root.joinpath(*folders), meta_info
+
+        else:
+            # --- 3B. 메타 실패 시 ---
+            logger.info(f"'{search_name}'에 대한 유효한 메타 정보를 찾지 못했습니다.")
+
+            # "포함 레이블" 확인
+            meta_dvd_labels_include = [l.strip().lower() for l in config.get('메타매칭포함레이블', [])]
+            if label in meta_dvd_labels_include:
+                logger.info(f"메타 매칭에 실패했지만 '{label}'은(는) '정식발매 영상 포함 레이블'에 해당되어 처리합니다.")
+                target_root_path = Path(config.get('메타매칭시이동폴더'))
+                folders = Task.process_folder_format(config, info, config['이동폴더포맷'], meta_data=None)
+                return target_root_path.joinpath(*folders), None
+
+            # "포함 레이블"에 해당하지 않으면 최종 실패
+            return None, None
 
 
     @staticmethod
