@@ -464,7 +464,22 @@ class ToolExpandFileProcess:
             final_base += f" [{combined_info}]"
 
         part = info.get('parsed_part_type', '') # 신규 분할 파일의 cdN
-        return f"{final_base}{part}{info['ext']}"
+
+        # 최종 파일명(확장자 제외)을 조립
+        final_stem = f"{final_base}{part}"
+        # 1. 연속된 공백을 하나의 공백으로 변경
+        cleaned_stem = re.sub(r'\s{2,}', ' ', final_stem)
+        # 2. 연속된 하이픈, 언더스코어를 하나로 변경
+        cleaned_stem = re.sub(r'--+', '-', cleaned_stem)
+        cleaned_stem = re.sub(r'__+', '_', cleaned_stem)
+        # 3. 비어있는 괄호 제거 (예: {actor}가 비었을 때 남는 '()', '[]')
+        cleaned_stem = cleaned_stem.replace('()', '').replace('[]', '').replace('{}', '')
+        # 4. 정리 후 혹시 모를 연속된 공백을 다시 한번 정리
+        cleaned_stem = re.sub(r'\s{2,}', ' ', cleaned_stem)
+        # 5. 최종적으로 앞뒤 공백 제거
+        cleaned_stem = cleaned_stem.strip()
+
+        return f"{cleaned_stem}{info['ext']}"
 
 
     ##########################
