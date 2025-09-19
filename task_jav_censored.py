@@ -8,9 +8,9 @@ import shutil
 import time
 import requests
 import json
-import shlex
 
 from datetime import datetime
+from collections import defaultdict
 
 ModelSetting = P.ModelSetting
 from .tool import ToolExpandFileProcess, UtilFunc, SafeFormatter
@@ -514,7 +514,6 @@ class Task:
             'label': parsed['label'],
             'number': parsed['number'],
             'raw_number': parsed['raw_number'],
-            'raw_part': parsed['part'],
             'ext': parsed['ext'],
             'meta_info': None,
             'media_info': None
@@ -531,125 +530,115 @@ class Task:
         """
         분할 파일 처리 로직
         """
-        from collections import defaultdict
 
-        unprocessed_infos = []
-        # --- 1. 이미 처리된 cdN 파일 식별 및 플래그 추가 ---
-        video_infos = [info for info in execution_plan if info.get('file_type') == 'video']
+        video_infos = [info for info in execution_plan if info.get('file_type') == 'video' and not info.get('is_part_of_set')]
+        code_groups = defaultdict(list)
         for info in video_infos:
-            match = re.search(r'(cd\d+)$', info['original_file'].stem, re.IGNORECASE)
-            if match:
-                part_type = match.group(1).lower()
-                logger.debug(f"이미 처리된 분할 파일로 인식: {info['original_file'].name}")
-                info['is_part_of_set'] = True
-                info['parsed_part_type'] = part_type
-                info['is_already_parted'] = True  # '기존 분할 파일' 꼬리표 추가
-            else:
-                # 처리되지 않은 파일만 새로운 세트 탐색 대상으로 추가
-                unprocessed_infos.append(info)
+            code_groups[info['pure_code']].append(info)
 
-        # --- 2. 처리되지 않은 파일들을 대상으로 새로운 분할 세트 탐색 ---
-        potential_sets = defaultdict(list)
-        for info in unprocessed_infos:
-            stem = info['original_file'].stem
-            raw_number_part = info.get('raw_number')
-            if not raw_number_part:
-                continue
+        for pure_code, group_infos in code_groups.items():
+            all_infos_in_group = list(group_infos)
 
-            indices = [m.start() for m in re.finditer(re.escape(raw_number_part), stem, re.IGNORECASE)]
-            if not indices:
-                continue
+            while len(all_infos_in_group) >= 2:
+                all_infos_in_group.sort(key=lambda i: [int(c) if c.isdigit() else c.lower() for c in re.split('([0-9]+)', i['original_file'].stem)])
 
-            for idx in indices:
-                tail_part = stem[idx + len(raw_number_part):]
-                pattern = r'^(?:(?P<part_num>[-_.\s]\d{1,2})(?!\d)|(?P<part_alpha>[-_.\s]?[a-zA-Z])(?![a-zA-Z]))(?P<suffix>.*)$'
-                match = re.match(pattern, tail_part, re.IGNORECASE)
+                info1, info2 = all_infos_in_group[0], all_infos_in_group[1]
+                stem1, stem2 = info1['original_file'].stem, info2['original_file'].stem
 
-                if match:
-                    parts = match.groupdict()
-                    part_str = ''
+                prefix = os.path.commonprefix([stem1, stem2])
+                suffix = os.path.commonprefix([stem1[::-1], stem2[::-1]])[::-1]
 
-                    if parts['part_num']:
-                        part_str = re.search(r'\d{1,2}', parts['part_num']).group(0)
-                    elif parts['part_alpha']:
-                        part_str = re.search(r'[a-zA-Z]', parts['part_alpha']).group(0)
+                part1_raw = stem1[len(prefix):len(stem1)-len(suffix)]
+                part2_raw = stem2[len(prefix):len(stem2)-len(suffix)]
 
-                    if not (part_str.isdigit() or (part_str.isalpha() and len(part_str) == 1)):
-                        continue
+                # Prefix 정리
+                if prefix.endswith('0'):
+                    part1_clean = part1_raw.strip(' _.-()')
+                    if part1_clean in ['1', '01']:
+                        if not prefix.upper().endswith(info1['label'].upper() + '0'):
+                            prefix = prefix[:-1]
+                            part1_raw = stem1[len(prefix):len(stem1)-len(suffix)]
+                            part2_raw = stem2[len(prefix):len(stem2)-len(suffix)]
 
-                    prefix_part = stem[:idx]
-                    suffix_part = parts['suffix']
-                    part_type = 'digit' if part_str.isdigit() else 'alpha'
-                    group_key = (prefix_part.lower(), info['pure_code'], suffix_part.lower(), part_type)
+                def is_valid_part(p): return p and len(p) < 6 and p.strip(' _.-()').isalnum()
 
-                    potential_sets[group_key].append({
-                        'info': info, 'part_str': part_str,
-                        'original_prefix': prefix_part,
-                        'original_number': raw_number_part,
-                        'original_suffix': suffix_part
-                    })
-                    break
+                if not (is_valid_part(part1_raw) and is_valid_part(part2_raw)):
+                    all_infos_in_group.pop(0)
+                    continue
 
-        # 신규 세트 검증 및 정보 주입
-        for group_key, items in potential_sets.items():
-            if len(items) < 2:
-                continue
-            part_type = group_key[3]
-            numeric_parts = []
-            for item in items:
-                part_str = item['part_str']
-                if part_type == 'digit':
-                    numeric_parts.append(int(part_str))
-                else:
-                    numeric_parts.append(ord(part_str.lower()))
+                release_set_infos = []
+                next_remaining_infos = []
+                for info in all_infos_in_group:
+                    stem = info['original_file'].stem
+                    if stem.startswith(prefix) and stem.endswith(suffix):
+                        part_str = stem[len(prefix):len(stem)-len(suffix)]
+                        if is_valid_part(part_str):
+                            release_set_infos.append(info)
+                        else:
+                            next_remaining_infos.append(info)
+                    else:
+                        next_remaining_infos.append(info)
 
-            sorted_numeric = sorted(numeric_parts)
-            starts_correctly = (part_type == 'digit' and sorted_numeric[0] == 1) or \
-                            (part_type == 'alpha' and sorted_numeric[0] == ord('a'))
-            is_continuous = all(sorted_numeric[i] == sorted_numeric[0] + i for i in range(len(sorted_numeric)))
+                all_infos_in_group = next_remaining_infos
+                if len(release_set_infos) < 2: continue
 
-            if not (starts_correctly and is_continuous):
-                logger.debug(f"'{items[0]['info']['pure_code']}' 그룹은 유효한 시퀀스가 아님: {[item['part_str'] for item in items]}")
-                continue
+                part_items = []
+                for info in release_set_infos:
+                    part_str = info['original_file'].stem[len(prefix):len(info['original_file'].stem)-len(suffix)]
+                    part_items.append({'info': info, 'part_str': part_str})
 
-            representative_code = items[0]['info']['pure_code']
-            logger.info(f"'{representative_code}' 그룹에서 새로운 분할 파일 세트를 발견했습니다.")
-            total_size = sum(item['info']['file_size'] for item in items)
-            sorted_items = sorted(zip(numeric_parts, items), key=lambda x: x[0])
+                # --- 2C & 2D: 검증 및 할당 ---
+                items_to_process = []
+                valid_set = True
+                part_type = None
+                for item in part_items:
+                    part_str = item['part_str'].strip(' _.-()')
+                    c_type, key = None, None
+                    if part_str.lower().startswith('cd') and part_str[2:].isdigit(): c_type, key = 'cd', (int(part_str[2:]),)
+                    elif part_str.isdigit(): c_type, key = 'digit', (int(part_str),)
+                    elif part_str.isalpha() and len(part_str) == 1: c_type, key = 'alpha', (ord(part_str.lower()) - ord('a') + 1,)
+                    elif re.match(r'^[a-zA-Z]\d{1,2}$', part_str, re.I): c_type, key = 'alpha_digit', (ord(part_str[0].lower()) - ord('a'), int(part_str[1:]))
+                    else: valid_set = False; break
+                    if part_type is None: part_type = c_type
+                    elif part_type != c_type: valid_set = False; break
+                    items_to_process.append({'info': item['info'], 'sort_key': key})
 
-            for i, (_, item) in enumerate(sorted_items):
-                info = item['info']
-                info['is_part_of_set'] = True
-                info['parsed_part_type'] = f"cd{i + 1}"
-                info['part_set_total_size'] = total_size
-                info['part_set_prefix'] = item['original_prefix']
-                info['part_set_number'] = item['original_number']
-                info['part_set_suffix'] = item['original_suffix']
+                if not valid_set: continue
+                items_to_process.sort(key=lambda x: x['sort_key'])
 
-        # --- 3. 최종 정리: 모든 분할 파일 그룹에 대표 코드 및 총 크기 할당 ---
+                first_key = items_to_process[0]['sort_key']
+                if part_type in ['cd', 'digit'] and first_key[0] not in [0, 1]: continue
+                if part_type == 'alpha' and first_key[0] > 1: continue
+                if part_type == 'alpha_digit' and not (first_key[0] == 0 and first_key[1] == 1): continue
+
+                is_continuous = True
+                if len(items_to_process) > 1:
+                    for i in range(1, len(items_to_process)):
+                        p, c = items_to_process[i-1]['sort_key'], items_to_process[i]['sort_key']
+                        if len(p) != len(c): is_continuous = False; break
+                        if len(p) == 2 and p[0] == c[0] and p[1] + 1 == c[1]: continue
+                        elif len(p) == 2 and p[0] + 1 == c[0] and (c[1] == 1 or c[1] == 0): continue
+                        elif len(p) == 1 and p[0] + 1 == c[0]: continue
+                        else: is_continuous = False; break
+
+                if not is_continuous: continue
+
+                logger.info(f"'{pure_code}' 그룹에서 유효한 분할 파일 세트(prefix='{prefix}', suffix='{suffix}')를 발견했습니다.")
+                total_size = sum(item['info']['file_size'] for item in items_to_process)
+                for i, item in enumerate(items_to_process):
+                    info = item['info']
+                    info.update({'is_part_of_set': True, 'parsed_part_type': f"cd{i + 1}",
+                                'part_set_total_size': total_size, 'part_set_prefix': prefix,
+                                'part_set_number': '', 'part_set_suffix': suffix})
+
+        # --- 3. 최종 정리 ---
         part_groups = defaultdict(list)
         for info in execution_plan:
             if info.get('is_part_of_set'):
                 part_groups[info['pure_code']].append(info)
-
         for pure_code, group_infos in part_groups.items():
-            # 그룹 내에 기존 파일에서 파싱된 총 크기 정보가 있는지 확인
-            existing_total_size = None
-            for info in group_infos:
-                if 'part_set_total_size' in info:
-                    existing_total_size = info['part_set_total_size']
-                    logger.debug(f"'{pure_code}' 그룹: 기존 파일에서 파싱된 총 크기({existing_total_size})를 사용합니다.")
-                    break
-
-            # 그룹 내에 총 크기 정보가 없으면 (모두 신규 파일일 경우) 새로 계산
-            if existing_total_size is None:
-                existing_total_size = sum(info['file_size'] for info in group_infos)
-                logger.debug(f"'{pure_code}' 그룹: 새로 분할 파일 세트의 총 크기({existing_total_size})를 계산합니다.")
-
-            # 그룹 내 모든 파일에 대표 코드와 최종 총 크기를 할당
             for info in group_infos:
                 info['part_set_code'] = pure_code
-                info['part_set_total_size'] = existing_total_size
 
 
     @staticmethod
@@ -761,7 +750,7 @@ class Task:
                         if exclude_pattern:
                             try:
                                 if re.search(exclude_pattern, info['original_file'].name, re.IGNORECASE):
-                                    logger.info(f"  -> 파일 '{info['original_file'].name}'은(는) 제외 패턴과 일치하여 'subbed_path' 대신 일반 경로로 재지정합니다.")
+                                    logger.debug(f"  -> 파일 '{info['original_file'].name}'은(는) 제외 패턴과 일치하여 'subbed_path' 대신 일반 경로로 재지정합니다.")
                                     current_target_dir, current_move_type, _ = Task.__get_target_with_meta(config, info)
                             except re.error as e:
                                 logger.error(f"subbed 경로 처리의 '이동제외패턴' 정규식 오류: {e}")
@@ -1321,7 +1310,9 @@ class Task:
     @staticmethod
     def __request_plex_mate_scan(config, scan_path: Path, db_item=None):
         """Plex Mate에 웹 API를 통해 스캔을 요청합니다."""
-        if config.get('드라이런', False):
+        is_dry_run = config.get('드라이런', False)
+
+        if is_dry_run:
             logger.warning(f"[Dry Run] Plex Mate 스캔 요청 시뮬레이션: {scan_path}")
             return
 
@@ -1344,7 +1335,8 @@ class Task:
                 'callback_id': callback_id
             }
 
-            logger.debug(f"Plex Mate 스캔 API 호출: URL={url}, Data={data}")
+            log_data = {'target': data['target']}
+            logger.debug(f"Plex Mate 스캔 API 호출: URL={url}, Data={log_data}")
             res = requests.post(url, data=data, timeout=10)
 
             if res.status_code == 200:
