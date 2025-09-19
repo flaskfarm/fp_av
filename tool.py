@@ -179,7 +179,7 @@ class ToolExpandFileProcess:
 
     @classmethod
     def _preprocess_base(cls, base, cleanup_list=None):
-        """[헬퍼 1/5] 파일명(base)에서 일반적인 노이즈를 제거합니다."""
+        """파일명(base)에서 일반적인 노이즈를 제거합니다."""
         base = base.lower() # 모든 처리는 소문자 기준으로
 
         # 사용자 정의 목록을 사용하여 1차 정리
@@ -214,7 +214,7 @@ class ToolExpandFileProcess:
         # 최종적으로 앞뒤의 불필요한 구분 기호 제거
         base = base.strip(' ._-')
 
-        logger.debug(f"- 전처리 후 base: {base}")
+        # logger.debug(f"- 전처리 후 base: {base}")
         return base
 
 
@@ -261,7 +261,7 @@ class ToolExpandFileProcess:
                     matched_string = match.group(0)
                     remaining_part = base[base.find(matched_string) + len(matched_string):]
 
-                    logger.debug(f"  - Parsed: {base} > label='{label_part}', num='{num_part}', part='{remaining_part}'")
+                    logger.debug(f"  - Pre-Parsed: {base} > label='{label_part}', num='{num_part}'")
                     return (label_part.lower(), num_part), remaining_part
 
             except (IndexError, re.error) as e:
@@ -271,35 +271,8 @@ class ToolExpandFileProcess:
 
 
     @classmethod
-    def _parse_part_number(cls, remaining_part):
-        """[헬퍼 4/5] 나머지 문자열에서 파트 넘버를 해석하여 'cdN' 형태로 반환합니다."""
-        if not remaining_part:
-            return ""
-
-        part_str = remaining_part.strip(' ._-')
-
-        cd_match = re.search(r'\b(cd[1-8])$', remaining_part, re.I)
-        if cd_match:
-            # 'cdN' 패턴이 명확하게 있으면, 그것을 최우선으로 반환
-            return cd_match.group(1).lower()
-
-        # 패턴: (cd 또는 part)(숫자1-8) 또는 (단독 문자 a-h)
-        # 문자열 '전체'가 이 패턴과 일치해야 유효한 파트 넘버로 간주
-        part_pattern = r"^(?:cd|part)?(?P<part_no>[1-8])$|^[a-h]$"
-        match = re.match(part_pattern, part_str, re.I)
-
-        if match:
-            if match.group("part_no"):
-                return f"cd{match.group('part_no')}"
-            return f"cd{ord(part_str.lower()) - ord('a') + 1}"
-
-        # 유효한 파트 넘버 패턴이 아니면 빈 문자열 반환
-        return ""
-
-
-    @classmethod
     def _apply_fallback_rules(cls, base):
-        """[헬퍼 5/5] 최종 폴백으로 원본 파일명에서 (label, number) 튜플을 찾습니다."""
+        """최종 폴백으로 원본 파일명에서 (label, number) 튜플을 찾습니다."""
         match = re.search(r"\b(?P<code>[a-z]+[-_]?\d+)(?P<part>.*)", base, re.I)
         if match:
             code = match.group('code').replace('_', '-')
@@ -360,36 +333,11 @@ class ToolExpandFileProcess:
         return formatted_str.strip(' ._-')
 
 
-    @staticmethod
-    def _get_original_part(config, info):
-        """'원본파일명포함' 옵션에 따라 원본 파일명 부분을 생성합니다."""
-        if not config.get('원본파일명포함여부', True):
-            return ""
-
-        if info.get('is_part_of_set'):
-            template = f"{info['part_set_prefix']}{info['part_set_number']}_{info['part_set_suffix']}"
-            size_str = SupportUtil.sizeof_fmt(info['part_set_total_size'])
-            return f"[{template}({size_str})]"
-
-        option = config.get('원본파일명처리옵션', 'original')
-        ori_name = info['original_file'].stem.replace("[", "(").replace("]", ")").strip()
-
-        if option == "original":
-            return f"[{ori_name}]"
-        elif option == "original_bytes":
-            return f"[{ori_name}({info['file_size']})]"
-        elif option == "original_giga":
-            size_gb = SupportUtil.sizeof_fmt(info['file_size'])
-            return f"[{ori_name}({size_gb})]"
-        elif option == "bytes":
-            return f"[{info['file_size']}]"
-        return ""
-
-
     @classmethod
     def assemble_filename(cls, config, info):
         """주어진 config와 info를 바탕으로 최종 파일명을 조립합니다."""
 
+        # 1. 파일명 변경 옵션 자체가 꺼져있으면 즉시 원본명 반환
         if not config.get('파일명변경', True):
             return info['original_file'].name
 
@@ -397,21 +345,19 @@ class ToolExpandFileProcess:
         ext_config = config.get('미디어정보설정', {})
         use_media_info = config.get('파일명에미디어정보포함', False)
 
+        # --- 2. 이미 처리된 모든 파일(단일/분할)에 대한 재처리 방지 로직 ---
         processed_pattern = config.get('이미처리된파일명패턴')
         is_already_processed = processed_pattern and re.match(processed_pattern, original_filename_stem)
 
         if is_already_processed:
             logger.debug(f"이미 처리된 파일 형식입니다: {info['original_file'].name}")
 
-            # "미디어 정보 추가" 및 "재처리" 옵션이 모두 켜져 있을 때만 삽입 시도
             if use_media_info and ext_config.get('enable_reprocessing', True):
-                # 미디어 정보가 이미 있는지 먼저 확인
                 skip_pattern = ext_config.get('reprocess_skip_pattern')
                 if skip_pattern and re.search(skip_pattern, original_filename_stem, re.IGNORECASE):
                     logger.debug(" -> 미디어 정보가 이미 포함되어 있어 건너뜁니다.")
                     return info['original_file'].name
 
-                # 추가할 미디어 정보 생성
                 media_info_str = ""
                 media_info_to_use = info.get('final_media_info')
                 if media_info_to_use and media_info_to_use.get('is_valid', True):
@@ -428,12 +374,9 @@ class ToolExpandFileProcess:
                             final_base = f"{base}{prefix}{media_info_str} {suffix.lstrip()}"
                             return f"{final_base}{info['ext']}"
 
-            # 위 조건에 해당하지 않는 모든 "이미 처리된" 파일은 원본명 그대로 반환
             return info['original_file'].name
 
-        # 새로운 파일에 대해서만 이름 생성 로직 실행
-
-        # 미디어 정보 생성
+        # --- 3. "새로운 파일" (신규 단일/분할)에 대해서만 이름 생성 로직 실행 ---
         media_info_str = ""
         if use_media_info:
             media_info_to_use = info.get('final_media_info')
@@ -441,21 +384,40 @@ class ToolExpandFileProcess:
                 template = ext_config.get('media_info_template', '')
                 media_info_str = cls._format_conditional_template(template, media_info_to_use)
 
-        # 원본 파일명 부분 생성
         base = info['pure_code']
         original_part_str = ""
         if config.get('원본파일명포함여부', True):
-            if info.get('is_part_of_set'): # 신규 분할 파일
-                template = f"{info.get('part_set_prefix', '')}{info.get('part_set_number', '')}{info.get('part_set_suffix', '')}"
-                file_size_info = SupportUtil.sizeof_fmt(info.get('part_set_total_size', 0))
-                original_part_str = f"{template.strip(' _.-')}({file_size_info})"
-            else: # 신규 단일 파일
-                option = config.get('원본파일명처리옵션', 'original')
-                ori_name = info['original_file'].stem.replace("[", "(").replace("]", ")").strip()
-                if option == "original": original_part_str = ori_name
-                elif option == "original_bytes": original_part_str = f"{ori_name}({info['file_size']})"
-                elif option == "original_giga": original_part_str = f"{ori_name}(SupportUtil.sizeof_fmt(info['file_size']))"
-                elif option == "bytes": original_part_str = str(info['file_size'])
+            option = config.get('원본파일명처리옵션', 'original')
+            is_part_set = info.get('is_part_of_set')
+
+            ori_name_raw = ""
+            if is_part_set:
+                # 신규 분할 파일: prefix와 suffix를 합쳐 원본명 대표 생성
+                ori_name_raw = f"{info.get('part_set_prefix', '')} {info.get('part_set_suffix', '')}"
+                file_size = info.get('part_set_total_size')
+            else:
+                # 신규 단일 파일
+                ori_name_raw = info['original_file'].stem
+                file_size = info.get('file_size')
+
+            # ori_name 정리(cleanup) 로직
+            cleaned_ori_name = ori_name_raw.replace("[", "(").replace("]", ")")
+            cleaned_ori_name = re.sub(r'--+', '-', cleaned_ori_name)
+            cleaned_ori_name = re.sub(r'__+', '_', cleaned_ori_name)
+            cleaned_ori_name = re.sub(r'[\(\[\{]\s*[\)\]\}]', '', cleaned_ori_name)
+            cleaned_ori_name = re.sub(r'[\s._-]{2,}', ' ', cleaned_ori_name)
+            cleaned_ori_name = cleaned_ori_name.strip(' _.,-')
+
+            if option == "original":
+                original_part_str = cleaned_ori_name
+            elif option == "original_bytes":
+                original_part_str = f"{cleaned_ori_name}({file_size or 0})"
+            elif option == "original_giga":
+                size_gb_str = SupportUtil.sizeof_fmt(file_size or 0, suffix="B")
+                size_gb_str = size_gb_str.replace("i", "").replace("Bytes", "").replace("B", "").strip()
+                original_part_str = f"{cleaned_ori_name}({size_gb_str}G)"
+            elif option == "bytes":
+                original_part_str = str(file_size or 0)
 
         # 최종 조립
         combined_info = ' '.join(filter(None, [media_info_str, original_part_str]))
@@ -463,23 +425,10 @@ class ToolExpandFileProcess:
         if combined_info:
             final_base += f" [{combined_info}]"
 
-        part = info.get('parsed_part_type', '') # 신규 분할 파일의 cdN
-
-        # 최종 파일명(확장자 제외)을 조립
+        part = info.get('parsed_part_type', '')
         final_stem = f"{final_base}{part}"
-        # 1. 연속된 공백을 하나의 공백으로 변경
-        cleaned_stem = re.sub(r'\s{2,}', ' ', final_stem)
-        # 2. 연속된 하이픈, 언더스코어를 하나로 변경
-        cleaned_stem = re.sub(r'--+', '-', cleaned_stem)
-        cleaned_stem = re.sub(r'__+', '_', cleaned_stem)
-        # 3. 비어있는 괄호 제거 (예: {actor}가 비었을 때 남는 '()', '[]')
-        cleaned_stem = cleaned_stem.replace('()', '').replace('[]', '').replace('{}', '')
-        # 4. 정리 후 혹시 모를 연속된 공백을 다시 한번 정리
-        cleaned_stem = re.sub(r'\s{2,}', ' ', cleaned_stem)
-        # 5. 최종적으로 앞뒤 공백 제거
-        cleaned_stem = cleaned_stem.strip()
 
-        return f"{cleaned_stem}{info['ext']}"
+        return f"{final_stem}{info['ext']}"
 
 
     ##########################
@@ -563,7 +512,7 @@ class ToolExpandFileProcess:
                     for key, value in tags.items():
                         if key.upper().startswith('BPS'):
                             raw_bitrate = value
-                            logger.debug(f"{file_path.name}: bit_rate 폴백 사용: tags['{key}'] = {value}")
+                            logger.debug(f"  - Audio: bit_rate 폴백 사용: tags['{key}'] = {value}")
                             break
                 a_bitrate_kbps = round(float(raw_bitrate or 0) / 1000)
 
