@@ -261,7 +261,9 @@ class Task:
                             custom_rules = config.get('커스텀경로규칙', [])
                             matched_rule = CensoredTask._find_and_merge_custom_path_rules(info, custom_rules, group_meta_info)
                             if matched_rule:
-                                logger.debug(f"  -> 파일에 커스텀 경로 규칙 '{matched_rule.get('name')}'이 적용됩니다.")
+                                rule_name = matched_rule.get('name') or matched_rule.get('이름')
+                                logger.debug(f"  -> 파일에 커스텀 경로 규칙 '{rule_name}'이 적용됩니다.")
+                                
                                 custom_path_str = (matched_rule.get('path') or matched_rule.get('경로', '')).strip()
                                 if custom_path_str:
                                     folder_format = (matched_rule.get('format') or matched_rule.get('폴더포맷')) or config['이동폴더포맷']
