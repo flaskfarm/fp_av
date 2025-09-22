@@ -82,29 +82,22 @@ class TaskBase:
                     if not job.get('사용', True): continue
 
                     final_config = base_config_with_advanced.copy()
-                    user_subbed_override = job.get('자막우선처리', None)
                     final_config.update(job)
 
+                    user_subbed_override = job.get('자막우선처리', None)
                     if user_subbed_override is not None and isinstance(user_subbed_override, dict):
                         final_config['자막우선처리'] = {**base_config_with_advanced.get('자막우선처리',{}), **user_subbed_override}
 
-                    if final_config.get('드라이런', False):
-                        logger.warning(f"'{final_config.get('이름', 'YAML Job')}' 작업: Dry Run 모드가 활성화되었습니다.")
-
                     if '커스텀경로규칙' in job:
-                        if isinstance(job['커스텀경로규칙'], list):
-                            logger.debug("작업 YAML에 정의된 '커스텀경로규칙'을 직접 적용하고, 기능을 활성화합니다.")
+                        if isinstance(job.get('커스텀경로규칙'), list):
+                            logger.debug("작업 YAML에 정의된 '커스텀경로규칙'을 적용하고, 커스텀 경로 기능을 활성화합니다.")
                             final_config['커스텀경로활성화'] = True
                         else:
                             logger.warning("작업 YAML의 '커스텀경로규칙'이 리스트 형식이 아니므로 무시합니다.")
+                            final_config['커스텀경로활성화'] = False
 
-                    elif 'meta_custom_path' in job:
-                        logger.debug("작업 YAML에 정의된 meta_custom_path 설정을 파싱하여 적용합니다.")
-                        custom_path_section = job['meta_custom_path']
-                        current_module = final_config.get('parse_mode')
-                        is_enabled, rules = CensoredTask._parse_custom_path_rules(custom_path_section, current_module)
-                        final_config['커스텀경로활성화'] = is_enabled
-                        final_config['커스텀경로규칙'] = rules
+                    if final_config.get('드라이런', False):
+                        logger.warning(f"'{final_config.get('이름', 'YAML Job')}' 작업: Dry Run 모드가 활성화되었습니다.")
 
                     TaskBase.__task(final_config)
             except Exception as e:
