@@ -639,14 +639,10 @@ class Task:
         """
         최종 실행 함수.
         """
-        if task_context is None:
-            task_context = {}
+        if task_context is None: task_context = {}
 
-        ext_config = config.get('미디어정보설정', {})
         sub_config = config.get('자막우선처리', {})
-
-        # 품번 그룹화
-        code_groups = {}
+        code_groups = defaultdict(list)
         for info in execution_plan:
             code_groups.setdefault(info['pure_code'], []).append(info)
 
@@ -654,110 +650,90 @@ class Task:
         logger.info(f"처리할 품번 그룹 {len(code_groups)}개 (총 파일 {total_files}개)")
 
         scan_enabled = config.get("PLEXMATE스캔", False)
-        delay_seconds = config.get('파일당딜레이', 0)
         processed_count = 0
+
         last_scan_path = None
         last_move_type = None
-
-        successful_move_types = {'dvd', 'normal', 'subbed'}
+        successful_move_types = {'dvd', 'normal', 'subbed', 'custom_path', 'override'}
         if config.get('scan_with_no_meta', True):
             successful_move_types.update(['no_meta', 'meta_fail'])
-            # logger.debug(f"메타 없는 파일 스캔 활성화. 스캔 대상: {successful_move_types}")
 
         for idx, (pure_code, group_infos) in enumerate(code_groups.items()):
             try:
                 representative_info = group_infos[0]
-                target_dir, move_type, meta_info = None, None, None
 
-                # --- 자막 우선 처리 로직 ---
-                is_subbed_target = False
+                # --- 1. 그룹의 "기본" 메타 정보와 경로를 대표 파일로 한 번만 결정 ---
+                group_target_dir, group_move_type, group_meta_info = None, None, None
 
+                is_group_subbed_target = False
                 if config.get('자막우선처리활성화', True) is not False:
                     if sub_config.get('처리활성화', False) and sub_config.get('규칙'):
                         if any(kw in representative_info['original_file'].name.lower() for kw in sub_config.get('내장자막키워드', [])) or \
-                           Task._find_external_subtitle(config, representative_info, sub_config):
-                            is_subbed_target = True
+                        Task._find_external_subtitle(config, representative_info, sub_config):
+                            is_group_subbed_target = True
 
-                if is_subbed_target:
-                    logger.info(f"'{pure_code}' 그룹: 자막 파일 조건 충족, 우선 처리합니다.")
+                if is_group_subbed_target:
+                    # 그룹이 subbed 대상이면, 기본 경로는 subbed 경로
+                    logger.info(f"'{pure_code}' 그룹: 자막 조건 충족")
                     rule = sub_config['규칙']
                     base_path = Path(rule['경로'])
                     folder_format = rule.get('폴더구조') or config.get('이동폴더포맷')
-                    folders = Task.process_folder_format(config, representative_info, folder_format)
-                    target_dir = base_path.joinpath(*folders)
-                    move_type = "subbed"
-                    meta_info = None
+                    # subbed 경로는 메타 정보 없이 생성
+                    folders = Task.process_folder_format(config, representative_info, folder_format, meta_data=None)
+                    group_target_dir = base_path.joinpath(*folders)
+                    group_move_type = "subbed"
+                    group_meta_info = None
                 else:
-                    # --- 일반 경로 결정 및 미디어 정보 처리 ---
-                    # 1. 미디어 정보 사전 처리 및 그룹 유효성 검사
-                    is_set = any(info.get('is_part_of_set') for info in group_infos)
-                    use_media_info_in_filename = config.get('파일명에미디어정보포함', False)
+                    # 그룹이 subbed 대상이 아니면, 일반 경로 계산
+                    group_target_dir, group_move_type, group_meta_info = Task.__get_target_with_meta(config, representative_info)
 
-                    if is_set and use_media_info_in_filename:
-                        merge_result = Task._merge_and_standardize_media_info(group_infos, ext_config)
-                        if merge_result.get('is_valid_set'):
-                            for info in group_infos: info['final_media_info'] = merge_result['final_media']
-                        else:
-                            logger.warning(f"'{pure_code}' 그룹 미디어 오류로 분할 세트 처리를 취소합니다.")
-                            failed_files_set = {f['original_file'].name for f in merge_result.get('failed_files', [])}
-                            for info in group_infos:
-                                info.update({'is_part_of_set': False, 'parsed_part_type': ''})
-                                info['final_media_info'] = {'is_valid': False} if info['original_file'].name in failed_files_set else info.get('media_info')
-                    else:
-                        for info in group_infos:
-                            info['final_media_info'] = info.get('media_info') if use_media_info_in_filename else None
+                if group_target_dir is None:
+                    logger.debug(f"'{pure_code}' 그룹: 이동할 기본 경로가 결정되지 않아 처리를 건너뜁니다.")
+                    continue
 
-                    # 2. 경로 결정 (그룹 단위로 한 번만)
-                    if config.get('메타사용') == 'using':
-                        target_dir, move_type, meta_info = Task.__get_target_with_meta(config, representative_info)
-                        if delay_seconds > 0: time.sleep(delay_seconds)
-                    else:
-                        move_type = "normal"
-                        target_paths = Task.get_path_list(config['라이브러리폴더'])
-                        folders = Task.process_folder_format(config, representative_info, config['이동폴더포맷'])
-                        target_dir = Path(target_paths[0]).joinpath(*folders) if target_paths else None
+                # --- 2. 그룹 내 각 파일별로 최종 경로 결정 및 처리 ---
+                last_scan_path_for_group = None
 
-                    if target_dir is None:
-                        logger.debug(f"'{pure_code}' 그룹: 이동할 경로가 결정되지 않아 처리를 건너뜁니다.")
-                        continue
-
-                # --- 스캔 요청 전 조건 확인 ---
-                successful_move_types = {'dvd', 'normal', 'subbed'}
-
-                if scan_enabled and target_dir != last_scan_path and last_scan_path is not None:
-                    # 이전 경로가 성공적인 이동 경로였을 때만 스캔
-                    if last_move_type in successful_move_types:
-                        Task.__request_plex_mate_scan(config, last_scan_path)
-
-                # --- 그룹 내 각 파일 처리 루프 ---
                 for info in group_infos:
                     processed_count += 1
                     logger.info(f"[{processed_count:03d}/{total_files:03d}] {info['original_file'].name}")
 
-                    current_move_type = move_type
-                    current_target_dir = target_dir
+                    # 파일별 경로/타입을 그룹 기본값으로 초기화
+                    current_target_dir = group_target_dir
+                    current_move_type = group_move_type
 
-                    if move_type == "subbed":
-                        rule = config.get('자막우선처리', {}).get('규칙', {})
+                    # 파일별 예외 경로 규칙(subbed 제외, custom_path)이 적용되는지 확인
+                    # (is_group_subbed_target 플래그를 사용하여 분기)
+                    if is_group_subbed_target:
+                        # 그룹이 subbed 대상일 때, 이 파일이 제외 패턴에 해당하는지 확인
+                        rule = sub_config.get('규칙', {})
                         exclude_pattern = rule.get('이동제외패턴')
-                        if exclude_pattern:
-                            try:
-                                if re.search(exclude_pattern, info['original_file'].name, re.IGNORECASE):
-                                    logger.debug(f"  -> 파일 '{info['original_file'].name}'은(는) 제외 패턴과 일치하여 'subbed_path' 대신 일반 경로로 재지정합니다.")
-                                    current_target_dir, current_move_type, _ = Task.__get_target_with_meta(config, info)
-                            except re.error as e:
-                                logger.error(f"subbed 경로 처리의 '이동제외패턴' 정규식 오류: {e}")
+                        if exclude_pattern and re.search(exclude_pattern, info['original_file'].name, re.IGNORECASE):
+                            logger.info(f"  -> 파일 '{info['original_file'].name}'은(는) 제외 패턴과 일치하여 'subbed' 대신 일반 경로로 재지정합니다.")
+                            # 이 파일만 일반 경로로 재계산
+                            current_target_dir, current_move_type, _ = Task.__get_target_with_meta(config, info)
+                    else:
+                        # 그룹이 subbed 대상이 아닐 때, 이 파일이 meta_custom_path 규칙에 해당하는지 확인
+                        if config.get('커스텀경로활성화', False):
+                            custom_rules = config.get('커스텀경로규칙', [])
+                            # 파일별로 규칙을 찾을 때는 그룹의 메타 정보를 활용
+                            matched_rule = Task._find_and_merge_custom_path_rules(info, custom_rules, group_meta_info)
+                            if matched_rule:
+                                logger.debug(f"  -> 파일에 커스텀 경로 규칙 '{matched_rule.get('name')}'이 적용됩니다.")
+                                custom_path_str = (matched_rule.get('path') or matched_rule.get('경로', '')).strip()
+                                if custom_path_str:
+                                    # 경로가 지정된 규칙이면, 그룹 경로를 덮어씀
+                                    folder_format = (matched_rule.get('format') or matched_rule.get('폴더포맷')) or config['이동폴더포맷']
+                                    folders = Task.process_folder_format(config, info, folder_format, group_meta_info)
+                                    current_target_dir = Path(custom_path_str).joinpath(*folders)
+                                    current_move_type = "custom_path"
 
+                    # 파일명 생성 로직
                     new_filename = None
-                    if info.get('file_type') == 'subtitle' or info.get('file_type') == 'etc':
+                    if info.get('file_type') in ['subtitle', 'etc']:
                         new_filename = info['original_file'].name
-                        logger.debug(f"'{info['original_file'].name}' ({info.get('file_type')}) 파일은 원본 파일명을 유지합니다.")
-
                     elif info.get('file_type') == 'video':
-                        use_media_info = config.get('파일명에미디어정보포함', False)
-                        ext_config = config.get('미디어정보설정', {})
-
-                        if use_media_info and not info.get('final_media_info', {}).get('is_valid', True):
+                        if config.get('파일명에미디어정보포함') and not info.get('final_media_info', {}).get('is_valid', True):
                             current_move_type = "failed_video"
                             current_target_dir = Path(config['처리실패이동폴더']).joinpath("[FAILED VIDEO]")
                             new_filename = info['original_file'].name
@@ -766,25 +742,33 @@ class Task:
                     else:
                         new_filename = info['original_file'].name
 
-                    if new_filename is None:
-                        continue
+                    if new_filename is None: continue
 
                     info['newfilename'] = new_filename
-
                     info.update({
                         'target_dir': current_target_dir,
                         'move_type': current_move_type,
-                        'meta_info': meta_info
+                        'meta_info': group_meta_info # 그룹 메타 정보는 공유
                     })
+
+                    # 스캔 경로 결정 (파일의 부모 폴더)
+                    current_scan_path = None
+                    if current_target_dir:
+                        current_scan_path = current_target_dir
+
+                    # 이전 스캔 경로와 현재 파일의 스캔 경로가 다를 때만 이전 경로 스캔
+                    if scan_enabled and current_scan_path != last_scan_path and last_scan_path is not None:
+                        if last_move_type in successful_move_types:
+                            Task.__request_plex_mate_scan(config, last_scan_path)
 
                     entity = Task.__file_move_logic(config, info, db_model)
                     if entity and entity.move_type is not None:
                         entity.save()
 
-                # --- 마지막 스캔 경로 및 타입 업데이트 ---
-                if scan_enabled and target_dir is not None:
-                    last_scan_path = target_dir
-                    last_move_type = move_type # 현재 이동 타입 저장
+                    # PLEX MATE 스캔 경로 업데이트
+                    if scan_enabled and current_target_dir is not None:
+                        last_scan_path = current_scan_path
+                        last_move_type = current_move_type
 
             except Exception as e:
                 logger.error(f"'{pure_code}' 그룹 처리 중 예외 발생: {e}")
@@ -792,8 +776,6 @@ class Task:
 
         # --- 모든 작업 완료 후 최종 스캔 요청 ---
         if scan_enabled and last_scan_path is not None:
-            # 마지막으로 처리된 경로가 성공적인 이동 경로였을 때만 최종 스캔
-            successful_move_types = {'dvd', 'normal', 'subbed'}
             if last_move_type in successful_move_types:
                 logger.info(f"모든 파일 처리 완료. 마지막 경로 스캔 요청: {last_scan_path}")
                 Task.__request_plex_mate_scan(config, last_scan_path)
@@ -1074,20 +1056,6 @@ class Task:
             # 기본 경로 및 포맷 설정
             current_target_root = Path(config.get('메타매칭시이동폴더'))
             folder_format_to_use = config['이동폴더포맷']
-
-            # 커스텀 경로 규칙 적용
-            if config.get('커스텀경로활성화', False):
-                custom_rules = config.get('커스텀경로규칙', [])
-                matched_rule = Task._find_and_merge_custom_path_rules(info, custom_rules, meta_info)
-                if matched_rule:
-                    logger.debug(f"'{info['pure_code']}'에 커스텀 경로 규칙 '{matched_rule.get('name')}' 적용.")
-                    custom_path_str = (matched_rule.get('path') or matched_rule.get('경로', '')).strip()
-                    if custom_path_str:
-                        current_target_root = Path(custom_path_str)
-
-                    custom_format_str = (matched_rule.get('format') or matched_rule.get('폴더포맷'))
-                    if custom_format_str:
-                        folder_format_to_use = custom_format_str
 
             # VR 경로 처리
             vr_genres = ["고품질VR", "VR전용", "VR専用", "ハイクオリティVR"]
