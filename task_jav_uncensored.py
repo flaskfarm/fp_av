@@ -233,7 +233,6 @@ class Task:
                     group_target_dir = base_path.joinpath(*folders)
                     group_move_type = "subbed"
                 else:
-                    # 그룹이 subbed 대상이 아니면, 일반 경로 계산
                     group_target_dir, group_move_type, group_meta_info = Task.__get_target_path(config, representative_info)
 
                 if group_target_dir is None:
@@ -241,8 +240,6 @@ class Task:
                     continue
 
                 # --- 2. 그룹 내 각 파일별로 최종 경로 결정 및 처리 ---
-                last_scan_path_for_group = None
-
                 for info in group_infos:
                     processed_count += 1
                     logger.info(f"[{processed_count:03d}/{total_files:03d}] {info['original_file'].name}")
@@ -250,26 +247,40 @@ class Task:
                     current_target_dir = group_target_dir
                     current_move_type = group_move_type
 
-                    if is_group_subbed_target:
+                    # --- 파일별 경로 결정 우선순위 로직 ---
+                    # 1. Subbed Path 확인
+                    is_file_subbed_target = False
+                    if config.get('자막우선처리활성화', True) is not False and sub_config.get('처리활성화', False):
                         rule = sub_config.get('규칙', {})
                         exclude_pattern = rule.get('이동제외패턴')
-                        if exclude_pattern and re.search(exclude_pattern, info['original_file'].name, re.IGNORECASE):
-                            logger.info(f"  -> 파일 '{info['original_file'].name}'은(는) 제외 패턴과 일치하여 'subbed' 대신 일반 경로로 재지정합니다.")
-                            current_target_dir, current_move_type, _ = Task.__get_target_path(config, info)
-                    else:
-                        if config.get('커스텀경로활성화', False):
-                            custom_rules = config.get('커스텀경로규칙', [])
-                            matched_rule = CensoredTask._find_and_merge_custom_path_rules(info, custom_rules, group_meta_info)
-                            if matched_rule:
-                                rule_name = matched_rule.get('name') or matched_rule.get('이름')
-                                logger.debug(f"  -> 파일에 커스텀 경로 규칙 '{rule_name}'이 적용됩니다.")
-                                
-                                custom_path_str = (matched_rule.get('path') or matched_rule.get('경로', '')).strip()
-                                if custom_path_str:
-                                    folder_format = (matched_rule.get('format') or matched_rule.get('폴더포맷')) or config['이동폴더포맷']
-                                    folders = CensoredTask.process_folder_format(config, info, folder_format, group_meta_info)
-                                    current_target_dir = Path(custom_path_str).joinpath(*folders)
-                                    current_move_type = "custom_path"
+
+                        if not (exclude_pattern and re.search(exclude_pattern, info['original_file'].name, re.IGNORECASE)):
+                            if any(kw in info['original_file'].name.lower() for kw in sub_config.get('내장자막키워드', [])) or \
+                            CensoredTask._find_external_subtitle(config, info, sub_config):
+                                is_file_subbed_target = True
+
+                    if is_file_subbed_target:
+                        logger.debug(f"  -> 파일이 'subbed_path' 규칙에 해당합니다.")
+                        rule = sub_config.get('규칙', {})
+                        base_path = Path(rule['경로'])
+                        folder_format = rule.get('폴더구조') or config.get('이동폴더포맷')
+                        folders = CensoredTask.process_folder_format(config, info, folder_format, group_meta_info)
+                        current_target_dir = base_path.joinpath(*folders)
+                        current_move_type = "subbed"
+
+                    # 2. (Subbed 대상이 아닐 경우) Custom Path 확인
+                    elif config.get('커스텀경로활성화', False):
+                        custom_rules = config.get('커스텀경로규칙', [])
+                        matched_rule = CensoredTask._find_and_merge_custom_path_rules(info, custom_rules, group_meta_info)
+                        if matched_rule:
+                            rule_name = matched_rule.get('name') or matched_rule.get('이름')
+                            logger.debug(f"  -> 파일에 커스텀 경로 규칙 '{rule_name}'이 적용됩니다.")
+                            custom_path_str = (matched_rule.get('path') or matched_rule.get('경로', '')).strip()
+                            if custom_path_str:
+                                folder_format = (matched_rule.get('format') or matched_rule.get('폴더포맷')) or config['이동폴더포맷']
+                                folders = CensoredTask.process_folder_format(config, info, folder_format, group_meta_info)
+                                current_target_dir = Path(custom_path_str).joinpath(*folders)
+                                current_move_type = "custom_path"
 
                     # 파일명 생성 로직
                     new_filename = None
