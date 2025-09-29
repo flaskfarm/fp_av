@@ -25,51 +25,49 @@ class SafeFormatter(string.Formatter):
 
 
 class ToolExpandFileProcess:
-
-    VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".ts", ".wmv", ".m2ts", "mts", ".m4v", ".flv", ".asf", ".mpg", ".ogm"}
-    SUBTITLE_EXTS = {".srt", ".smi", ".ass", ".ssa", "idx", "sub", ".sup", ".ttml", ".vtt"}
-
     ##########################
     # preprocess_cleanup
     ##########################
     @classmethod
-    def preprocess_cleanup(cls, path, min_size: int = 0, max_age: int = 0):
+    def preprocess_cleanup(cls, path, min_size: int = 0, max_age: int = 0, subtitle_exts: set = None):
         """max_age in sec"""
         path = Path(path)
         if not path.is_dir():
             return
+
+        subtitle_exts = subtitle_exts or set()
         # iterate depth=1 items only
         for child in path.iterdir():
             if child.stat().st_mtime < time.time() - max_age:
                 # old enough
-                if child.is_dir() and not list(cls._iterdir(child, min_size=min_size)):
+                if child.is_dir() and not list(cls._iterdir(child, min_size=min_size, subtitle_exts=subtitle_exts)):
                     shutil.rmtree(child)
-                elif child.is_file() and not cls._is_legit_file(child, min_size=min_size):
+                elif child.is_file() and not cls._is_legit_file(child, min_size=min_size, subtitle_exts=subtitle_exts):
                     child.unlink()
 
     @classmethod
-    def _iterdir(cls, path, min_size: int = 0) -> Generator[Path, None, None]:
-        """generate a list of file with specific conditions
-
-        files-only / recursive / min_size in MiB
-        """
+    def _iterdir(cls, path, min_size: int = 0, subtitle_exts: set = None) -> Generator[Path, None, None]:
+        """generate a list of file with specific conditions"""
         path = Path(path)
         if not path.is_dir():
             return
+
+        subtitle_exts = subtitle_exts or set()
         for file in path.rglob("*"):
-            if not cls._is_legit_file(file):
+            if not cls._is_legit_file(file, subtitle_exts=subtitle_exts):
                 continue
             if file.is_dir():
                 continue
-            if cls._is_legit_file(file, min_size=min_size):
+            if cls._is_legit_file(file, min_size=min_size, subtitle_exts=subtitle_exts):
                 yield file
 
 
     @classmethod
-    def _is_legit_file(cls, path: PathLike, min_size: int = 0):
+    def _is_legit_file(cls, path: PathLike, min_size: int = 0, subtitle_exts: set = None):
         if not path.is_file():
             return False
-        return path.stat().st_size >= min_size * 1024**2 or path.suffix.lower() in cls.SUBTITLE_EXTS
+        subtitle_exts = subtitle_exts or set()
+        return path.stat().st_size >= min_size * 1024**2 or path.suffix.lower() in subtitle_exts
 
 
     ##########################
@@ -78,17 +76,17 @@ class ToolExpandFileProcess:
     @classmethod
     def preprocess_listdir(cls, source, errpath, config):
         is_dry_run = config.get('드라이런', False)
-
         source = Path(source)
         if not source.is_dir():
             return
 
         min_size = config.get('최소크기', 0)
         disallowed_keys = config.get('파일처리하지않을파일명', [])
+        subtitle_exts = config.get('subtitle_exts', set()) # config에서 자막 확장자 로드
 
         files = []
-        for file in cls._iterdir(source, min_size=min_size):
-            if file.suffix.lower() in cls.SUBTITLE_EXTS:
+        for file in cls._iterdir(source, min_size=min_size, subtitle_exts=subtitle_exts):
+            if file.suffix.lower() in subtitle_exts:
                 files.append(file)
                 continue
 
