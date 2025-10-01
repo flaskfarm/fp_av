@@ -218,10 +218,20 @@ class Task:
                 group_target_dir, group_move_type, group_meta_info = None, None, None
 
                 if use_meta_option == 'using':
-                    target_dir, meta_info = Task.__get_target_with_meta_uncen(config, representative_info)
-                    if target_dir is not None:
-                        group_target_dir, group_move_type, group_meta_info = target_dir, "meta_success", meta_info
+                    # 1. 메타 검색을 지원하는 레이블인지 확인
+                    meta_info = None
+                    if representative_info['label'].lower() in config.get('메타검색지원레이블', set()):
+                        meta_module = CensoredTask.get_meta_module('jav_uncensored')
+                        meta_info = Task.__search_meta(config, meta_module, representative_info['pure_code'])
+
+                    # 2. 결과에 따라 경로 결정
+                    if meta_info:
+                        logger.info(f"'{pure_code}': 메타 검색 성공.")
+                        target_root_path = Path(config.get('메타매칭시이동폴더'))
+                        folders = CensoredTask.process_folder_format(config, representative_info, config['이동폴더포맷'], meta_info)
+                        group_target_dir, group_move_type, group_meta_info = target_root_path.joinpath(*folders), "meta_success", meta_info
                     else:
+                        logger.info(f"'{pure_code}': 메타 검색에 실패했거나 지원하지 않는 레이블입니다.")
                         group_move_type = "meta_fail"
                         no_meta_path_str = config.get('메타매칭실패시이동폴더', '').strip()
                         if no_meta_path_str:
@@ -238,7 +248,7 @@ class Task:
                 group_has_external_subtitle = False
                 if sub_config.get('처리활성화', False):
                     # 이 부분을 Task -> CensoredTask 로 수정했습니다.
-                    if CensoredTask._find_external_subtitle(config, representative_info, sub_config):
+                    if CensoredTask._find_external_subtitle(config, representative_info, sub_config, task_context):
                         logger.info(f"'{pure_code}' 그룹: 외부 자막 파일이 발견되어 'subbed_path' 대상으로 고려됩니다.")
                         group_has_external_subtitle = True
 
@@ -253,40 +263,54 @@ class Task:
 
                     current_target_dir = group_target_dir
                     current_move_type = group_move_type
-                    is_handled_by_priority = False
 
-                    if sub_config.get('처리활성화', False):
-                        rule = sub_config.get('규칙', {})
-                        exclude_pattern = rule.get('이동제외패턴')
-                        if not (exclude_pattern and re.search(exclude_pattern, info['original_file'].name, re.IGNORECASE)):
-                            has_internal_keyword = any(kw in info['original_file'].name.lower() for kw in sub_config.get('내장자막키워드', []))
-                            if group_has_external_subtitle or has_internal_keyword:
-                                logger.debug(f"  -> 파일이 'subbed_path' 규칙에 해당합니다.")
-                                base_path = Path(rule['경로'])
-                                folder_format = rule.get('폴더구조') or config.get('이동폴더포맷')
-                                folders = CensoredTask.process_folder_format(config, info, folder_format, group_meta_info)
-                                current_target_dir = base_path.joinpath(*folders)
-                                current_move_type = "subbed"
-                                is_handled_by_priority = True
+                    if info.get('file_type') == 'etc':
+                        logger.debug(f"  -> 파일 타입 'etc' 감지. 실패 경로로 강제 이동합니다.")
+                        target_root_str = config.get('처리실패이동폴더', '').strip()
+                        if target_root_str:
+                            current_target_dir = Path(target_root_str).joinpath("[ETC FILES]")
+                            current_move_type = "etc_file_moved"
+                        else:
+                            logger.warning(f"'{info['original_file'].name}'을 이동할 '처리실패이동폴더'가 설정되지 않아 건너뜁니다.")
+                            continue
+                    else:
+                        is_handled_by_priority = False
 
-                    if not is_handled_by_priority and config.get('커스텀경로활성화', False):
-                        custom_rules = config.get('커스텀경로규칙', [])
-                        matched_rule = CensoredTask._find_and_merge_custom_path_rules(info, custom_rules, group_meta_info)
-                        if matched_rule:
-                            force_on_meta_fail = matched_rule.get('force_on_meta_fail', False) or matched_rule.get('메타실패시강제적용', False)
-                            if group_move_type in ['meta_success', 'normal'] or force_on_meta_fail:
-                                logger.debug(f"  -> 파일에 커스텀 경로 규칙 '{matched_rule.get('name')}'이 적용됩니다.")
-                                custom_path_str = (matched_rule.get('path') or matched_rule.get('경로', '')).strip()
-                                if custom_path_str:
-                                    folder_format = (matched_rule.get('format') or matched_rule.get('폴더포맷')) or config['이동폴더포맷']
+                        if sub_config.get('처리활성화', False):
+                            rule = sub_config.get('규칙', {})
+                            exclude_pattern = rule.get('이동제외패턴')
+                            if not (exclude_pattern and re.search(exclude_pattern, info['original_file'].name, re.IGNORECASE)):
+                                has_internal_keyword = any(kw in info['original_file'].name.lower() for kw in sub_config.get('내장자막키워드', []))
+                                if group_has_external_subtitle or has_internal_keyword:
+                                    # logger.debug(f"  -> 파일이 'subbed_path' 규칙에 해당합니다.")
+                                    base_path = Path(rule['경로'])
+                                    folder_format = rule.get('폴더구조') or config.get('이동폴더포맷')
                                     folders = CensoredTask.process_folder_format(config, info, folder_format, group_meta_info)
-                                    current_target_dir = Path(custom_path_str).joinpath(*folders)
-                                    current_move_type = "custom_path"
-                            else:
-                                logger.debug(f"  -> 커스텀 규칙 '{matched_rule.get('name')}'은(는) 메타 성공/미사용 시에만 적용되므로 건너뜁니다.")
+                                    current_target_dir = base_path.joinpath(*folders)
+                                    current_move_type = "subbed"
+                                    is_handled_by_priority = True
+
+                        if not is_handled_by_priority and config.get('커스텀경로활성화', False):
+                            custom_rules = config.get('커스텀경로규칙', [])
+                            matched_rule = CensoredTask._find_and_merge_custom_path_rules(info, custom_rules, group_meta_info)
+                            if matched_rule:
+                                force_on_meta_fail = matched_rule.get('force_on_meta_fail', False) or matched_rule.get('메타실패시강제적용', False)
+                                if group_move_type in ['meta_success', 'normal'] or force_on_meta_fail:
+                                    logger.debug(f"  -> 파일에 커스텀 경로 규칙 '{matched_rule.get('name')}'이 적용됩니다.")
+                                    custom_path_str = (matched_rule.get('path') or matched_rule.get('경로', '')).strip()
+                                    if custom_path_str:
+                                        folder_format = (matched_rule.get('format') or matched_rule.get('폴더포맷')) or config['이동폴더포맷']
+                                        folders = CensoredTask.process_folder_format(config, info, folder_format, group_meta_info)
+                                        current_target_dir = Path(custom_path_str).joinpath(*folders)
+                                        current_move_type = "custom_path"
+                                else:
+                                    logger.debug(f"  -> 커스텀 규칙 '{matched_rule.get('name')}'은(는) 메타 성공/미사용 시에만 적용되므로 건너뜁니다.")
 
                     new_filename = ToolExpandFileProcess.assemble_filename(config, info)
                     if new_filename is None: continue
+
+                    if info.get('file_type') in ['etc', 'subtitle']:
+                        new_filename = info['original_file'].name
 
                     media_info_to_check = info.get('final_media_info')
                     if config.get('파일명에미디어정보포함') and isinstance(media_info_to_check, dict) and not media_info_to_check.get('is_valid', True):

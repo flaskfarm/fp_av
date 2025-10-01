@@ -140,6 +140,8 @@ class Task:
     @staticmethod
     def __start_shared_logic(config, task_context):
         """모든 JAV 파일 처리 작업의 공통 실행 흐름을 담당합니다."""
+        task_context['subtitle_cache'] = {}
+        task_context['scanned_directories_cache'] = set()
 
         # 1. 파일 목록 수집
         logger.debug(f"처리 파일 목록 생성")
@@ -162,6 +164,13 @@ class Task:
                 execution_plan.append(info)
             else:
                 unparsed_infos.append(info)
+
+        if execution_plan:
+            logger.debug(f"파싱된 파일 목록을 품번 기준으로 재정렬합니다.")
+            execution_plan.sort(key=lambda info: (
+                info['pure_code'], 
+                [int(c) if c.isdigit() else c.lower() for c in re.split('([0-9]+)', info['original_file'].name)]
+            ))
 
         # 2-1. 파싱 실패 파일 처리
         if unparsed_infos:
@@ -240,7 +249,6 @@ class Task:
     # ====================================================================
     # --- 헬퍼 함수들 (Helper Functions) ---
     # ====================================================================
-
 
     @staticmethod
     def _parse_custom_path_rules(custom_path_section, current_module):
@@ -387,6 +395,53 @@ class Task:
 
 
     @staticmethod
+    def _find_external_subtitle(config, info, sub_config, task_context):
+        """지정된 경로에서 품번에 해당하는 외부 자막 파일이 있는지 확인합니다."""
+        subtitle_cache = task_context.get('subtitle_cache', {})
+        scanned_directories_cache = task_context.get('scanned_directories_cache', set())
+        pure_code = info['pure_code']
+
+        # 1. 최종 결과 캐시(subtitle_cache)에 있는지 먼저 확인
+        if pure_code in subtitle_cache:
+            return subtitle_cache[pure_code]
+
+        # 2. 예상되는 자막 폴더 경로 계산
+        rule = sub_config.get('규칙', {})
+        base_path_str = rule.get('경로')
+        if not base_path_str: return False
+
+        base_path = Path(base_path_str)
+        if not base_path.is_dir(): return False
+
+        folder_format = rule.get('폴더구조') or config.get('이동폴더포맷')
+        relative_folders = Task.process_folder_format(config, info, folder_format, meta_data=None)
+        target_sub_dir = base_path.joinpath(*relative_folders)
+
+        # 3. 해당 폴더를 이미 스캔했는지 확인
+        if target_sub_dir in scanned_directories_cache:
+            # 스캔은 했는데 캐시에 없다면, 이 품번의 자막은 그 폴더에 없다는 의미.
+            return False
+
+        # 4. (Cache Miss) 디렉터리 스캔 수행
+        if target_sub_dir.is_dir():
+            logger.debug(f"자막 경로 스캔: {target_sub_dir}")
+            for file in target_sub_dir.iterdir():
+                if file.suffix.lower() in sub_config['자막파일확장자']:
+                    parsed = ToolExpandFileProcess.parse_jav_filename(
+                        file.stem, config.get('파싱규칙'), config.get('품번파싱제외키워드'), mode=config.get('parse_mode')
+                    )
+                    if parsed and parsed.get('code'):
+                        # 이 폴더에서 찾은 모든 자막의 품번을 캐시에 True로 저장
+                        subtitle_cache[parsed['code']] = True
+
+        # 5. 스캔이 끝난 디렉터리를 캐시에 기록 (파일이 있든 없든)
+        scanned_directories_cache.add(target_sub_dir)
+
+        # 6. 스캔 후, 원래 찾으려던 품번이 캐시에 있는지 최종 확인하여 반환
+        return subtitle_cache.get(pure_code, False)
+
+
+    @staticmethod
     def __move_to_no_label_folder(config, file_path: Path):
         """품번 추출에 실패한 파일을 '처리실패이동폴더/[NO LABEL]'로 이동시킵니다."""
 
@@ -493,7 +548,7 @@ class Task:
         logger.info(log_msg)
 
         # --- 최종 파일 리스트 반환 ---
-        all_files.sort(key=lambda p: [int(c) if c.isdigit() else c.lower() for c in re.split('([0-9]+)', p.name)])
+        # all_files.sort(key=lambda p: [int(c) if c.isdigit() else c.lower() for c in re.split('([0-9]+)', p.name)])
 
         return all_files
 
@@ -676,6 +731,9 @@ class Task:
 
         last_scan_path = None
         last_move_type = None
+
+        subtitle_map = task_context.get('subtitle_map', {})
+
         successful_move_types = {'dvd', 'normal', 'subbed', 'custom_path'}
         if config.get('scan_with_no_meta', True):
             successful_move_types.update(['no_meta', 'meta_fail'])
@@ -698,10 +756,10 @@ class Task:
                         group_target_dir = target_root_path.joinpath(*folders)
                         group_move_type = "normal"
 
-                # --- 1b. 그룹의 "외부 자막 존재 여부"를 한 번만 확인 ---
+                # --- 1b. 그룹의 "외부 자막 존재 여부"를 확인 ---
                 group_has_external_subtitle = False
                 if sub_config.get('처리활성화', False):
-                    if Task._find_external_subtitle(config, representative_info, sub_config):
+                    if Task._find_external_subtitle(config, representative_info, sub_config, task_context):
                         logger.info(f"'{pure_code}' 그룹: 외부 자막 파일이 발견되어 'subbed_path' 대상으로 고려됩니다.")
                         group_has_external_subtitle = True
 
@@ -718,52 +776,65 @@ class Task:
                     current_target_dir = group_target_dir
                     current_move_type = group_move_type
 
-                    # --- 파일별 경로 결정 우선순위 로직 ---
-                    is_handled_by_priority = False
-
-                    # 1. 자막 경로 (Subbed Path) 확인 - 최우선 순위
-                    if sub_config.get('처리활성화', False):
-                        rule = sub_config.get('규칙', {})
-                        exclude_pattern = rule.get('이동제외패턴')
-
-                        # 파일별 제외 패턴 체크
-                        if exclude_pattern and re.search(exclude_pattern, info['original_file'].name, re.IGNORECASE):
-                            logger.debug(f"  -> 'subbed_path' 건너뛰기 (제외 패턴 일치): {info['original_file'].name}")
+                    if info.get('file_type') == 'etc':
+                        logger.debug(f"  -> 파일 타입 'etc' 감지. 실패 경로로 강제 이동합니다.")
+                        target_root_str = config.get('처리실패이동폴더', '').strip()
+                        if target_root_str:
+                            current_target_dir = Path(target_root_str).joinpath("[ETC FILES]")
+                            current_move_type = "etc_file_moved"
                         else:
-                            # 조건: (그룹에 외부 자막이 있거나) 또는 (파일명에 내장 자막 키워드가 있거나)
-                            has_internal_keyword = any(kw in info['original_file'].name.lower() for kw in sub_config.get('내장자막키워드', []))
-                            if group_has_external_subtitle or has_internal_keyword:
-                                logger.debug(f"  -> 파일이 'subbed_path' 규칙에 해당합니다.")
-                                base_path = Path(rule['경로'])
-                                folder_format = rule.get('폴더구조') or config.get('이동폴더포맷')
-                                folders = Task.process_folder_format(config, info, folder_format, group_meta_info)
-                                current_target_dir = base_path.joinpath(*folders)
-                                current_move_type = "subbed"
-                                is_handled_by_priority = True
+                            logger.warning(f"'{info['original_file'].name}'을 이동할 '처리실패이동폴더'가 설정되지 않아 건너뜁니다.")
+                            continue
+                    else:
+                        # --- 파일별 경로 결정 우선순위 로직 ---
+                        is_handled_by_priority = False
 
-                    # 2. (자막 대상이 아닐 경우) 커스텀 경로 (Custom Path) 확인 - 2순위
-                    if not is_handled_by_priority and config.get('커스텀경로활성화', False):
-                        custom_rules = config.get('커스텀경로규칙', [])
-                        matched_rule = Task._find_and_merge_custom_path_rules(info, custom_rules, group_meta_info)
-                        if matched_rule:
-                            force_on_meta_fail = matched_rule.get('force_on_meta_fail', False) or matched_rule.get('메타실패시강제적용', False)
-                            if group_move_type not in ['dvd'] and not force_on_meta_fail:
-                                logger.debug(f"  -> 커스텀 규칙 '{matched_rule.get('name')}'은(는) 메타 성공 시에만 적용되므로 건너뜁니다.")
+                        # 1. 자막 경로 (Subbed Path) 확인 - 최우선 순위
+                        if sub_config.get('처리활성화', False):
+                            rule = sub_config.get('규칙', {})
+                            exclude_pattern = rule.get('이동제외패턴')
+
+                            # 파일별 제외 패턴 체크
+                            if exclude_pattern and re.search(exclude_pattern, info['original_file'].name, re.IGNORECASE):
+                                logger.debug(f"  -> 'subbed_path' 건너뛰기 (제외 패턴 일치): {info['original_file'].name}")
                             else:
-                                logger.debug(f"  -> 파일에 커스텀 경로 규칙 '{matched_rule.get('name')}'이 적용됩니다.")
-                                custom_path_str = (matched_rule.get('path') or matched_rule.get('경로', '')).strip()
-                                if custom_path_str:
-                                    folder_format = (matched_rule.get('format') or matched_rule.get('폴더포맷')) or config['이동폴더포맷']
+                                # 조건: (그룹에 외부 자막이 있거나) 또는 (파일명에 내장 자막 키워드가 있거나)
+                                has_internal_keyword = any(kw in info['original_file'].name.lower() for kw in sub_config.get('내장자막키워드', []))
+                                if group_has_external_subtitle or has_internal_keyword:
+                                    # logger.debug(f"  -> 파일이 'subbed_path' 규칙에 해당합니다.")
+                                    base_path = Path(rule['경로'])
+                                    folder_format = rule.get('폴더구조') or config.get('이동폴더포맷')
                                     folders = Task.process_folder_format(config, info, folder_format, group_meta_info)
-                                    current_target_dir = Path(custom_path_str).joinpath(*folders)
-                                    current_move_type = "custom_path"
+                                    current_target_dir = base_path.joinpath(*folders)
+                                    current_move_type = "subbed"
                                     is_handled_by_priority = True
 
-                    # 3. 우선순위 경로가 없으면 그룹 기본 경로 사용
+                        # 2. (자막 대상이 아닐 경우) 커스텀 경로 (Custom Path) 확인 - 2순위
+                        if not is_handled_by_priority and config.get('커스텀경로활성화', False):
+                            custom_rules = config.get('커스텀경로규칙', [])
+                            matched_rule = Task._find_and_merge_custom_path_rules(info, custom_rules, group_meta_info)
+                            if matched_rule:
+                                force_on_meta_fail = matched_rule.get('force_on_meta_fail', False) or matched_rule.get('메타실패시강제적용', False)
+                                if group_move_type not in ['dvd'] and not force_on_meta_fail:
+                                    logger.debug(f"  -> 커스텀 규칙 '{matched_rule.get('name')}'은(는) 메타 성공 시에만 적용되므로 건너뜁니다.")
+                                else:
+                                    logger.debug(f"  -> 파일에 커스텀 경로 규칙 '{matched_rule.get('name')}'이 적용됩니다.")
+                                    custom_path_str = (matched_rule.get('path') or matched_rule.get('경로', '')).strip()
+                                    if custom_path_str:
+                                        folder_format = (matched_rule.get('format') or matched_rule.get('폴더포맷')) or config['이동폴더포맷']
+                                        folders = Task.process_folder_format(config, info, folder_format, group_meta_info)
+                                        current_target_dir = Path(custom_path_str).joinpath(*folders)
+                                        current_move_type = "custom_path"
+                                        is_handled_by_priority = True
+
+                        # 3. 우선순위 경로가 없으면 그룹 기본 경로 사용
 
                     # --- 최종 파일명 생성 및 정보 업데이트 ---
                     new_filename = ToolExpandFileProcess.assemble_filename(config, info)
                     if new_filename is None: continue
+
+                    if info.get('file_type') in ['etc', 'subtitle']:
+                        new_filename = info['original_file'].name
 
                     media_info_to_check = info.get('final_media_info')
                     if config.get('파일명에미디어정보포함') and isinstance(media_info_to_check, dict) and not media_info_to_check.get('is_valid', True):
@@ -1414,48 +1485,6 @@ class Task:
                         merged_rule[key] = value
 
         return merged_rule if has_any_match else None
-
-
-    @staticmethod
-    def _find_external_subtitle(config, info, sub_config):
-        """지정된 경로에서 품번에 해당하는 외부 자막 파일이 있는지 확인합니다."""
-        rule = sub_config.get('규칙', {})
-        base_path_str = rule.get('경로')
-        if not base_path_str: return None
-
-        base_path = Path(base_path_str)
-        if not base_path.is_dir():
-            logger.warning(f"자막 검색 경로가 유효하지 않습니다: {base_path}")
-            return None
-
-        # 폴더 구조 포맷 결정 (규칙에 없으면 기본 이동폴더포맷 사용)
-        folder_format = rule.get('폴더구조') or config.get('이동폴더포맷')
-        
-        # 메타 정보 없이 파싱 정보만으로 폴더 경로 생성
-        relative_folders = Task.process_folder_format(config, info, folder_format, meta_data=None)
-        target_sub_dir = base_path.joinpath(*relative_folders)
-
-        if not target_sub_dir.is_dir():
-            # logger.debug(f"예상 자막 폴더를 찾을 수 없습니다: {target_sub_dir}")
-            return None
-
-        code_with_hyphen = info['pure_code']
-        code_without_hyphen = info['pure_code'].replace('-', '')
-        boundary_pattern = r'(?![0-9])'
-
-        patterns = [
-            re.compile(re.escape(code_with_hyphen) + boundary_pattern, re.IGNORECASE),
-            re.compile(re.escape(code_without_hyphen) + boundary_pattern, re.IGNORECASE)
-        ]
-
-        for file in target_sub_dir.iterdir():
-            if file.suffix.lower() in sub_config['자막파일확장자']:
-                stem = file.stem
-                for pattern in patterns:
-                    if pattern.search(stem):
-                        logger.info(f"외부 자막 파일 발견: {file.name} (품번: {info['pure_code']})")
-                        return target_sub_dir
-        return None
 
 
     @staticmethod
