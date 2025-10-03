@@ -84,9 +84,10 @@ class TaskBase:
                     final_config = base_config_with_advanced.copy()
                     final_config.update(job)
 
-                    user_subbed_override = job.get('자막우선처리', None)
-                    if user_subbed_override is not None and isinstance(user_subbed_override, dict):
-                        final_config['자막우선처리'] = {**base_config_with_advanced.get('자막우선처리',{}), **user_subbed_override}
+                    base_sub_settings = base_config_with_advanced.get('자막우선처리', {})
+                    user_subbed_override = job.get('자막우선처리', {})
+                    # 병합 순서: 1.기본설정 -> 2.YAML 작업 기본값(끄기) -> 3.사용자 작업 설정
+                    final_config['자막우선처리'] = {**base_sub_settings, '처리활성화': False, **user_subbed_override}
 
                     if '커스텀경로규칙' in job:
                         if isinstance(job.get('커스텀경로규칙'), list):
@@ -134,7 +135,6 @@ class Task:
             'parse_mode': 'uncensored',
             'execute_plan': Task.__execute_plan,
             'db_model': ModelJavUncensoredItem,
-            'get_target_path_function': Task.__get_target_path,
         }
 
         CensoredTask.__start_shared_logic(config, task_context)
@@ -143,44 +143,6 @@ class Task:
     # ====================================================================
     # --- Uncensored 전용 헬퍼 ---
     # ====================================================================
-
-
-    @staticmethod
-    def __get_target_path(config, info):
-        """
-        Uncensored 전용 경로 결정 로직.
-        """
-        meta_info = None
-        move_type = "default"
-
-        # 메타 사용 모드일 때만 메타 검색 실행
-        if config.get('메타사용') == 'using':
-            if info['label'].lower() in config.get('메타검색지원레이블', set()):
-                meta_module = CensoredTask.get_meta_module('jav_uncensored')
-                meta_info = Task.__search_meta(config, meta_module, info['pure_code'])
-
-            if meta_info:
-                move_type = "meta_success"
-                target_root_path = Path(config.get('메타매칭시이동폴더'))
-                folders = CensoredTask.process_folder_format(config, info, config['이동폴더포맷'], meta_info)
-                return target_root_path.joinpath(*folders), move_type, meta_info
-            else:
-                move_type = "meta_fail"
-                target_root_path = Path(config.get('메타매칭실패시이동폴더'))
-                if target_root_path.name:
-                    return target_root_path, move_type, meta_info
-                # 메타 실패 폴더가 없으면 아래 라이브러리 폴더 로직으로 넘어감
-
-        # 메타 미사용 모드 또는 위에서 경로 결정이 안 된 모든 경우
-        move_type = "default"
-        library_paths = CensoredTask.get_path_list(config.get('라이브러리폴더', []))
-        if not library_paths:
-            logger.error("이동할 라이브러리 폴더가 설정되지 않았습니다.")
-            return Path(config['처리실패이동폴더']).joinpath("[NO TARGET PATH]"), "error", None
-
-        target_root_path = Path(library_paths[0])
-        folders = CensoredTask.process_folder_format(config, info, config['이동폴더포맷'], meta_info) # meta_info는 None일 것
-        return target_root_path.joinpath(*folders), move_type, meta_info
 
 
     @staticmethod
@@ -233,9 +195,14 @@ class Task:
                     else:
                         logger.info(f"'{pure_code}': 메타 검색에 실패했거나 지원하지 않는 레이블입니다.")
                         group_move_type = "meta_fail"
-                        no_meta_path_str = config.get('메타매칭실패시이동폴더', '').strip()
-                        if no_meta_path_str:
-                            group_target_dir = Path(no_meta_path_str)
+                        if config.get('메타매칭실패시이동', False):
+                            no_meta_path_format_str = config.get('메타매칭실패시이동폴더', '').strip()
+                            if no_meta_path_format_str:
+                                folders = CensoredTask.process_folder_format(config, representative_info, no_meta_path_format_str, meta_data=None)
+                                if no_meta_path_format_str.startswith('/'):
+                                    group_target_dir = Path('/').joinpath(*folders)
+                                else:
+                                    group_target_dir = Path().joinpath(*folders)
                 else: # 'not_using'
                     library_paths = config.get('라이브러리폴더', [])
                     if library_paths and library_paths[0]:
@@ -294,9 +261,11 @@ class Task:
                             custom_rules = config.get('커스텀경로규칙', [])
                             matched_rule = CensoredTask._find_and_merge_custom_path_rules(info, custom_rules, group_meta_info)
                             if matched_rule:
+                                rule_name = matched_rule.get('name') or matched_rule.get('이름', '이름 없는 규칙')
                                 force_on_meta_fail = matched_rule.get('force_on_meta_fail', False) or matched_rule.get('메타실패시강제적용', False)
+                                # 'meta_success', 'normal'은 메타 성공 또는 메타 미사용 시의 기본 타입이므로 처리
                                 if group_move_type in ['meta_success', 'normal'] or force_on_meta_fail:
-                                    logger.debug(f"  -> 파일에 커스텀 경로 규칙 '{matched_rule.get('name')}'이 적용됩니다.")
+                                    logger.debug(f"  -> 파일에 커스텀 경로 규칙 '{rule_name}'이 적용됩니다.")
                                     custom_path_str = (matched_rule.get('path') or matched_rule.get('경로', '')).strip()
                                     if custom_path_str:
                                         folder_format = (matched_rule.get('format') or matched_rule.get('폴더포맷')) or config['이동폴더포맷']
@@ -304,7 +273,7 @@ class Task:
                                         current_target_dir = Path(custom_path_str).joinpath(*folders)
                                         current_move_type = "custom_path"
                                 else:
-                                    logger.debug(f"  -> 커스텀 규칙 '{matched_rule.get('name')}'은(는) 메타 성공/미사용 시에만 적용되므로 건너뜁니다.")
+                                    logger.debug(f"  -> 커스텀 규칙 '{rule_name}'은(는) 메타 성공/미사용 시에만 적용되므로 건너뜁니다.")
 
                     new_filename = ToolExpandFileProcess.assemble_filename(config, info)
                     if new_filename is None: continue
@@ -358,6 +327,49 @@ class Task:
         except Exception as e:
             logger.error(f"'{pure_code}' 메타 검색 중 예외: {e}")
         return None
+
+
+    # ====================================================================
+    # --- Legacy Functions ---
+    # ====================================================================
+
+
+    @staticmethod
+    def __get_target_path(config, info):
+        """
+        Uncensored 전용 경로 결정 로직.
+        """
+        meta_info = None
+        move_type = "default"
+
+        # 메타 사용 모드일 때만 메타 검색 실행
+        if config.get('메타사용') == 'using':
+            if info['label'].lower() in config.get('메타검색지원레이블', set()):
+                meta_module = CensoredTask.get_meta_module('jav_uncensored')
+                meta_info = Task.__search_meta(config, meta_module, info['pure_code'])
+
+            if meta_info:
+                move_type = "meta_success"
+                target_root_path = Path(config.get('메타매칭시이동폴더'))
+                folders = CensoredTask.process_folder_format(config, info, config['이동폴더포맷'], meta_info)
+                return target_root_path.joinpath(*folders), move_type, meta_info
+            else:
+                move_type = "meta_fail"
+                target_root_path = Path(config.get('메타매칭실패시이동폴더'))
+                if target_root_path.name:
+                    return target_root_path, move_type, meta_info
+                # 메타 실패 폴더가 없으면 아래 라이브러리 폴더 로직으로 넘어감
+
+        # 메타 미사용 모드 또는 위에서 경로 결정이 안 된 모든 경우
+        move_type = "default"
+        library_paths = CensoredTask.get_path_list(config.get('라이브러리폴더', []))
+        if not library_paths:
+            logger.error("이동할 라이브러리 폴더가 설정되지 않았습니다.")
+            return Path(config['처리실패이동폴더']).joinpath("[NO TARGET PATH]"), "error", None
+
+        target_root_path = Path(library_paths[0])
+        folders = CensoredTask.process_folder_format(config, info, config['이동폴더포맷'], meta_info) # meta_info는 None일 것
+        return target_root_path.joinpath(*folders), move_type, meta_info
 
 
 

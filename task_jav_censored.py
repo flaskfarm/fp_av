@@ -94,9 +94,10 @@ class TaskBase:
                     final_config = base_config_with_advanced.copy()
                     final_config.update(job)
 
-                    user_subbed_override = job.get('자막우선처리', None)
-                    if user_subbed_override is not None and isinstance(user_subbed_override, dict):
-                        final_config['자막우선처리'] = {**base_config_with_advanced['자막우선처리'], **user_subbed_override}
+                    base_sub_settings = base_config_with_advanced.get('자막우선처리', {})
+                    user_subbed_override = job.get('자막우선처리', {})
+                    # 병합 순서: 1.기본설정 -> 2.YAML 작업 기본값(끄기) -> 3.사용자 작업 설정
+                    final_config['자막우선처리'] = {**base_sub_settings, '처리활성화': False, **user_subbed_override}
 
                     if '커스텀경로규칙' in job:
                         if isinstance(job.get('커스텀경로규칙'), list):
@@ -168,7 +169,7 @@ class Task:
         if execution_plan:
             logger.debug(f"파싱된 파일 목록을 품번 기준으로 재정렬합니다.")
             execution_plan.sort(key=lambda info: (
-                info['pure_code'], 
+                [int(c) if c.isdigit() else c.lower() for c in re.split('([0-9]+)', info['pure_code'])], 
                 [int(c) if c.isdigit() else c.lower() for c in re.split('([0-9]+)', info['original_file'].name)]
             ))
 
@@ -814,11 +815,11 @@ class Task:
                             custom_rules = config.get('커스텀경로규칙', [])
                             matched_rule = Task._find_and_merge_custom_path_rules(info, custom_rules, group_meta_info)
                             if matched_rule:
+                                rule_name = matched_rule.get('name') or matched_rule.get('이름', '이름 없는 규칙')
                                 force_on_meta_fail = matched_rule.get('force_on_meta_fail', False) or matched_rule.get('메타실패시강제적용', False)
-                                if group_move_type not in ['dvd'] and not force_on_meta_fail:
-                                    logger.debug(f"  -> 커스텀 규칙 '{matched_rule.get('name')}'은(는) 메타 성공 시에만 적용되므로 건너뜁니다.")
-                                else:
-                                    logger.debug(f"  -> 파일에 커스텀 경로 규칙 '{matched_rule.get('name')}'이 적용됩니다.")
+                                # 'dvd', 'normal'은 메타 성공 또는 메타 미사용 시의 기본 타입이므로 처리
+                                if group_move_type in ['dvd', 'normal'] or force_on_meta_fail:
+                                    logger.debug(f"  -> 파일에 커스텀 경로 규칙 '{rule_name}'이 적용됩니다.")
                                     custom_path_str = (matched_rule.get('path') or matched_rule.get('경로', '')).strip()
                                     if custom_path_str:
                                         folder_format = (matched_rule.get('format') or matched_rule.get('폴더포맷')) or config['이동폴더포맷']
@@ -826,6 +827,8 @@ class Task:
                                         current_target_dir = Path(custom_path_str).joinpath(*folders)
                                         current_move_type = "custom_path"
                                         is_handled_by_priority = True
+                                else:
+                                    logger.debug(f"  -> 커스텀 규칙 '{rule_name}'은(는) 메타 성공/미사용 시에만 적용되므로 건너뜁니다.")
 
                         # 3. 우선순위 경로가 없으면 그룹 기본 경로 사용
 
@@ -1180,36 +1183,47 @@ class Task:
 
     @staticmethod
     def __get_target_with_meta(config, info):
+        """
+        '메타사용'이 활성화됐을 때 호출되는 함수. 메타 검색 및 그 결과에 따른 경로를 반환.
+        """
+        # 1. 메타 검색 시도
         target_dir, meta_info = Task.__get_target_with_meta_dvd(config, info)
         if target_dir is not None:
+            # 메타 검색 성공 시
             return target_dir, "dvd", meta_info
 
-        # 'no_meta' 처리 케이스
-        move_type = "no_meta"
-
+        # 2. 메타 검색 실패 시의 처리 로직
+        # '메타매칭실패시이동' 설정이 꺼져 있으면, 파일을 이동하지 않습니다.
         if not config.get('메타매칭실패시이동', False):
-            logger.debug(f"메타 없음: '{info['pure_code']}' - '메타 없는 영상 이동' 옵션이 꺼져 있어 이동하지 않습니다.")
-            return None, move_type, None # move_type은 남겨서 로그에 표시되도록 할 수 있음
+            logger.debug(f"메타 없음: '{info['pure_code']}' - '메타매칭실패시이동' 옵션이 꺼져 있어 이동하지 않습니다.")
+            # 이동하지 않으므로, move_type은 'meta_fail'로 설정하고 경로 없이 반환합니다.
+            return None, "meta_fail", None
 
-        # "메타 없는 영상 이동" 옵션이 켜져 있을 때만 아래 로직 실행
-        no_meta_path_str = config.get('메타매칭실패시이동폴더', '').strip()
+        # 3. '메타매칭실패시이동: True'인 경우, 이동 경로를 계산합니다.
+        # 이 경우, 실제 이동이 일어나므로 move_type은 'no_meta'가 됩니다.
+        no_meta_path_format_str = config.get('메타매칭실패시이동폴더', '').strip()
 
         final_path_obj = None
-        if no_meta_path_str:
-            # 설정된 경로가 있을 경우
-            final_path_obj = Path(no_meta_path_str)
-            logger.info(f"메타 없음: 설정된 폴더로 이동합니다 - {final_path_obj}")
+        if no_meta_path_format_str:
+            # 설정된 경로가 있을 경우, 템플릿을 적용하여 경로를 생성합니다.
+            folders = Task.process_folder_format(config, info, no_meta_path_format_str, meta_data=None)
+            if no_meta_path_format_str.startswith('/'):
+                final_path_obj = Path('/').joinpath(*folders)
+            else:
+                final_path_obj = Path().joinpath(*folders)
+            logger.info(f"메타 없음: 포맷팅된 '메타매칭실패시이동폴더'로 이동합니다 - {final_path_obj}")
         else:
-            # 설정된 경로가 없으면, '처리실패이동폴더' 아래에 [NO META] 폴더 사용
+            # 설정된 경로가 없으면, '처리실패이동폴더' 아래의 기본 [NO META] 폴더로 폴백합니다.
             temp_path_str = config.get('처리실패이동폴더', '').strip()
             if temp_path_str:
                 final_path_obj = Path(temp_path_str).joinpath("[NO META]")
-                logger.info(f"메타 없음: 기본 [NO META] 폴더로 이동합니다 - {final_path_obj}")
+                logger.info(f"메타 없음: '메타매칭실패시이동폴더'가 비어있어 기본 [NO META] 폴더로 이동합니다 - {final_path_obj}")
             else:
+                # 폴백할 경로조차 없으면 이동을 포기합니다.
                 logger.warning(f"메타 없음: 이동할 '메타매칭실패시이동폴더' 또는 '처리실패이동폴더'가 설정되지 않아 이동을 건너뜁니다.")
                 return None, None, None
 
-        return final_path_obj, move_type, None
+        return final_path_obj, "no_meta", None
 
 
     @staticmethod
