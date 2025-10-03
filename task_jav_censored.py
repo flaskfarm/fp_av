@@ -733,8 +733,6 @@ class Task:
         last_scan_path = None
         last_move_type = None
 
-        subtitle_map = task_context.get('subtitle_map', {})
-
         successful_move_types = {'dvd', 'normal', 'subbed', 'custom_path'}
         if config.get('scan_with_no_meta', True):
             successful_move_types.update(['no_meta', 'meta_fail'])
@@ -790,7 +788,7 @@ class Task:
                         # --- 파일별 경로 결정 우선순위 로직 ---
                         is_handled_by_priority = False
 
-                        # 1. 자막 경로 (Subbed Path) 확인 - 최우선 순위
+                        # 1. 자막 경로 (Subbed Path) 확인
                         if sub_config.get('처리활성화', False):
                             rule = sub_config.get('규칙', {})
                             exclude_pattern = rule.get('이동제외패턴')
@@ -810,27 +808,39 @@ class Task:
                                     current_move_type = "subbed"
                                     is_handled_by_priority = True
 
-                        # 2. (자막 대상이 아닐 경우) 커스텀 경로 (Custom Path) 확인 - 2순위
+                        # 2. 커스텀 경로 (Custom Path) 확인
                         if not is_handled_by_priority and config.get('커스텀경로활성화', False):
                             custom_rules = config.get('커스텀경로규칙', [])
                             matched_rule = Task._find_and_merge_custom_path_rules(info, custom_rules, group_meta_info)
                             if matched_rule:
                                 rule_name = matched_rule.get('name') or matched_rule.get('이름', '이름 없는 규칙')
                                 force_on_meta_fail = matched_rule.get('force_on_meta_fail', False) or matched_rule.get('메타실패시강제적용', False)
-                                # 'dvd', 'normal'은 메타 성공 또는 메타 미사용 시의 기본 타입이므로 처리
+
+                                # 커스텀 규칙을 적용할 조건인지 확인
                                 if group_move_type in ['dvd', 'normal'] or force_on_meta_fail:
                                     logger.debug(f"  -> 파일에 커스텀 경로 규칙 '{rule_name}'이 적용됩니다.")
+
+                                    # 규칙에 '경로'가 명시되어 있으면 그 경로를 base로 사용
+                                    # '경로'가 없으면, 현재까지 계산된 경로(current_target_dir)를 base로 사용
                                     custom_path_str = (matched_rule.get('path') or matched_rule.get('경로', '')).strip()
-                                    if custom_path_str:
-                                        folder_format = (matched_rule.get('format') or matched_rule.get('폴더포맷')) or config['이동폴더포맷']
-                                        folders = Task.process_folder_format(config, info, folder_format, group_meta_info)
-                                        current_target_dir = Path(custom_path_str).joinpath(*folders)
+                                    base_path_for_format = Path(custom_path_str) if custom_path_str else current_target_dir
+
+                                    # base 경로가 유효할 때만 포맷팅 진행 (None 체크)
+                                    if base_path_for_format:
+                                        # 규칙에 '폴더포맷'이 있으면 그것을, 없으면 기존 경로의 마지막 부분을 그대로 사용
+                                        # (폴더포맷이 없으면 폴더 구조를 변경하지 않음)
+                                        folder_format_str = matched_rule.get('format') or matched_rule.get('폴더포맷')
+                                        if folder_format_str:
+                                            folders = Task.process_folder_format(config, info, folder_format_str, group_meta_info)
+                                            current_target_dir = base_path_for_format.joinpath(*folders)
+                                        else: # 폴더 포맷이 규칙에 없으면, base 경로를 그대로 사용
+                                            current_target_dir = base_path_for_format
+
                                         current_move_type = "custom_path"
-                                        is_handled_by_priority = True
+                                    else:
+                                        logger.warning(f"커스텀 규칙 '{rule_name}'이 매칭되었으나, 적용할 기준 경로(base path)가 없어 건너뜁니다.")
                                 else:
                                     logger.debug(f"  -> 커스텀 규칙 '{rule_name}'은(는) 메타 성공/미사용 시에만 적용되므로 건너뜁니다.")
-
-                        # 3. 우선순위 경로가 없으면 그룹 기본 경로 사용
 
                     # --- 최종 파일명 생성 및 정보 업데이트 ---
                     new_filename = ToolExpandFileProcess.assemble_filename(config, info)
