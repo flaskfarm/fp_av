@@ -414,7 +414,7 @@ class Task:
         base_path = Path(base_path_str)
         if not base_path.is_dir(): return False
 
-        folder_format = rule.get('폴더구조') or config.get('이동폴더포맷')
+        folder_format = config.get('이동폴더포맷')
         relative_folders = Task.process_folder_format(config, info, folder_format, meta_data=None)
         target_sub_dir = base_path.joinpath(*relative_folders)
 
@@ -801,7 +801,7 @@ class Task:
                                 if group_has_external_subtitle or has_internal_keyword:
                                     # logger.debug(f"  -> 파일이 'subbed_path' 규칙에 해당합니다.")
                                     base_path = Path(rule['경로'])
-                                    folder_format = rule.get('폴더구조') or config.get('이동폴더포맷')
+                                    folder_format = config.get('이동폴더포맷')
                                     folders = Task.process_folder_format(config, info, folder_format, group_meta_info)
                                     current_target_dir = base_path.joinpath(*folders)
                                     current_move_type = "subbed"
@@ -826,14 +826,10 @@ class Task:
 
                                     # base 경로가 유효할 때만 포맷팅 진행 (None 체크)
                                     if base_path_for_format:
-                                        # 규칙에 '폴더포맷'이 있으면 그것을, 없으면 기존 경로의 마지막 부분을 그대로 사용
-                                        # (폴더포맷이 없으면 폴더 구조를 변경하지 않음)
-                                        folder_format_str = matched_rule.get('format') or matched_rule.get('폴더포맷')
-                                        if folder_format_str:
-                                            folders = Task.process_folder_format(config, info, folder_format_str, group_meta_info)
-                                            current_target_dir = base_path_for_format.joinpath(*folders)
-                                        else: # 폴더 포맷이 규칙에 없으면, base 경로를 그대로 사용
-                                            current_target_dir = base_path_for_format
+                                        # 규칙에 폴더포맷이 없으면, 전역 기본 폴더포맷을 사용
+                                        folder_format_to_use = (matched_rule.get('format') or matched_rule.get('폴더포맷')) or config['이동폴더포맷']
+                                        folders = Task.process_folder_format(config, info, folder_format_to_use, group_meta_info)
+                                        current_target_dir = base_path_for_format.joinpath(*folders)
 
                                         current_move_type = "custom_path"
                                     else:
@@ -1129,7 +1125,7 @@ class Task:
                     best_match = next((item for item in search_result_list if item.get('score', 0) >= min_score), None)
                     if best_match:
                         logger.info(f"매칭 성공! (search2) 사이트=[{site_name}], 코드=[{best_match['code']}], 점수=[{best_match['score']}]")
-                        meta_info = meta_module.info(best_match["code"], keyword=search_name, fp_meta_mode=False)
+                        meta_info = meta_module.info(best_match["code"], keyword=search_name, fp_meta_mode=True)
                         if meta_info: break # 유효한 메타 정보 획득 시 루프 종료
                 except Exception as e:
                     logger.error(f"'{site_name}' 사이트 검색 중 예외 발생: {e}")
@@ -1143,7 +1139,7 @@ class Task:
                     best_match = search_results[0]
                     if best_match.get('score', 0) >= 95:
                         logger.info(f"매칭 성공! (search) 사이트=[{best_match.get('site')}], 코드=[{best_match['code']}], 점수=[{best_match['score']}]")
-                        meta_info = meta_module.info(best_match["code"], keyword=search_name, fp_meta_mode=False)
+                        meta_info = meta_module.info(best_match["code"], keyword=search_name, fp_meta_mode=True)
             except Exception as e:
                 logger.error(f"메타데이터 통합 검색(search) 중 예외 발생: {e}")
                 logger.debug(traceback.format_exc())
@@ -1166,7 +1162,7 @@ class Task:
             folder_format_to_use = config['이동폴더포맷']
 
             # VR 경로 처리
-            vr_genres = ["고품질VR", "VR전용", "VR専用", "ハイクオリティVR"]
+            vr_genres = ["VR専用", "ハイクオリティVR", "VR", "Virtual Reality"]
             if any(x in (meta_info.get("genre") or []) for x in vr_genres):
                 vr_path_str = config.get('VR영상이동폴더', '').strip()
                 if vr_path_str:
@@ -1529,7 +1525,7 @@ class Task:
             return
 
         base_path = Path(base_path_str)
-        folder_format = rule.get('폴더구조') or config.get('이동폴더포맷')
+        folder_format = config.get('이동폴더포맷')
 
         for info in subtitle_infos:
             if exclude_pattern:

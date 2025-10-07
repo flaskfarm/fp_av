@@ -251,7 +251,7 @@ class Task:
                                 if group_has_external_subtitle or has_internal_keyword:
                                     # logger.debug(f"  -> 파일이 'subbed_path' 규칙에 해당합니다.")
                                     base_path = Path(rule['경로'])
-                                    folder_format = rule.get('폴더구조') or config.get('이동폴더포맷')
+                                    folder_format = config.get('이동폴더포맷')
                                     folders = CensoredTask.process_folder_format(config, info, folder_format, group_meta_info)
                                     current_target_dir = base_path.joinpath(*folders)
                                     current_move_type = "subbed"
@@ -275,14 +275,10 @@ class Task:
 
                                     # base 경로가 유효할 때만 포맷팅 진행 (None 체크)
                                     if base_path_for_format:
-                                        # 규칙에 '폴더포맷'이 있으면 그것을, 없으면 기존 경로의 마지막 부분을 그대로 사용
-                                        # (폴더포맷이 없으면 폴더 구조를 변경하지 않음)
-                                        folder_format_str = matched_rule.get('format') or matched_rule.get('폴더포맷')
-                                        if folder_format_str:
-                                            folders = CensoredTask.process_folder_format(config, info, folder_format_str, group_meta_info)
-                                            current_target_dir = base_path_for_format.joinpath(*folders)
-                                        else: # 폴더 포맷이 규칙에 없으면, base 경로를 그대로 사용
-                                            current_target_dir = base_path_for_format
+                                        # 규칙에 폴더포맷이 없으면, 전역 기본 폴더포맷을 사용
+                                        folder_format_to_use = (matched_rule.get('format') or matched_rule.get('폴더포맷')) or config['이동폴더포맷']
+                                        folders = CensoredTask.process_folder_format(config, info, folder_format_to_use, group_meta_info)
+                                        current_target_dir = base_path_for_format.joinpath(*folders)
 
                                         current_move_type = "custom_path"
                                     else:
@@ -345,7 +341,7 @@ class Task:
             if search_result:
                 best_match = next((item for item in search_result if item.get('score', 0) >= 95), None)
                 if best_match:
-                    return meta_module.info(best_match["code"], fp_meta_mode=False)
+                    return meta_module.info(best_match["code"], fp_meta_mode=True)
         except Exception as e:
             logger.error(f"'{pure_code}' 메타 검색 중 예외: {e}")
         return None
