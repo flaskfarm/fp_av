@@ -304,16 +304,23 @@ class Task:
 
                     info.update({'newfilename': new_filename, 'target_dir': current_target_dir, 'move_type': current_move_type, 'meta_info': group_meta_info})
 
+                    # 1. 이전 경로에 대한 스캔 요청 (필요한 경우)
                     current_scan_path = current_target_dir if current_target_dir else None
                     if scan_enabled and current_scan_path != last_scan_path and last_scan_path is not None:
-                        if last_move_type in successful_move_types: CensoredTask.__request_plex_mate_scan(config, last_scan_path)
+                        # 이전 작업이 성공적인 이동이었을 때만 스캔 요청
+                        if last_move_type in successful_move_types:
+                            CensoredTask.__request_plex_mate_scan(config, last_scan_path)
 
+                    # 2. 실제 파일 이동 (CensoredTask의 공용 함수 사용)
                     entity = CensoredTask.__file_move_logic(config, info, db_model)
-                    if entity and entity.move_type is not None: entity.save()
+                    if entity and entity.move_type is not None:
+                        entity.save()
 
+                    # 3. 현재 작업 경로 및 타입 업데이트 (파일 이동 성공 여부와 관계없이)
                     if scan_enabled and current_target_dir is not None:
                         last_scan_path = current_scan_path
                         last_move_type = current_move_type
+
             except Exception as e:
                 logger.error(f"'{pure_code}' 그룹 처리 중 예외 발생: {e}")
                 logger.error(traceback.format_exc())
