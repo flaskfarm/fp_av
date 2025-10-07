@@ -741,8 +741,7 @@ class Task:
             try:
                 representative_info = group_infos[0]
 
-                # --- 1a. '메타사용' 설정에 따라 그룹의 "기본" 경로/메타를 결정 ---
-                use_meta_option = config.get('메타사용', 'not_using')
+                # --- 1a. 그룹의 "기본" 경로/메타 결정 ---
                 group_target_dir, group_move_type, group_meta_info = None, None, None
 
                 if use_meta_option == 'using':
@@ -755,13 +754,13 @@ class Task:
                         group_target_dir = target_root_path.joinpath(*folders)
                         group_move_type = "normal"
 
-                # --- 1b. 그룹의 "외부 자막 존재 여부"를 확인 ---
+                # --- 1b. 그룹의 "외부 자막 존재 여부" 확인 ---
                 group_has_external_subtitle = False
                 if sub_config.get('처리활성화', False):
                     if Task._find_external_subtitle(config, representative_info, sub_config, task_context):
                         logger.info(f"'{pure_code}' 그룹: 외부 자막 파일이 발견되어 'subbed_path' 대상으로 고려됩니다.")
                         group_has_external_subtitle = True
-
+                
                 if group_target_dir is None and not group_has_external_subtitle:
                     logger.debug(f"'{pure_code}' 그룹: 이동할 기본 경로가 없고 자막 대상도 아니므로 처리를 건너뜁니다.")
                     continue
@@ -862,17 +861,19 @@ class Task:
                         'meta_info': group_meta_info
                     })
 
-                    # --- 파일 이동 및 스캔 로직 ---
+                    # 1. 이전 경로에 대한 스캔 요청 (필요한 경우)
                     current_scan_path = current_target_dir if current_target_dir else None
-
                     if scan_enabled and current_scan_path != last_scan_path and last_scan_path is not None:
+                        # 이전 작업이 성공적인 이동이었을 때만 스캔 요청
                         if last_move_type in successful_move_types:
                             Task.__request_plex_mate_scan(config, last_scan_path)
 
+                    # 2. 실제 파일 이동
                     entity = Task.__file_move_logic(config, info, db_model)
                     if entity and entity.move_type is not None:
                         entity.save()
 
+                    # 3. 현재 작업 경로 및 타입 업데이트 (파일 이동 성공 여부와 관계없이)
                     if scan_enabled and current_target_dir is not None:
                         last_scan_path = current_scan_path
                         last_move_type = current_move_type
