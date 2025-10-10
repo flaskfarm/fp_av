@@ -45,5 +45,6 @@ class ModelJavCensoredItem(ModelBase):
         trg = Path(trg)
         self.target_dir = str(trg.parent)
         self.target_filename = trg.name
+        self.target_path = str(trg)
         return self
 
