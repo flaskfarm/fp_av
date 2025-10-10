@@ -113,8 +113,8 @@ class Task:
             logger.info(f"메타 검색({site}): {data['code']}")
             data['search'] = Task.meta_module.search2(data['code'], site['site'], manual=False)
             if data['search'] == None:
-               logger.error(f"검색결과({site}): NONE")
-               continue
+                logger.error(f"검색결과({site}): NONE")
+                continue
             if len(data['search']) > 0 and data['search'][0]["score"] >= site['score']:
                 data['info'] = Task.meta_module.info(data['search'][0]["code"])
                 if data['info'] is not None:

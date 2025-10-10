@@ -555,6 +555,69 @@ class ToolExpandFileProcess:
 
 
 class UtilFunc:
+    _CHARDET_INSTALLED = None
+    chardet = None
+
+    @staticmethod
+    def _initialize_chardet():
+        """chardet 라이브러리를 임포트하고, 실패 시 pip을 통해 자동으로 설치를 시도합니다."""
+        if UtilFunc._CHARDET_INSTALLED is not None:
+            return UtilFunc._CHARDET_INSTALLED
+
+        try:
+            import chardet as chardet_lib
+            UtilFunc.chardet = chardet_lib
+            UtilFunc._CHARDET_INSTALLED = True
+            # logger.debug("chardet 라이브러리가 성공적으로 로드되었습니다.")
+        except ImportError:
+            logger.warning("chardet 라이브러리를 찾을 수 없습니다. 자동 설치를 시도합니다...")
+            try:
+                subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "chardet"],
+                    check=True, capture_output=True, text=True
+                )
+                import chardet as chardet_lib
+                UtilFunc.chardet = chardet_lib
+                UtilFunc._CHARDET_INSTALLED = True
+                logger.info("chardet 라이브러리를 성공적으로 설치하고 로드했습니다.")
+            except Exception as e:
+                logger.error("chardet 자동 설치에 실패했습니다. 자막 언어 감지 기능이 비활성화됩니다.")
+                logger.error(f"오류: {e}")
+                if isinstance(e, subprocess.CalledProcessError):
+                    logger.error(f"Pip STDERR: {e.stderr}")
+                UtilFunc._CHARDET_INSTALLED = False
+
+        return UtilFunc._CHARDET_INSTALLED
+
+
+    @staticmethod
+    def is_korean_subtitle(file_path: Path, config: dict) -> bool:
+        """파일 내용을 분석하여 한국어 자막인지 판별합니다."""
+        companion_config = config.get('동반자막처리', {})
+        if not companion_config.get('한국어자막판별', False):
+            return True 
+
+        if not UtilFunc._initialize_chardet():
+            return False
+
+        try:
+            with open(file_path, 'rb') as f:
+                raw_data = f.read(2048)
+            if not raw_data: return False
+
+            encoding = (UtilFunc.chardet.detect(raw_data)['encoding'] or 'utf-8')
+            content = raw_data.decode(encoding, errors='ignore')
+
+            if len(re.findall(r'[가-힣]', content)) > 50:
+                logger.debug(f"'{file_path.name}'은(는) 한국어 자막으로 판별되었습니다.")
+                return True
+        except Exception as e:
+            logger.error(f"자막 파일 '{file_path.name}' 분석 중 오류: {e}")
+            return False
+
+        logger.debug(f"'{file_path.name}'은(는) 한국어 자막이 아닌 것으로 판별되었습니다.")
+        return False
+
 
     @staticmethod
     def is_duplicate(src: Path, dst: Path, config: dict) -> bool:
