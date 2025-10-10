@@ -282,6 +282,7 @@ class Task:
                         if rep_info['label'].lower() in config.get('메타검색지원레이블', set()):
                             meta_module = CensoredTask.get_meta_module('jav_uncensored')
                             meta_info = Task.__search_meta(config, meta_module, rep_info['pure_code'])
+                        
                         if meta_info:
                             group_target_dir = Path(config.get('메타매칭시이동폴더')).joinpath(*CensoredTask.process_folder_format(config, rep_info, config['이동폴더포맷'], meta_info))
                             group_move_type, group_meta_info = "meta_success", meta_info
@@ -295,7 +296,13 @@ class Task:
                                         group_target_dir = Path('/').joinpath(*folders)
                                     else:
                                         group_target_dir = Path().joinpath(*folders)
-                    else:
+                                else:
+                                    temp_path_str = config.get('처리실패이동폴더', '').strip()
+                                    if temp_path_str:
+                                        group_target_dir = Path(temp_path_str).joinpath("[NO META]")
+                                        logger.info(f"메타 없음: '메타매칭실패시이동폴더'가 비어있어 기본 [NO META] 폴더로 이동합니다 - {group_target_dir}")
+
+                    else: # 'not_using'
                         library_paths = config.get('라이브러리폴더', [])
                         if library_paths and library_paths[0]:
                             group_target_dir = Path(library_paths[0]).joinpath(*CensoredTask.process_folder_format(config, rep_info, config['이동폴더포맷'], None))
@@ -309,13 +316,13 @@ class Task:
                     if group_target_dir is None and not group_has_external_subtitle:
                         logger.debug(f"'{pure_code}' 그룹의 남은 파일들은 이동할 경로가 없어 건너뜁니다.")
                         continue
-
+                    
                     for info in unmatched_infos:
                         processed_count += 1
                         logger.info(f"[{processed_count:03d}/{total_files:03d}] {info['original_file'].name}")
 
-                        current_target_dir, current_move_type = group_target_dir, group_meta_info
-
+                        current_target_dir, current_move_type = group_target_dir, group_move_type
+                        
                         if info.get('file_type') == 'etc':
                             target_root_str = config.get('처리실패이동폴더', '').strip()
                             if target_root_str:
@@ -324,14 +331,12 @@ class Task:
                             else: continue
                         else:
                             is_handled_by_priority = False
-
                             if sub_config.get('처리활성화', False):
                                 rule = sub_config.get('규칙', {})
                                 exclude_pattern = rule.get('이동제외패턴')
                                 if not (exclude_pattern and re.search(exclude_pattern, info['original_file'].name, re.IGNORECASE)):
                                     has_internal_keyword = any(kw in info['original_file'].name.lower() for kw in sub_config.get('내장자막키워드', []))
                                     if group_has_external_subtitle or has_internal_keyword:
-                                        # logger.debug(f"  -> 파일이 'subbed_path' 규칙에 해당합니다.")
                                         base_path = Path(rule['경로'])
                                         folder_format = config.get('이동폴더포맷')
                                         folders = CensoredTask.process_folder_format(config, info, folder_format, group_meta_info)
@@ -345,23 +350,14 @@ class Task:
                                 if matched_rule:
                                     rule_name = matched_rule.get('name') or matched_rule.get('이름', '이름 없는 규칙')
                                     force_on_meta_fail = matched_rule.get('force_on_meta_fail', False) or matched_rule.get('메타실패시강제적용', False)
-
-                                    # 커스텀 규칙을 적용할 조건인지 확인
                                     if group_move_type in ['meta_success', 'normal'] or force_on_meta_fail:
                                         logger.debug(f"  -> 파일에 커스텀 경로 규칙 '{rule_name}'이 적용됩니다.")
-
-                                        # 규칙에 '경로'가 명시되어 있으면 그 경로를 base로 사용
-                                        # '경로'가 없으면, 현재까지 계산된 경로(current_target_dir)를 base로 사용
                                         custom_path_str = (matched_rule.get('path') or matched_rule.get('경로', '')).strip()
                                         base_path_for_format = Path(custom_path_str) if custom_path_str else current_target_dir
-
-                                        # base 경로가 유효할 때만 포맷팅 진행 (None 체크)
                                         if base_path_for_format:
-                                            # 규칙에 폴더포맷이 없으면, 전역 기본 폴더포맷을 사용
                                             folder_format_to_use = (matched_rule.get('format') or matched_rule.get('폴더포맷')) or config['이동폴더포맷']
                                             folders = CensoredTask.process_folder_format(config, info, folder_format_to_use, group_meta_info)
                                             current_target_dir = base_path_for_format.joinpath(*folders)
-
                                             current_move_type = "custom_path"
                                         else:
                                             logger.warning(f"커스텀 규칙 '{rule_name}'이 매칭되었으나, 적용할 기준 경로(base path)가 없어 건너뜁니다.")
@@ -370,7 +366,7 @@ class Task:
 
                         new_filename = ToolExpandFileProcess.assemble_filename(config, info)
                         if info['file_type'] in ['etc', 'subtitle']: new_filename = info['original_file'].name
-
+                        
                         media_info_to_check = info.get('final_media_info')
                         if config.get('파일명에미디어정보포함') and isinstance(media_info_to_check, dict) and not media_info_to_check.get('is_valid', True):
                             current_move_type = "failed_video"
