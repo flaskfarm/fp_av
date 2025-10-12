@@ -177,9 +177,9 @@ class Task:
                 'audience_rating_image': info.get('audience_rating_image', ''),
                 
                 # set_data_list
-                'genres': info.get('genre', []),
-                'collections': info.get('tag', []),
-                'countries': info.get('country', []),
+                'genres': info.get('genre') or [],
+                'collections': info.get('tag') or [],
+                'countries': info.get('country') or [],
                 'similar': [],
                 # set_data_person
                 'writers': [],
@@ -219,22 +219,22 @@ class Task:
             SupportYaml.write_yaml(filepath_yaml, yaml_data)
 
         if make_image:
-            for thumb in info.get('thumb', []):
+            for thumb in info.get('thumb') or []:
                 if os.path.exists(filepath_poster) == False and thumb.get('aspect', '') == 'poster':
                     make_poster = Task.file_save(thumb['value'], filepath_poster)
                 elif os.path.exists(filepath_fanart) == False and thumb.get('aspect', '') == 'landscape':
                     make_art = Task.file_save(thumb['value'], filepath_fanart)
-            for extra in info.get('extras', []):
+            for extra in info.get('extras') or []:
                 if os.path.exists(filepath_trailer) == False and extra.get('content_type', '') == 'trailer':
                     make_trailer = Task.file_save(extra['content_url'], filepath_trailer)
 
         if make_nfo and os.path.exists(filepath_nfo) == False:
-            info['thumb'] = []
-            info['extras'] = []
-            info['fanart'] = []
+            info_for_nfo = info.copy()
+            info_for_nfo['thumb'] = info_for_nfo.get('thumb') or []
+            info_for_nfo['extras'] = info_for_nfo.get('extras') or []
+            info_for_nfo['fanart'] = info_for_nfo.get('fanart') or []
             from support_site import UtilNfo
-            UtilNfo.make_nfo_movie(info, output='save', savepath=filepath_nfo)
-        
+            UtilNfo.make_nfo_movie(info_for_nfo, output='save', savepath=filepath_nfo)
 
 
     def file_save(url, filepath, proxy_url=None):
