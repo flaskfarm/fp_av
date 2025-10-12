@@ -82,14 +82,13 @@ class TaskBase:
                     if not job.get('사용', True): continue
 
                     final_config = base_config_with_advanced.copy()
+                    final_config.update(job)
 
                     if '자막우선처리활성화' in job:
                         final_config.setdefault('자막우선처리', {})['처리활성화'] = job['자막우선처리활성화']
                     
                     if '동반자막처리활성화' in job:
                         final_config.setdefault('동반자막처리', {})['처리활성화'] = job['동반자막처리활성화']
-
-                    final_config.update(job)
 
                     # 커스텀 경로 규칙 예외 처리
                     if '커스텀경로규칙' in job:
@@ -192,6 +191,7 @@ class Task:
             if comp_format: 
                 final_format_str = comp_format
 
+        is_custom_format_set = False
         if config.get('커스텀경로활성화', False):
             rule = CensoredTask._find_and_merge_custom_path_rules(info, config.get('커스텀경로규칙', []), meta_info)
             if rule and (is_meta_success or rule.get('force_on_meta_fail')):
@@ -202,6 +202,7 @@ class Task:
                 custom_format = rule.get('format') or rule.get('폴더포맷', '')
                 if custom_format: 
                     final_format_str = custom_format
+                    is_custom_format_set = True
 
         if not is_companion_pair and sub_config.get('처리활성화', False):
             is_applicable = False
@@ -224,9 +225,10 @@ class Task:
         if not final_path_str:
             return None, final_move_type, meta_info
 
-        base_path, format_str = CensoredTask._resolve_path_template(config, info, meta_info, final_path_str)
-        if format_str:
-            final_format_str = format_str
+        base_path, format_from_template = CensoredTask._resolve_path_template(config, info, meta_info, final_path_str)
+
+        if not is_custom_format_set and format_from_template and final_move_type != 'meta_fail':
+            final_format_str = format_from_template
 
         folders = CensoredTask.process_folder_format(config, info, final_format_str, meta_info)
         target_dir = base_path.joinpath(*folders)
