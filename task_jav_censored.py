@@ -92,6 +92,7 @@ class TaskBase:
                     if not job.get('사용', True): continue
 
                     final_config = base_config_with_advanced.copy()
+                    final_config.update(job)
 
                     if '자막우선처리활성화' in job:
                         final_config.setdefault('자막우선처리', {})['처리활성화'] = job['자막우선처리활성화']
@@ -99,14 +100,10 @@ class TaskBase:
                     if '동반자막처리활성화' in job:
                         final_config.setdefault('동반자막처리', {})['처리활성화'] = job['동반자막처리활성화']
 
-                    final_config.update(job)
-
                     if '커스텀경로규칙' in job:
                         if isinstance(job.get('커스텀경로규칙'), list):
-                            logger.debug("작업 YAML에 정의된 '커스텀경로규칙'을 적용하고, 커스텀 경로 기능을 활성화합니다.")
                             final_config['커스텀경로활성화'] = True
                         else:
-                            logger.warning("작업 YAML의 '커스텀경로규칙'이 리스트 형식이 아니므로 무시합니다.")
                             final_config['커스텀경로활성화'] = False 
 
                     if final_config.get('드라이런', False):
@@ -835,6 +832,7 @@ class Task:
             if comp_format: 
                 final_format_str = comp_format
 
+        is_custom_format_set = False
         if config.get('커스텀경로활성화', False):
             rule = Task._find_and_merge_custom_path_rules(info, config.get('커스텀경로규칙', []), meta_info)
             if rule and (is_meta_success or rule.get('force_on_meta_fail')):
@@ -845,6 +843,7 @@ class Task:
                 custom_format = rule.get('format') or rule.get('폴더포맷', '')
                 if custom_format: 
                     final_format_str = custom_format
+                    is_custom_format_set = True
 
         if not is_companion_pair and sub_config.get('처리활성화', False):
             is_applicable = False
@@ -867,9 +866,10 @@ class Task:
         if not final_path_str:
             return None, final_move_type, meta_info
 
-        base_path, format_str = Task._resolve_path_template(config, info, meta_info, final_path_str)
-        if format_str:
-            final_format_str = format_str
+        base_path, format_from_template = Task._resolve_path_template(config, info, meta_info, final_path_str)
+
+        if not is_custom_format_set and format_from_template and final_move_type != 'meta_fail':
+            final_format_str = format_from_template
 
         folders = Task.process_folder_format(config, info, final_format_str, meta_info)
         target_dir = base_path.joinpath(*folders)
