@@ -179,6 +179,21 @@ class Task:
         subtitles = [info for info in parsed_infos if info['file_type'] == 'subtitle']
         etc_files = [info for info in parsed_infos if info['file_type'] == 'etc']
         
+        # --- etc 파일 우선 처리 ---
+        if etc_files:
+            failed_path_str = config.get('처리실패이동폴더', '').strip()
+            if failed_path_str:
+                target_dir = Path(failed_path_str).joinpath("[ETC_FILES]")
+                logger.info(f"{len(etc_files)}개의 기타 파일을 '{target_dir}'로 이동합니다.")
+                for info in etc_files:
+                    # 파일명은 변경하지 않고 그대로 이동
+                    info.update({'target_dir': target_dir, 'move_type': 'etc_file', 'newfilename': info['original_file'].name})
+                    entity = Task.__file_move_logic(config, info, task_context['db_model'])
+                    if entity and entity.target_path:
+                        entity.save()
+            else:
+                logger.warning(f"기타 파일({len(etc_files)}개)을 이동할 '처리실패이동폴더'가 설정되지 않아 건너뜁니다.")
+        
         if is_companion_enabled:
             unmatched_subs = []
             for s_info in subtitles:
@@ -206,10 +221,10 @@ class Task:
             # 최종 실행 계획 = 영상(자막 포함) + 짝없는 자막 + 기타 파일
             execution_plan.extend(videos)
             execution_plan.extend(unmatched_subs)
-            execution_plan.extend(etc_files)
         else:
             # 동반자막 기능이 꺼져있으면, 모든 파일을 그대로 실행 계획에 포함
-            execution_plan = parsed_infos
+            execution_plan.extend(videos)
+            execution_plan.extend(subtitles)
 
         # 4. 최종 정렬
         if execution_plan:
@@ -898,6 +913,7 @@ class Task:
 
         # --- 2. 메타 정보 획득 ---
         meta_info = None
+        match_site = "N/A"
         custom_search_settings = config.get('메타검색에사용할사이트')
 
         if custom_search_settings:
@@ -921,12 +937,14 @@ class Task:
                 if res and res[0].get('score', 0) >= 95:
                     match = res[0]
                     meta_info = meta_module.info(match["code"], keyword=search_name, fp_meta_mode=True)
+                    if meta_info:
+                        match_site = match.get('site', 'N/A')
             except Exception as e:
                 logger.error(f"메타데이터 통합 검색(search) 중 예외 발생: {e}")
 
         # --- 3. 메타 정보 후처리 및 반환 ---
         if meta_info:
-            logger.info(f"'{search_name}' 메타 검색 성공: {meta_info.get('originaltitle')}")
+            logger.info(f"'{search_name}' 메타 검색 성공: {meta_info.get('originaltitle')} (from: {match_site})")
             # 폴더명 생성을 위한 배우 이름 사전 번역 (성공 시에만 수행)
             for actor in (meta_info.get("actor") or []):
                 try:

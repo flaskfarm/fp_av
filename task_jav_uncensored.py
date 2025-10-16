@@ -259,7 +259,8 @@ class Task:
                 if best_match:
                     meta_info = meta_module.info(best_match["code"], fp_meta_mode=True)
                     if meta_info:
-                        logger.info(f"'{info['pure_code']}' 메타 검색 성공: {meta_info.get('originaltitle')}")
+                        match_site = best_match.get('site', 'N/A')
+                        logger.info(f"'{info['pure_code']}' 메타 검색 성공: {meta_info.get('originaltitle')} (from: {match_site})")
                         return meta_info
         except Exception as e:
             logger.error(f"'{info['pure_code']}' 메타 검색 중 예외: {e}")
