@@ -809,7 +809,15 @@ class Task:
         final_move_type = "normal"
 
         if is_meta_success:
-            final_path_str = config.get('라이브러리폴더', [''])[0]
+            library_paths = config.get('라이브러리폴더', [])
+            if library_paths:
+                final_path_str = library_paths[0]
+            else:
+                if use_meta_option == 'not_using':
+                    logger.error("메타 미사용 모드에서 이동할 라이브러리 폴더가 설정되지 않았습니다.")
+                    return None, "no_library_path", meta_info
+                final_path_str = ""
+
             if use_meta_option == 'using':
                 if config.get('메타매칭시이동폴더'):
                     final_path_str = config.get('메타매칭시이동폴더')
