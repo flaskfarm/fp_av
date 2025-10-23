@@ -188,13 +188,26 @@ class Task:
 
         # --- 3. 우선순위에 따른 경로 및 포맷 재정의 (Override) ---
         if is_companion_pair:
-            comp_path = config.get('동반자막처리경로', '')
+            companion_config = config.get('동반자막처리', {})
+            comp_path = ""
+
+            if is_meta_success:
+                comp_path = config.get('동반자막처리경로_메타성공시') or companion_config.get('경로_메타성공시')
+            else:
+                comp_path = config.get('동반자막처리경로_메타실패시') or companion_config.get('경로_메타실패시')
+            
+            if not comp_path:
+                comp_path = config.get('동반자막처리경로') or companion_config.get('경로')
+
             if comp_path: 
                 final_path_str = comp_path
-                final_move_type = 'companion_kor'
-            comp_format = config.get('동반자막처리폴더포맷', '')
+            
+            final_move_type = 'companion_kor'
+            
+            comp_format = config.get('동반자막처리폴더포맷') or companion_config.get('폴더포맷')
             if comp_format: 
                 final_format_str = comp_format
+                is_custom_format_set = True
 
         is_custom_format_set = False
         if config.get('커스텀경로활성화', False):
