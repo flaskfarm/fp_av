@@ -366,11 +366,12 @@ class Task:
                 # --- 동반 자막 처리 설정 로드 ---
                 companion_config_yaml = jav_settings.get('동반자막처리', {})
                 if companion_config_yaml and isinstance(companion_config_yaml, dict):
+                    config['동반자막처리'] = companion_config_yaml
                     config['동반자막처리활성화'] = companion_config_yaml.get('처리활성화', False)
-                    config['동반자막한국어자막판별'] = companion_config_yaml.get('한국어자막판별', False)
-                    config['동반자막언어코드추가'] = companion_config_yaml.get('언어코드추가', True)
                     config['동반자막처리경로'] = companion_config_yaml.get('경로', '')
                     config['동반자막처리폴더포맷'] = companion_config_yaml.get('폴더포맷', '')
+                    config['동반자막한국어자막판별'] = companion_config_yaml.get('한국어자막판별', False)
+                    config['동반자막언어코드추가'] = companion_config_yaml.get('언어코드추가', True)
                     config['외국어자막이동경로'] = companion_config_yaml.get('외국어자막이동경로', '')
 
                 # --- 커스텀 경로 규칙 ---
@@ -847,13 +848,29 @@ class Task:
 
         # --- 3. 우선순위에 따른 경로 및 포맷 재정의 (Override) ---
         if is_companion_pair:
-            comp_path = config.get('동반자막처리경로', '')
+            companion_config = config.get('동반자막처리', {})
+            comp_path = ""
+
+            # 메타 성공/실패에 따른 경로 결정 (작업 YAML > 전역 설정 > 기본값 순)
+            if is_meta_success:
+                comp_path = config.get('동반자막처리경로_메타성공시') or companion_config.get('경로_메타성공시')
+            else:
+                comp_path = config.get('동반자막처리경로_메타실패시') or companion_config.get('경로_메타실패시')
+            
+            # 위 값이 없을 경우 하위 호환 경로 사용
+            if not comp_path:
+                comp_path = config.get('동반자막처리경로') or companion_config.get('경로')
+
             if comp_path: 
                 final_path_str = comp_path
-                final_move_type = 'companion_kor'
-            comp_format = config.get('동반자막처리폴더포맷', '')
+            
+            final_move_type = 'companion_kor'
+            
+            # 폴더 포맷도 작업 YAML > 전역 설정 순으로 확인
+            comp_format = config.get('동반자막처리폴더포맷') or companion_config.get('폴더포맷')
             if comp_format: 
                 final_format_str = comp_format
+                is_custom_format_set = True
 
         is_custom_format_set = False
         if config.get('커스텀경로활성화', False):
