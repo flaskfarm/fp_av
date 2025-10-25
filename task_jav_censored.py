@@ -939,10 +939,11 @@ class Task:
         # --- 2. 메타 정보 획득 ---
         meta_info = None
         match_site = "N/A"
+        best_match = None
         custom_search_settings = config.get('메타검색에사용할사이트')
 
         if custom_search_settings:
-            # 시나리오 A: 사용자가 사이트를 직접 지정한 경우 (search2 사용)
+            # 시나리오 A: 사용자가 사이트를 직접 지정한 경우
             site_list = [s for s in custom_search_settings if not config.get('메타검색에공식사이트만사용', False) or s.get('사이트') in ['dmm', 'mgstage']]
             for rule in site_list:
                 site_name, min_score = rule.get('사이트'), rule.get('점수', 95)
@@ -951,26 +952,32 @@ class Task:
                     res = meta_module.search2(search_name, site_name, manual=False)
                     match = next((item for item in res if item.get('score', 0) >= min_score), None)
                     if match:
-                        meta_info = meta_module.info(match["code"], keyword=search_name, fp_meta_mode=True)
-                        if meta_info: break # 성공 시 루프 종료
+                        logger.debug(f"'{site_name}' 사이트에서 '{search_name}'에 대한 유효한 매치(점수: {match.get('score')})를 찾았습니다. 검색을 중단합니다.")
+                        best_match = match
+                        break 
                 except Exception as e:
                     logger.error(f"'{site_name}' 사이트 검색 중 예외 발생: {e}")
         else:
-            # 시나리오 B: 통합 search 사용
+            # 시나리오 B: 통합 search 사용 (기본 검색)
             try:
                 res = meta_module.search(search_name, manual=False)
+                # search 결과가 있고, 그 첫번째 항목의 점수가 95점 이상이면 유효한 매치로 간주
                 if res and res[0].get('score', 0) >= 95:
-                    match = res[0]
-                    meta_info = meta_module.info(match["code"], keyword=search_name, fp_meta_mode=True)
-                    if meta_info:
-                        match_site = match.get('site', 'N/A')
+                    best_match = res[0]
             except Exception as e:
                 logger.error(f"메타데이터 통합 검색(search) 중 예외 발생: {e}")
 
+        if best_match:
+            try:
+                meta_info = meta_module.info(best_match["code"], keyword=search_name, fp_meta_mode=True)
+                if meta_info:
+                    match_site = best_match.get('site', 'N/A')
+            except Exception as e:
+                logger.error(f"'{best_match['code']}'의 상세 정보 획득 중 예외 발생: {e}")
+                
         # --- 3. 메타 정보 후처리 및 반환 ---
         if meta_info:
             logger.info(f"'{search_name}' 메타 검색 성공: {meta_info.get('originaltitle')} (from: {match_site})")
-            # 폴더명 생성을 위한 배우 이름 사전 번역 (성공 시에만 수행)
             for actor in (meta_info.get("actor") or []):
                 try:
                     meta_module.process_actor(actor)
@@ -979,7 +986,6 @@ class Task:
             return meta_info
         else:
             logger.info(f"'{search_name}'에 대한 유효한 메타 정보를 찾지 못했습니다.")
-            # "포함 레이블"은 경로 결정 로직이 아니므로 여기서 처리하지 않음.
             return None
 
 
