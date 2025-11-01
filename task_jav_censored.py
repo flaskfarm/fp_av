@@ -91,6 +91,11 @@ class TaskBase:
                 for job in yaml_data.get('작업', []):
                     if not job.get('사용', True): continue
 
+                    job_name = job.get('이름', '이름 없는 작업')
+                    logger.info(f"=========================================")
+                    logger.info(f"YAML 작업 실행 시작: [{job_name}]")
+                    logger.info(f"=========================================")
+
                     final_config = base_config_with_advanced.copy()
                     final_config.update(job)
 
@@ -1184,15 +1189,18 @@ class Task:
 
                 # 3b. 부가 파일 생성 (이동 성공 후)
                 if meta_info:
+                    include_image_paths = config.get('부가파일정보_이미지경로', True)
+                    
                     printable_meta_info = meta_info.copy()
                     printable_meta_info.pop('original', None)
-
+                    
                     TaskMakeYaml.make_files(
-                        printable_meta_info, # 'original'이 제거된 깨끗한 데이터 전달
+                        printable_meta_info,
                         str(newfile.parent),
                         make_yaml=config.get('부가파일생성_YAML', False),
                         make_nfo=config.get('부가파일생성_NFO', False),
                         make_image=config.get('부가파일생성_IMAGE', False),
+                        include_image_paths_in_file=include_image_paths
                     )
 
                 # 3c. 방송 처리 (이동 성공 후)

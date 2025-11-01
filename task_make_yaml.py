@@ -4,7 +4,7 @@ ModelSetting = P.ModelSetting
 from .tool import ToolExpandFileProcess, UtilFunc
 from .model_jav_censored import ModelJavCensoredItem
 from support import SupportYaml, SupportUtil
-
+import os
 
 
 
@@ -147,7 +147,7 @@ class Task:
         return
 
 
-    def make_files(info, folder_path, make_yaml=True, make_nfo=True, make_image=True):
+    def make_files(info, folder_path, make_yaml=True, make_nfo=True, make_image=True, include_image_paths_in_file=True):
         if make_yaml == False and make_nfo == False and make_image == False:
             return
         filepath_yaml = os.path.join(folder_path, 'movie.yaml')
@@ -155,48 +155,60 @@ class Task:
         filepath_poster = os.path.join(folder_path, 'poster.jpg')
         filepath_fanart = os.path.join(folder_path, 'fanart.jpg')
         filepath_trailer = os.path.join(folder_path, 'movie-trailer.mp4')
-        if os.path.exists(filepath_yaml) and os.path.exists(filepath_nfo) and os.path.exists(filepath_poster) and os.path.exists(filepath_fanart) and os.path.exists(filepath_trailer):
-            return
+        
+        # --- 이미지/트레일러 다운로드 (항상 원본 info 객체 사용) ---
+        if make_image:
+            for thumb in info.get('thumb') or []:
+                if os.path.exists(filepath_poster) == False and thumb.get('aspect', '') == 'poster':
+                    Task.file_save(thumb['value'], filepath_poster)
+                elif os.path.exists(filepath_fanart) == False and thumb.get('aspect', '') == 'landscape':
+                    Task.file_save(thumb['value'], filepath_fanart)
+            for extra in info.get('extras') or []:
+                if os.path.exists(filepath_trailer) == False and extra.get('content_type', '') == 'trailer':
+                    Task.file_save(extra['content_url'], filepath_trailer)
 
+        # --- NFO/YAML 생성을 위한 데이터 준비 ---
+        info_for_files = info.copy()
+        if not include_image_paths_in_file:
+            logger.debug("NFO/YAML 파일에서 이미지 및 부가 정보 경로를 제외합니다.")
+            info_for_files.pop('thumb', None)
+            info_for_files.pop('fanart', None)
+            info_for_files.pop('extras', None)
+        
         if make_yaml and os.path.exists(filepath_yaml) == False:
             yaml_data = {
                 'primary': True,
-                'code': info.get('code', ''),
-                'title': info.get('title', ''),
-                'original_title': info.get('originaltitle', ''),
-                'title_sort': info.get('sorttitle', ''),
-                'originally_available_at': info.get('premiered', ''),
-                'year': info.get('year', 1950),
-                'studio': info.get('studio', ''),
-                'content_rating': info.get('mpaa', '청소년 관람불가'),
-                'tagline': info.get('tagline', ''),
-                'summary': info.get('plot', ''),
+                'code': info_for_files.get('code', ''),
+                'title': info_for_files.get('title', ''),
+                'original_title': info_for_files.get('originaltitle', ''),
+                'title_sort': info_for_files.get('sorttitle', ''),
+                'originally_available_at': info_for_files.get('premiered', ''),
+                'year': info_for_files.get('year', 1950),
+                'studio': info_for_files.get('studio', ''),
+                'content_rating': info_for_files.get('mpaa', '청소년 관람불가'),
+                'tagline': info_for_files.get('tagline', ''),
+                'summary': info_for_files.get('plot', ''),
                 'rating': '',
-                'rating_image': info.get('rating_image', ''),
-                'audience_rating': info.get('audience_rating', ''),
-                'audience_rating_image': info.get('audience_rating_image', ''),
+                'rating_image': info_for_files.get('rating_image', ''),
+                'audience_rating': info_for_files.get('audience_rating', ''),
+                'audience_rating_image': info_for_files.get('audience_rating_image', ''),
                 
-                # set_data_list
-                'genres': info.get('genre') or [],
-                'collections': info.get('tag') or [],
-                'countries': info.get('country') or [],
+                'genres': info_for_files.get('genre') or [],
+                'collections': info_for_files.get('tag') or [],
+                'countries': info_for_files.get('country') or [],
                 'similar': [],
-                # set_data_person
                 'writers': [],
                 'directors': [],
                 'producers': [],
                 'roles': [],
-                # set_data_media
                 'posters': [],
                 'art': [],
                 'themes': [],
-                # set_data_reviews
                 'reviews': [],
-                # set_data_extras
-                'extras': [] #info.get('extras', []),
+                'extras': info_for_files.get('extras', []),
             }
             
-            actors = info.get('actor') if info.get('actor') else []
+            actors = info_for_files.get('actor') if info_for_files.get('actor') else []
             for actor in actors:
                 actor_data = {
                     'name': actor.get('name', ''),
@@ -205,36 +217,27 @@ class Task:
                 }
                 yaml_data['roles'].append(actor_data)
 
-            if info.get('director'):
-                yaml_data['directors'] = info['director']
+            if info_for_files.get('director'):
+                yaml_data['directors'] = info_for_files['director']
             
             try:
-                if info['ratings'] is not None and len(info['ratings']) > 0:
-                    if info['ratings'][0]['max'] == 5:
-                        yaml_data['rating'] = float(info['ratings'][0]['value']) * 2
+                if info_for_files.get('ratings') is not None and len(info_for_files['ratings']) > 0:
+                    if info_for_files['ratings'][0]['max'] == 5:
+                        yaml_data['rating'] = float(info_for_files['ratings'][0]['value']) * 2
                     else:
-                        yaml_data['rating'] = float(info['ratings'][0]['value'])
+                        yaml_data['rating'] = float(info_for_files['ratings'][0]['value'])
             except Exception as e:
                 pass
             SupportYaml.write_yaml(filepath_yaml, yaml_data)
 
-        if make_image:
-            for thumb in info.get('thumb') or []:
-                if os.path.exists(filepath_poster) == False and thumb.get('aspect', '') == 'poster':
-                    make_poster = Task.file_save(thumb['value'], filepath_poster)
-                elif os.path.exists(filepath_fanart) == False and thumb.get('aspect', '') == 'landscape':
-                    make_art = Task.file_save(thumb['value'], filepath_fanart)
-            for extra in info.get('extras') or []:
-                if os.path.exists(filepath_trailer) == False and extra.get('content_type', '') == 'trailer':
-                    make_trailer = Task.file_save(extra['content_url'], filepath_trailer)
-
         if make_nfo and os.path.exists(filepath_nfo) == False:
-            info_for_nfo = info.copy()
-            info_for_nfo['thumb'] = info_for_nfo.get('thumb') or []
-            info_for_nfo['extras'] = info_for_nfo.get('extras') or []
-            info_for_nfo['fanart'] = info_for_nfo.get('fanart') or []
+            # NFO 생성을 위해 info_for_files의 복사본을 전달
+            nfo_data = info_for_files.copy()
+            nfo_data['thumb'] = nfo_data.get('thumb') or []
+            nfo_data['extras'] = nfo_data.get('extras') or []
+            nfo_data['fanart'] = nfo_data.get('fanart') or []
             from support_site import UtilNfo
-            UtilNfo.make_nfo_movie(info_for_nfo, output='save', savepath=filepath_nfo)
+            UtilNfo.make_nfo_movie(nfo_data, output='save', savepath=filepath_nfo)
 
 
     def file_save(url, filepath, proxy_url=None):
