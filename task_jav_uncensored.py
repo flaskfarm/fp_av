@@ -81,6 +81,11 @@ class TaskBase:
                 for job in yaml_data.get('작업', []):
                     if not job.get('사용', True): continue
 
+                    job_name = job.get('이름', '이름 없는 작업')
+                    logger.info(f"=========================================")
+                    logger.info(f"YAML 작업 실행 시작: [{job_name}]")
+                    logger.info(f"=========================================")
+
                     final_config = base_config_with_advanced.copy()
                     final_config.update(job)
 
