@@ -246,17 +246,19 @@ class ToolExpandFileProcess:
                     groups = match.groups()
                     label_part, num_part = "", ""
 
-                    if '|' in template: # label|number 형식
-                        label_template, num_template = [t.strip() for t in template.split('|', 1)]
+                    template_parts = [t.strip() for t in template.split('|')]
+
+                    if len(template_parts) >= 2: # label|number 형식이거나 label|number|... 형식
+                        label_template, num_template = template_parts[0], template_parts[1]
                         try:
                             label_part = label_template.format(*groups)
                             num_part = num_template.format(*groups)
                         except IndexError as e:
                             logger.error(f"        - 템플릿 적용 오류 (그룹 인덱스): {e}...")
                             continue
-                    else: # 단일 템플릿 형식. 전체를 label, number는 빈 값으로 간주
+                    elif len(template_parts) == 1: # 단일 템플릿 형식
                         try:
-                            label_part = template.format(*groups)
+                            label_part = template_parts[0].format(*groups)
                         except IndexError as e:
                             logger.error(f"        - 템플릿 적용 오류 (그룹 인덱스): {e}...")
                             continue
