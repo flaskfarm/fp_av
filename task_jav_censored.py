@@ -201,6 +201,9 @@ class Task:
         
         if is_companion_enabled:
             unmatched_subs = []
+            can_detect_korean_sub = config.get('동반자막한국어자막판별', False) and UtilFunc._initialize_chardet()
+            if config.get('동반자막한국어자막판별', False) and not can_detect_korean_sub:
+                logger.warning("한국어 자막 판별 기능이 활성화되었으나, chardet 라이브러리를 사용할 수 없어 모든 동반 자막을 한국어 자막으로 처리합니다.")
             for s_info in subtitles:
                 found_pair = False
                 # 영상 파일명을 기준으로 짝을 찾음 (긴 이름 우선)
@@ -211,12 +214,14 @@ class Task:
                     sub_stem = s_info['original_file'].stem
                     if video_stem == sub_stem or video_stem == os.path.splitext(sub_stem)[0]:
                         # 영상 정보에 자막 정보를 '자식'으로 포함시킴
-                        if config.get('동반자막한국어자막판별', False):
+                        # 판별 기능이 사용 가능할 때만 is_korean_subtitle 호출
+                        if can_detect_korean_sub:
                             if UtilFunc.is_korean_subtitle(s_info['original_file'], config):
                                 v_info['companion_korean_sub'] = s_info
                             else:
                                 v_info['companion_foreign_sub'] = s_info
                         else:
+                            # 판별 기능 사용 불가 시, 모두 한국어 자막으로 간주
                             v_info['companion_korean_sub'] = s_info
                         found_pair = True
                         break
@@ -407,6 +412,9 @@ class Task:
                 default_media_info_config.update({k: v for k, v in media_info_config.items() if not isinstance(v, dict)})
                 default_media_info_config.get('tolerance', {}).update(media_info_config.get('tolerance', {}))
                 config['미디어정보설정'] = default_media_info_config
+                # 미디어 분석 실패 처리 설정
+                config['미디어정보실패시이동'] = media_info_config.get('실패시별도경로로이동', True)
+                config['미디어정보실패시이동경로'] = media_info_config.get('실패시이동경로', '')
 
                 # --- 자막 우선 처리(subbed_path) 설정 로드 ---
                 default_subbed_path_config = {
@@ -684,7 +692,7 @@ class Task:
 
                 def is_valid_part(p): return p and len(p) < 6 and p.strip(' _.-()').isalnum()
 
-                if not (is_valid_part(part1_raw) and is_valid_part(part2_raw)):
+                if not (prefix and suffix and is_valid_part(part1_raw) and is_valid_part(part2_raw)):
                     all_infos_in_group.pop(0)
                     continue
 
@@ -1029,7 +1037,36 @@ class Task:
                     log_prefix = f"[{item_count:03d}/{total_items_in_plan:03d}]"
                     logger.info(f"{log_prefix} 처리 시작: {info['original_file'].name}")
                     
-                    target_dir, move_type, _ = Task._get_final_target_path(config, info, task_context, preloaded_meta=meta_info_for_group)
+                    target_dir, move_type, meta_info = None, None, meta_info_for_group
+                    
+                    # 미디어 정보 분석 실패 여부 확인
+                    is_media_info_failed = (
+                        config.get('파일명에미디어정보포함') and
+                        info['file_type'] == 'video' and
+                        (not info.get('final_media_info') or not info['final_media_info'].get('is_valid', True))
+                    )
+
+                    if is_media_info_failed and config.get('미디어정보실패시이동', True):
+                        logger.warning(f"'{info['original_file'].name}'의 미디어 정보 분석에 실패하여 실패 경로로 이동합니다.")
+                        move_type = 'failed_video'
+                        
+                        failed_path_str = config.get('미디어정보실패시이동경로', '')
+                        if failed_path_str:
+                            # 사용자가 지정한 실패 경로 사용 (포맷팅 지원)
+                            base_path, format_str = Task._resolve_path_template(config, info, meta_info_for_group, failed_path_str)
+                            folders = Task.process_folder_format(config, info, format_str, meta_info_for_group)
+                            target_dir = base_path.joinpath(*folders)
+                        else:
+                            # 기본 실패 경로 사용 (처리실패이동폴더/[FAILED_VIDEO])
+                            base_failed_path = config.get('처리실패이동폴더', '').strip()
+                            if base_failed_path:
+                                target_dir = Path(base_failed_path).joinpath("[FAILED_VIDEO]")
+                            else:
+                                logger.error("미디어 분석 실패 파일을 이동할 '미디어정보실패시이동경로' 또는 '처리실패이동폴더'가 설정되지 않았습니다.")
+                                continue # 이동 경로가 없으면 건너뛰기
+                    else:
+                        # 정상 처리 또는 실패 시 이동 옵션이 꺼진 경우
+                        target_dir, move_type, _ = Task._get_final_target_path(config, info, task_context, preloaded_meta=meta_info_for_group)
                     
                     if not target_dir:
                         logger.warning(f"'{info['original_file'].name}'의 이동 경로를 결정할 수 없어 건너뜁니다. (이동 타입: {move_type})")
