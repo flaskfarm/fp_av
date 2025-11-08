@@ -692,7 +692,7 @@ class Task:
 
                 def is_valid_part(p): return p and len(p) < 6 and p.strip(' _.-()').isalnum()
 
-                if not (prefix and suffix and is_valid_part(part1_raw) and is_valid_part(part2_raw)):
+                if not (prefix and is_valid_part(part1_raw) and is_valid_part(part2_raw)):
                     all_infos_in_group.pop(0)
                     continue
 
@@ -727,7 +727,10 @@ class Task:
                     if part_str.lower().startswith('cd') and part_str[2:].isdigit(): c_type, key = 'cd', (int(part_str[2:]),)
                     elif part_str.isdigit(): c_type, key = 'digit', (int(part_str),)
                     elif part_str.isalpha() and len(part_str) == 1: c_type, key = 'alpha', (ord(part_str.lower()) - ord('a') + 1,)
-                    elif re.match(r'^[a-zA-Z]\d{1,2}$', part_str, re.I): c_type, key = 'alpha_digit', (ord(part_str[0].lower()) - ord('a'), int(part_str[1:]))
+                    elif re.match(r'^[a-zA-Z](\d+)$', part_str, re.I):
+                        match = re.match(r'^([a-zA-Z])(\d+)$', part_str, re.I)
+                        alpha_part, digit_part = match.groups()
+                        c_type, key = 'alpha_digit', (ord(alpha_part.lower()), int(digit_part))
                     else: valid_set = False; break
                     if part_type is None: part_type = c_type
                     elif part_type != c_type: valid_set = False; break
