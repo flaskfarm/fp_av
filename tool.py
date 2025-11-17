@@ -139,6 +139,7 @@ class ToolExpandFileProcess:
             # 전처리
             cleaned_base = cls._preprocess_base(base, cleanup_list=cleanup_list)
             parsed_code, remaining_part = None, ""
+            search_label = None
 
             # 품번 추출
             if parsing_rules:
@@ -147,10 +148,11 @@ class ToolExpandFileProcess:
                 generic_rules = parsing_rules.get('generic_rules', [])
                 all_rules = special_rules + generic_rules
                 if all_rules:
-                    parsed_code, remaining_part = cls._apply_parsing_rules(cleaned_base, all_rules)
+                    parsed_code, remaining_part, search_label = cls._apply_parsing_rules(cleaned_base, all_rules)
 
             if not parsed_code:
                 parsed_code, remaining_part = cls._apply_fallback_rules(cleaned_base)
+                search_label = None
 
             if parsed_code:
                 label_part, number_part_raw = parsed_code
@@ -162,13 +164,18 @@ class ToolExpandFileProcess:
 
                 code_part = f"{label_part}-{number_part_processed}" if number_part_processed else label_part
 
+                search_keyword = None
+                if search_label:
+                    search_keyword = f"{search_label}-{number_part_processed}" if number_part_processed else search_label
+
                 return {
                     'code': code_part,
                     'label': label_part,
                     'number': number_part_processed,
                     'raw_number': number_part_raw,
                     'part': remaining_part,
-                    'ext': ext
+                    'ext': ext,
+                    'search_keyword': search_keyword,
                 }
 
         except Exception as e:
@@ -246,6 +253,7 @@ class ToolExpandFileProcess:
                     # logger.debug(f"      - 매칭 성공! 그룹: {match.groups()}")
                     groups = match.groups()
                     label_part, num_part = "", ""
+                    search_label = None
 
                     template_parts = [t.strip() for t in template.split('|')]
 
@@ -254,6 +262,10 @@ class ToolExpandFileProcess:
                         try:
                             label_part = label_template.format(*groups)
                             num_part = num_template.format(*groups)
+                            
+                            if len(template_parts) >= 3:
+                                search_label_template = template_parts[2]
+                                search_label = search_label_template.format(*groups)
                         except IndexError as e:
                             logger.error(f"        - 템플릿 적용 오류 (그룹 인덱스): {e}...")
                             continue
@@ -267,13 +279,13 @@ class ToolExpandFileProcess:
                     matched_string = match.group(0)
                     remaining_part = base[base.find(matched_string) + len(matched_string):]
 
-                    logger.debug(f"  - Pre-Parsed: {base} > label='{label_part}', num='{num_part}'")
-                    return (label_part.lower(), num_part), remaining_part
+                    logger.debug(f"  - Pre-Parsed: {base} > label='{label_part}', num='{num_part}', search_label='{search_label}'")
+                    return (label_part.lower(), num_part), remaining_part, search_label
 
             except (IndexError, re.error) as e:
                 logger.error(f"    - 규칙 {i+1} 적용 중 예외 발생: {e} - '{line}'")
 
-        return None, "" # 실패 시 (None, "") 반환
+        return None, "", None
 
 
     @classmethod
