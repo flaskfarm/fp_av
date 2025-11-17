@@ -641,6 +641,7 @@ class Task:
             'file_type': file_type,
             'is_parsed': True,
             'pure_code': parsed['code'],
+            'search_keyword': parsed.get('search_keyword'),
             'label': parsed['label'],
             'number': parsed['number'],
             'raw_number': parsed['raw_number'],
@@ -944,7 +945,9 @@ class Task:
             logger.error("메타데이터 플러그인을 찾을 수 없습니다. 메타 검색을 건너뜁니다.")
             return None
 
-        search_name = info['pure_code']
+        search_name = info.get('search_keyword') or info['pure_code']
+        # logger.debug(f"메타 검색 시작. 대표 품번: {info['pure_code']}, 실제 검색어: {search_name}")
+
         label = search_name.split("-")[0].lower()
 
         # --- 1. 제외 레이블 확인 ---
