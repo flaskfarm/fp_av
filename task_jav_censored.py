@@ -1021,11 +1021,21 @@ class Task:
 
         scan_enabled = config.get("PLEXMATE스캔", False)
         item_count = 0
-        last_scan_path = None
-        last_move_type = None
-        successful_move_types = {'dvd', 'normal', 'subbed', 'custom_path', 'companion_kor', 'companion_kor_sub', 'meta_success', 'vr'}
+        
+        # 스캔할 경로들을 중복 없이 저장할 집합(Set)
+        scan_queue = set()
+        
+        # 스캔 대상으로 인정할 유효한 이동 타입 정의
+        valid_scan_types = {
+            'dvd', 'normal', 'subbed', 'custom_path', 
+            'companion_kor', 'companion_kor_sub', 'companion_foreign_sub',
+            'meta_success', 'vr'
+        }
         if config.get('scan_with_no_meta', True):
-            successful_move_types.update(['no_meta', 'meta_fail'])
+            valid_scan_types.update(['no_meta', 'meta_fail'])
+        
+        # 실패 타입 명시적 정의 (안전장치)
+        failed_types = {'failed_video', 'etc_file', 'meta_fail_skipped', 'no_meta_deleted_due_to_duplication'}
 
         from itertools import groupby
         execution_plan.sort(key=lambda x: x['pure_code'])
@@ -1080,10 +1090,11 @@ class Task:
                     
                     info.update({'target_dir': target_dir, 'move_type': move_type, 'meta_info': meta_info_for_group})
                     
+                    # 스캔 대기열 추가 로직
                     current_target_dir = target_dir
-                    if scan_enabled and current_target_dir != last_scan_path and last_scan_path is not None:
-                        if last_move_type in successful_move_types:
-                            Task.__request_plex_mate_scan(config, last_scan_path)
+                    if scan_enabled and current_target_dir is not None:
+                        if move_type in valid_scan_types and move_type not in failed_types:
+                            scan_queue.add(current_target_dir)
                     
                     entity = Task.__file_move_logic(config, info, db_model)
                     
@@ -1106,6 +1117,10 @@ class Task:
                             s_info.update({'target_dir': target_dir, 'move_type': 'companion_kor_sub', 'newfilename': new_video_stem + sub_ext})
                             s_entity = Task.__file_move_logic(config, s_info, db_model)
                             if s_entity and s_entity.target_path: s_entity.save()
+                            
+                            # 한국어 자막 경로도 스캔 큐에 추가
+                            if scan_enabled and s_info.get('target_dir'):
+                                scan_queue.add(s_info['target_dir'])
 
                         elif 'companion_foreign_sub' in info:
                             s_info = info['companion_foreign_sub']
@@ -1119,19 +1134,23 @@ class Task:
                             s_info.update({'target_dir': sub_target_dir, 'move_type': 'companion_foreign_sub', 'newfilename': s_info['original_file'].name})
                             s_entity = Task.__file_move_logic(config, s_info, db_model)
                             if s_entity: s_entity.save()
-                    
-                    if scan_enabled and current_target_dir is not None:
-                        last_scan_path = current_target_dir
-                        last_move_type = move_type
+
+                            # 외국어 자막 경로도 스캔 큐에 추가
+                            if scan_enabled and s_info.get('target_dir'):
+                                scan_queue.add(s_info['target_dir'])
                 
                 except Exception as e:
                     logger.error(f"'{info.get('pure_code', '알 수 없음')}' 파일 처리 중 예외 발생: {e}")
                     logger.error(traceback.format_exc())
 
-        if scan_enabled and last_scan_path is not None:
-            if last_move_type in successful_move_types:
-                logger.info(f"모든 파일 처리 완료. 마지막 경로 스캔 요청: {last_scan_path}")
-                Task.__request_plex_mate_scan(config, last_scan_path)
+        # 모든 파일 처리 후 일괄 스캔 요청
+        if scan_enabled and scan_queue:
+            sorted_scan_paths = sorted(list(scan_queue))
+            logger.info(f"모든 파일 처리 완료. 총 {len(sorted_scan_paths)}개 경로에 대해 순차적 스캔을 요청합니다.")
+            
+            for path in sorted_scan_paths:
+                Task.__request_plex_mate_scan(config, path)
+                time.sleep(2) # Plex Mate 부하 방지를 위한 약간의 딜레이
 
 
     @staticmethod

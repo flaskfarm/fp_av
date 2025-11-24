@@ -491,7 +491,16 @@ class ToolExpandFileProcess:
             # --- 프레임레이트 계산 (폴백 적용) ---
             fr_str = '0/0'
             if video_stream:
-                fr_str = video_stream.get('avg_frame_rate') or video_stream.get('r_frame_rate') or '0/0'
+                avg_fr = video_stream.get('avg_frame_rate')
+                r_fr = video_stream.get('r_frame_rate')
+                
+                # avg_frame_rate가 유효하면 우선 사용
+                if avg_fr and avg_fr != '0/0':
+                    fr_str = avg_fr
+                # avg가 없거나 0/0이면 r_frame_rate 사용
+                elif r_fr and r_fr != '0/0':
+                    fr_str = r_fr
+                
                 if fr_str == '0/0':
                     logger.debug(f"{file_path.name}: 유효한 프레임레이트 정보를 찾을 수 없습니다.")
 
