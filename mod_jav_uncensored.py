@@ -33,6 +33,7 @@ class ModuleJavUncensored(PluginModuleBase):
             f"{self.name}_remove_path": "",
             f"{self.name}_use_meta": "using",
             f"{self.name}_meta_path": "",
+            f"{self.name}_meta_no_move": "False",
             f"{self.name}_meta_no_path": "",
             f"{self.name}_meta_no_change_filename": "False",
             f"{self.name}_meta_no_retry_every": "0",

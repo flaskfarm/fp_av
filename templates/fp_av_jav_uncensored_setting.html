@@ -72,11 +72,16 @@
     <div id="jav_uncensored_use_meta_on_div" class="collapse">
       {{ macros.setting_input_text('jav_uncensored_meta_path', '매칭 성공 시 이동 경로', value=arg['jav_uncensored_meta_path'], desc=['메타 검색을 성공한 파일이 이동할 경로입니다.']) }}
 
-      {{ macros.setting_input_text('jav_uncensored_meta_no_path', '매칭 실패 시 이동 경로', value=arg['jav_uncensored_meta_no_path'], desc=['메타 검색을 시도했으나 실패한 파일이 이동할 경로입니다.', '비워두면 \'처리 실패시 이동 경로\' 아래 [NO META] 폴더로 이동합니다.']) }}
+      {{ macros.m_hr() }}
+      {{ macros.setting_checkbox('jav_uncensored_meta_no_move', '메타 없는 영상 이동', value=arg['jav_uncensored_meta_no_move'], desc=['On: 메타 검색에 실패한 파일을 아래 경로로 이동시킵니다.', 'Off: 이동시키지 않고 원본 위치에 둡니다. (다음 스캔 시 다시 검색)']) }}
+      
+      <div id="jav_uncensored_meta_no_move_div" class="collapse">
+        {{ macros.setting_input_text('jav_uncensored_meta_no_path', '매칭 실패 시 이동 경로', value=arg['jav_uncensored_meta_no_path'], desc=['메타 검색을 시도했으나 실패한 파일이 이동할 경로입니다.', '비워두면 \'처리 실패시 이동 경로\' 아래 [NO META] 폴더로 이동합니다.']) }}
 
-      {{ macros.setting_checkbox('jav_uncensored_meta_no_change_filename', '매칭 실패 영상 이동 시 파일명 변경', value=arg['jav_uncensored_meta_no_change_filename'], desc=['On: 품번 기반으로 파일명을 변경하여 이동합니다.', 'Off: 원본 파일명 그대로 이동합니다.']) }}
+        {{ macros.setting_checkbox('jav_uncensored_meta_no_change_filename', '매칭 실패 영상 이동 시 파일명 변경', value=arg['jav_uncensored_meta_no_change_filename'], desc=['On: 품번 기반으로 파일명을 변경하여 이동합니다.', 'Off: 원본 파일명 그대로 이동합니다.']) }}
 
-      {{ macros.setting_input_int('jav_uncensored_meta_no_retry_every', '매칭 실패 영상 재시도 주기 (일)', value=arg['jav_uncensored_meta_no_retry_every'], min='0', placeholder='0', desc='매칭 실패로 분류된 영상을 주기적으로 재시도합니다. 0이면 재시도 안 함. 주기: 일') }}
+        {{ macros.setting_input_int('jav_uncensored_meta_no_retry_every', '매칭 실패 영상 재시도 주기 (일)', value=arg['jav_uncensored_meta_no_retry_every'], min='0', placeholder='0', desc='매칭 실패로 분류된 영상을 주기적으로 재시도합니다. 0이면 재시도 안 함. 주기: 일') }}
+      </div>
 
       {{ macros.m_hr() }}
       {{ macros.setting_checkbox('jav_uncensored_make_yaml', 'YAML 파일 생성', value=arg['jav_uncensored_make_yaml'], desc=['On: 메타가 있을 경우 YAML 파일을 생성합니다.', '폴더 구조가 {code}로 끝나야 합니다.']) }}
