@@ -204,31 +204,48 @@ class Task:
             can_detect_korean_sub = config.get('동반자막한국어자막판별', False) and UtilFunc._initialize_chardet()
             if config.get('동반자막한국어자막판별', False) and not can_detect_korean_sub:
                 logger.warning("한국어 자막 판별 기능이 활성화되었으나, chardet 라이브러리를 사용할 수 없어 모든 동반 자막을 한국어 자막으로 처리합니다.")
+            
             for s_info in subtitles:
                 found_pair = False
+                
+                # 자막 언어 판별
+                is_kor = True
+                if can_detect_korean_sub and not UtilFunc.is_korean_subtitle(s_info['original_file'], config):
+                    is_kor = False
+                
+                # 판별 결과를 s_info에 저장 (True: 한국어 또는 판별불가, False: 외국어)
+                s_info['is_korean'] = is_kor
+
                 # 영상 파일명을 기준으로 짝을 찾음 (긴 이름 우선)
                 for v_info in sorted(videos, key=lambda x: len(x['original_file'].name), reverse=True):
-                    if v_info.get('companion_subtitle'): continue # 이미 짝이 있는 영상은 건너뜀
                     
                     video_stem = v_info['original_file'].stem
                     sub_stem = s_info['original_file'].stem
-                    if video_stem == sub_stem or video_stem == os.path.splitext(sub_stem)[0]:
-                        # 영상 정보에 자막 정보를 '자식'으로 포함시킴
-                        # 판별 기능이 사용 가능할 때만 is_korean_subtitle 호출
-                        if can_detect_korean_sub:
-                            if UtilFunc.is_korean_subtitle(s_info['original_file'], config):
-                                v_info['companion_korean_sub'] = s_info
-                            else:
-                                v_info['companion_foreign_sub'] = s_info
+                    
+                    # 파일명 매칭 (완전 일치 또는 startswith)
+                    if video_stem == sub_stem or sub_stem.startswith(video_stem):
+                        # 리스트 초기화
+                        if 'companion_subs_list' not in v_info:
+                            v_info['companion_subs_list'] = []
+                        
+                        # 동일 확장자 중복 체크
+                        # 이미 리스트에 같은 확장자를 가진 자막이 있는지 확인
+                        current_ext = s_info['original_file'].suffix.lower()
+                        has_same_ext = any(exist_sub['original_file'].suffix.lower() == current_ext for exist_sub in v_info['companion_subs_list'])
+                        
+                        if not has_same_ext:
+                            v_info['companion_subs_list'].append(s_info)
+                            found_pair = True
+                            break # 영상 찾았으니 다음 자막으로
                         else:
-                            # 판별 기능 사용 불가 시, 모두 한국어 자막으로 간주
-                            v_info['companion_korean_sub'] = s_info
-                        found_pair = True
-                        break
+                            # 이미 같은 확장자의 자막이 있으면, 이 자막은 "중복"으로 간주하여 처리하지 않음 (버림)
+                            found_pair = True 
+                            break 
                 
                 if not found_pair:
                     unmatched_subs.append(s_info)
-            # 최종 실행 계획 = 영상(자막 포함) + 짝없는 자막 + 기타 파일
+            
+            # 최종 실행 계획 = 영상(자막 포함) + 짝없는 자막 + 기타 파일(위에서 처리됨)
             execution_plan.extend(videos)
             execution_plan.extend(unmatched_subs)
         else:
@@ -804,7 +821,7 @@ class Task:
         반환: (Path객체 | None, 이동타입문자열, 메타정보)
         """
         use_meta_option = config.get('메타사용', 'not_using')
-        is_companion_pair = 'companion_korean_sub' in info
+        is_companion_pair = bool(info.get('companion_subs_list'))
         sub_config = config.get('자막우선처리', {})
 
         # --- 1. 메타 정보 획득 ---
@@ -1028,7 +1045,7 @@ class Task:
         # 스캔 대상으로 인정할 유효한 이동 타입 정의
         valid_scan_types = {
             'dvd', 'normal', 'subbed', 'custom_path', 
-            'companion_kor', 'companion_kor_sub', 'companion_foreign_sub',
+            'companion_kor', 'companion_kor_sub',
             'meta_success', 'vr'
         }
         if config.get('scan_with_no_meta', True):
@@ -1105,39 +1122,31 @@ class Task:
                             else:
                                 continue
 
-                        if 'companion_korean_sub' in info:
-                            s_info = info['companion_korean_sub']
-                            logger.info(f"{log_prefix} 동반 자막(한): {s_info['original_file'].name}")
-                            new_video_stem = Path(info['newfilename']).stem
-                            if entity and entity.target_path:
-                                new_video_stem = Path(entity.target_path).stem
-                            sub_ext = s_info['original_file'].suffix
-                            if config.get('동반자막언어코드추가', True) and not re.search(r'\.(ko|kr|kor)$', new_video_stem, re.I):
-                                new_video_stem += '.ko'
-                            s_info.update({'target_dir': target_dir, 'move_type': 'companion_kor_sub', 'newfilename': new_video_stem + sub_ext})
-                            s_entity = Task.__file_move_logic(config, s_info, db_model)
-                            if s_entity and s_entity.target_path: s_entity.save()
-                            
-                            # 한국어 자막 경로도 스캔 큐에 추가
-                            if scan_enabled and s_info.get('target_dir'):
-                                scan_queue.add(s_info['target_dir'])
+                        if 'companion_subs_list' in info:
+                            for s_info in info['companion_subs_list']:
+                                sub_ext = s_info['original_file'].suffix
+                                
+                                logger.info(f"{log_prefix} 동반 자막: {s_info['original_file'].name}")
+                                
+                                new_video_stem = Path(info['newfilename']).stem
+                                if entity and entity.target_path:
+                                    new_video_stem = Path(entity.target_path).stem
+                                
+                                final_sub_name = new_video_stem
+                                
+                                # 한국어 자막이거나 판별하지 않았을 경우에만 언어코드 추가
+                                if s_info.get('is_korean', True):
+                                    if config.get('동반자막언어코드추가', True) and not re.search(r'\.(ko|kr|kor)$', new_video_stem, re.I):
+                                        final_sub_name += '.ko'
+                                
+                                final_sub_name += sub_ext
 
-                        elif 'companion_foreign_sub' in info:
-                            s_info = info['companion_foreign_sub']
-                            logger.info(f"{log_prefix} 동반 자막(외): {s_info['original_file'].name} (별도 경로로 이동)")
-                            foreign_path_str = config.get('외국어자막이동경로', '').strip()
-                            sub_target_dir = Path(config.get('처리실패이동폴더')).joinpath("[FOREIGN_SUBS]")
-                            if foreign_path_str:
-                                base_path, format_str = Task._resolve_path_template(config, s_info, None, foreign_path_str)
-                                folders = Task.process_folder_format(config, s_info, format_str, None)
-                                sub_target_dir = base_path.joinpath(*folders)
-                            s_info.update({'target_dir': sub_target_dir, 'move_type': 'companion_foreign_sub', 'newfilename': s_info['original_file'].name})
-                            s_entity = Task.__file_move_logic(config, s_info, db_model)
-                            if s_entity: s_entity.save()
-
-                            # 외국어 자막 경로도 스캔 큐에 추가
-                            if scan_enabled and s_info.get('target_dir'):
-                                scan_queue.add(s_info['target_dir'])
+                                s_info.update({'target_dir': target_dir, 'move_type': 'companion_kor_sub', 'newfilename': final_sub_name})
+                                s_entity = Task.__file_move_logic(config, s_info, db_model)
+                                if s_entity and s_entity.target_path: s_entity.save()
+                                
+                                if scan_enabled and s_info.get('target_dir'):
+                                    scan_queue.add(s_info['target_dir'])
                 
                 except Exception as e:
                     logger.error(f"'{info.get('pure_code', '알 수 없음')}' 파일 처리 중 예외 발생: {e}")
@@ -1150,7 +1159,7 @@ class Task:
             
             for path in sorted_scan_paths:
                 Task.__request_plex_mate_scan(config, path)
-                time.sleep(2) # Plex Mate 부하 방지를 위한 약간의 딜레이
+                time.sleep(2)
 
 
     @staticmethod

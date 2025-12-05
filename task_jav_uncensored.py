@@ -154,7 +154,7 @@ class Task:
     @staticmethod
     def _get_final_target_path(config, info, task_context, do_meta_search=False, preloaded_meta=None):
         use_meta_option = config.get('메타사용', 'using')
-        is_companion_pair = 'companion_korean_sub' in info
+        is_companion_pair = bool(info.get('companion_subs_list'))
         sub_config = config.get('자막우선처리', {})
 
         # --- 1. 메타 정보 획득 ---
@@ -220,6 +220,7 @@ class Task:
                 is_custom_format_set = True
 
         is_custom_format_set = False
+
         if config.get('커스텀경로활성화', False):
             rule = CensoredTask._find_and_merge_custom_path_rules(info, config.get('커스텀경로규칙', []), meta_info)
             if rule and (is_meta_success or rule.get('force_on_meta_fail')):
@@ -316,7 +317,7 @@ class Task:
         # 스캔 대상으로 인정할 유효한 이동 타입 정의
         valid_scan_types = {
             'dvd', 'normal', 'subbed', 'custom_path', 
-            'companion_kor', 'companion_kor_sub', 'companion_foreign_sub',
+            'companion_kor', 'companion_kor_sub',
             'meta_success'
         }
         if config.get('scan_with_no_meta', True):
@@ -364,39 +365,30 @@ class Task:
                             else:
                                 continue
                     
-                        if 'companion_korean_sub' in info:
-                            s_info = info['companion_korean_sub']
-                            logger.info(f"{log_prefix} 동반 자막(한): {s_info['original_file'].name}")
-                            new_video_stem = Path(info['newfilename']).stem
-                            if entity and entity.target_path:
-                                new_video_stem = Path(entity.target_path).stem
-                            sub_ext = s_info['original_file'].suffix
-                            if config.get('동반자막언어코드추가', True) and not re.search(r'\.(ko|kr|kor)$', new_video_stem, re.I):
-                                new_video_stem += '.ko'
-                            s_info.update({'target_dir': target_dir, 'move_type': 'companion_kor_sub', 'newfilename': new_video_stem + sub_ext})
-                            s_entity = CensoredTask.__file_move_logic(config, s_info, db_model)
-                            if s_entity and s_entity.target_path: s_entity.save()
+                        if 'companion_subs_list' in info:
+                            for s_info in info['companion_subs_list']:
+                                sub_ext = s_info['original_file'].suffix
+                                
+                                logger.info(f"{log_prefix} 동반 자막: {s_info['original_file'].name}")
+                                
+                                new_video_stem = Path(info['newfilename']).stem
+                                if entity and entity.target_path:
+                                    new_video_stem = Path(entity.target_path).stem
+                                
+                                final_sub_name = new_video_stem
+                                
+                                if s_info.get('is_korean', True):
+                                    if config.get('동반자막언어코드추가', True) and not re.search(r'\.(ko|kr|kor)$', new_video_stem, re.I):
+                                        final_sub_name += '.ko'
+                                
+                                final_sub_name += sub_ext
 
-                            # 한국어 자막 경로도 스캔 큐에 추가
-                            if scan_enabled and s_info.get('target_dir'):
-                                scan_queue.add(s_info['target_dir'])
-
-                        elif 'companion_foreign_sub' in info:
-                            s_info = info['companion_foreign_sub']
-                            logger.info(f"{log_prefix} 동반 자막(외): {s_info['original_file'].name} (별도 경로로 이동)")
-                            foreign_path_str = config.get('외국어자막이동경로', '').strip()
-                            sub_target_dir = Path(config.get('처리실패이동폴더')).joinpath("[FOREIGN_SUBS]")
-                            if foreign_path_str:
-                                base_path, format_str = CensoredTask._resolve_path_template(config, s_info, None, foreign_path_str)
-                                folders = CensoredTask.process_folder_format(config, s_info, format_str, None)
-                                sub_target_dir = base_path.joinpath(*folders)
-                            s_info.update({'target_dir': sub_target_dir, 'move_type': 'companion_foreign_sub', 'newfilename': s_info['original_file'].name})
-                            s_entity = CensoredTask.__file_move_logic(config, s_info, db_model)
-                            if s_entity: s_entity.save()
-
-                            # 외국어 자막 경로도 스캔 큐에 추가
-                            if scan_enabled and s_info.get('target_dir'):
-                                scan_queue.add(s_info['target_dir'])
+                                s_info.update({'target_dir': target_dir, 'move_type': 'companion_kor_sub', 'newfilename': final_sub_name})
+                                s_entity = CensoredTask.__file_move_logic(config, s_info, db_model)
+                                if s_entity and s_entity.target_path: s_entity.save()
+                                
+                                if scan_enabled and s_info.get('target_dir'):
+                                    scan_queue.add(s_info['target_dir'])
 
                 except Exception as e:
                     logger.error(f"'{info.get('pure_code', '알 수 없음')}' 파일 처리 중 예외 발생: {e}")
