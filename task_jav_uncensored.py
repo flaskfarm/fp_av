@@ -290,6 +290,11 @@ class Task:
                     if meta_info:
                         match_site = best_match.get('site', 'N/A')
                         logger.info(f"'{info['pure_code']}' 메타 검색 성공: {meta_info.get('originaltitle')} (from: {match_site})")
+                        for actor in (meta_info.get("actor") or []):
+                            try:
+                                meta_module.process_actor(actor)
+                            except Exception as e:
+                                logger.error(f"배우 '{actor.get('originalname')}' 정보 처리 중 오류: {e}")
                         return meta_info
         except Exception as e:
             logger.error(f"'{info['pure_code']}' 메타 검색 중 예외: {e}")
