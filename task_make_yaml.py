@@ -169,6 +169,12 @@ class Task:
 
         # --- NFO/YAML 생성을 위한 데이터 준비 ---
         info_for_files = info.copy()
+
+        if info_for_files.get('actor'):
+            for actor in info_for_files['actor']:
+                if not actor.get('name'):
+                    actor['name'] = actor.get('originalname') or actor.get('name_original') or ''
+
         if not include_image_paths_in_file:
             # logger.debug("NFO/YAML 파일에서 이미지 및 부가 정보 경로를 제외합니다.")
             info_for_files.pop('thumb', None)
