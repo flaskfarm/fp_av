@@ -28,19 +28,6 @@ setting = {
                 ]
             },
             {
-                'uri': 'jav_censored_yaml',
-                'name': 'Jav Censored Yaml',
-                'list': [
-                    {
-                        'uri': 'setting',
-                        'name': '설정',
-                    },
-                    {
-                        'uri': 'manual/files/jav_censored_yaml.md', 'name': '매뉴얼',
-                    },
-                ]
-            },
-            {
                 'uri': 'jav_uncensored',
                 'name': 'Jav Uncensored',
                 'list': [
@@ -51,6 +38,19 @@ setting = {
                     {
                         'uri': 'list',
                         'name': '처리결과',
+                    },
+                ]
+            },
+            {
+                'uri': 'jav_censored_yaml',
+                'name': 'Jav Censored Yaml',
+                'list': [
+                    {
+                        'uri': 'setting',
+                        'name': '설정',
+                    },
+                    {
+                        'uri': 'manual/files/jav_censored_yaml.md', 'name': '매뉴얼',
                     },
                 ]
             },
@@ -90,10 +90,10 @@ PLUGIN_ROOT = os.path.dirname(__file__)
 
 try:
     from .mod_jav_censored import ModuleJavCensored
-    from .mod_jav_censored_yaml import ModuleJavCensoredYaml
     from .mod_jav_uncensored import ModuleJavUncensored
+    from .mod_jav_censored_yaml import ModuleJavCensoredYaml
     from .mod_jav_uncensored_yaml import ModuleJavUncensoredYaml
-    P.set_module_list([ModuleJavCensored, ModuleJavCensoredYaml, ModuleJavUncensored, ModuleJavUncensoredYaml])
+    P.set_module_list([ModuleJavCensored, ModuleJavUncensored, ModuleJavCensoredYaml, ModuleJavUncensoredYaml])
 except Exception as e:
     P.logger.error(f'Exception:{str(e)}')
     P.logger.error(traceback.format_exc())
