@@ -232,7 +232,7 @@ class ToolExpandFileProcess:
     @classmethod
     def _apply_parsing_rules(cls, base, rules_list):
         """주어진 규칙 리스트를 순서대로 적용하여 품번을 파싱합니다."""
-        # logger.debug(f"  - 파싱 규칙 적용 시작. 총 {len(rules_list)}개 규칙, 대상: '{base}'")
+        # logger.debug(f"  - 파싱 규칙 적용 시작. 총 {len(rules_list)}개 패턴, 대상: '{base}'")
 
         for i, line in enumerate(rules_list):
             line = line.strip()
@@ -241,11 +241,11 @@ class ToolExpandFileProcess:
 
             parts = line.split('=>')
             if len(parts) != 2:
-                logger.warning(f"    - 규칙 {i+1}: 형식 오류 (건너뜀) - '{line}'")
+                logger.warning(f"    - 패턴 {i+1}: 형식 오류 (건너뜀) - '{line}'")
                 continue
 
             pattern, template = parts[0].strip(), parts[1].strip()
-            # logger.debug(f"    - 규칙 {i+1} 시도: 패턴='{pattern}'")
+            # logger.debug(f"    - 패턴 {i+1} 시도: 패턴='{pattern}'")
 
             try:
                 match = re.match(pattern, base, re.I)
@@ -283,7 +283,7 @@ class ToolExpandFileProcess:
                     return (label_part.lower(), num_part), remaining_part, search_label
 
             except (IndexError, re.error) as e:
-                logger.error(f"    - 규칙 {i+1} 적용 중 예외 발생: {e} - '{line}'")
+                logger.error(f"    - 패턴 {i+1} 적용 중 예외 발생: {e} - '{line}'")
 
         return None, "", None
 
@@ -310,10 +310,10 @@ class ToolExpandFileProcess:
                 else:
                     label_part = code
 
-            logger.debug(f"  - 폴백 규칙 매칭 성공: label='{label_part}', number='{number_part}', part='{part_str}'")
+            logger.debug(f"  - 폴백 패턴 매칭 성공: label='{label_part}', number='{number_part}', part='{part_str}'")
             return (label_part, number_part), part_str
 
-        logger.debug("  - 폴백 규칙 매칭 실패")
+        logger.debug("  - 폴백 패턴 매칭 실패")
         return None, ""
 
 
