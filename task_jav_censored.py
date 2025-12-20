@@ -1591,9 +1591,9 @@ class Task:
                 try:
                     if re.search(filename_pattern, original_filename, re.IGNORECASE):
                         is_match = True
-                        logger.debug(f"규칙 매칭: '{rule_name}' (파일명패턴)")
+                        logger.debug(f"커스텀 패턴 매칭: '{rule_name}' (파일명패턴)")
                 except re.error as e:
-                    logger.error(f"커스텀 경로 규칙 '{rule_name}'의 파일명 정규식 오류: {e}")
+                    logger.error(f"커스텀 경로 패턴 '{rule_name}'의 파일명 정규식 오류: {e}")
                     continue
 
             label_pattern = rule.get('label_pattern') or rule.get('레이블')
@@ -1601,9 +1601,9 @@ class Task:
                 try:
                     if re.fullmatch(label_pattern, label_to_check, re.IGNORECASE):
                         is_match = True
-                        logger.debug(f"규칙 매칭: '{rule_name}' (레이블: {label_to_check})")
+                        logger.debug(f"커스텀 패턴 매칭: '{rule_name}' (레이블: {label_to_check})")
                 except re.error as e:
-                    logger.error(f"커스텀 경로 규칙 '{rule_name}'의 레이블 정규식 오류: {e}")
+                    logger.error(f"커스텀 경로 패턴 '{rule_name}'의 레이블 정규식 오류: {e}")
                     continue
 
             actor_pattern = rule.get('actor_pattern') or rule.get('배우')
@@ -1612,18 +1612,18 @@ class Task:
                     if any(re.search(actor_pattern, actor_name, re.IGNORECASE) for actor_name in actors_to_check):
                         is_match = True
                         matched_actors = [name for name in actors_to_check if re.search(actor_pattern, name, re.IGNORECASE)]
-                        logger.debug(f"규칙 매칭: '{rule_name}' (배우: {matched_actors})")
+                        logger.debug(f"커스텀 경로 패턴 매칭: '{rule_name}' (배우: {matched_actors})")
                 except re.error as e:
-                    logger.error(f"규칙 '{rule_name}'의 배우 정규식 오류: {e}")
+                    logger.error(f"커스텀 경로 패턴 '{rule_name}'의 배우 정규식 오류: {e}")
 
             studio_pattern = rule.get('studio_pattern') or rule.get('스튜디오')
             if not is_match and studio_pattern and studio_to_check:
                 try:
                     if re.search(studio_pattern, studio_to_check, re.IGNORECASE):
                         is_match = True
-                        logger.debug(f"규칙 매칭: '{rule_name}' (스튜디오: {studio_to_check})")
+                        logger.debug(f"커스텀 경로 패턴 매칭: '{rule_name}' (스튜디오: {studio_to_check})")
                 except re.error as e:
-                    logger.error(f"규칙 '{rule_name}'의 스튜디오 정규식 오류: {e}")
+                    logger.error(f"커스텀 경로 패턴 '{rule_name}'의 스튜디오 정규식 오류: {e}")
 
             if is_match:
                 has_any_match = True
