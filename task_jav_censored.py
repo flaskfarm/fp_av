@@ -62,6 +62,7 @@ class TaskBase:
             # 부가파일 생성 옵션 추가
             "부가파일생성_YAML": ModelSetting.get_bool("jav_censored_make_yaml"),
             "부가파일생성_NFO": ModelSetting.get_bool("jav_censored_make_nfo"),
+            "부가파일생성_JSON": ModelSetting.get_bool("jav_censored_make_json"),
             "부가파일생성_IMAGE": ModelSetting.get_bool("jav_censored_make_image"),
 
             # etc
@@ -1270,6 +1271,7 @@ class Task:
                         str(newfile.parent),
                         make_yaml=config.get('부가파일생성_YAML', False),
                         make_nfo=config.get('부가파일생성_NFO', False),
+                        make_json=config.get('부가파일생성_JSON', False),
                         make_image=config.get('부가파일생성_IMAGE', False),
                         include_image_paths_in_file=include_image_paths
                     )

@@ -42,6 +42,7 @@ class ModuleJavUncensored(PluginModuleBase):
             # 부가파일 생성
             f"{self.name}_make_yaml": "False",
             f"{self.name}_make_nfo": "False",
+            f"{self.name}_make_json": "False",
             f"{self.name}_make_image": "False",
             # etc
             f"{self.name}_delay_per_file": "0",

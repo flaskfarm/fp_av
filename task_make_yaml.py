@@ -147,9 +147,13 @@ class Task:
         return
 
 
-    def make_files(info, folder_path, make_yaml=True, make_nfo=True, make_image=True, include_image_paths_in_file=True):
-        if make_yaml == False and make_nfo == False and make_image == False:
+    def make_files(info, folder_path, make_yaml=True, make_nfo=True, make_json=True, make_image=True, include_image_paths_in_file=True):
+        if make_yaml == False and make_nfo == False and make_json == False and make_image == False:
             return
+
+        filename_code = info.get('originaltitle') or info.get('sorttitle') or info.get('code', 'movie')
+        filepath_json = os.path.join(folder_path, f"{filename_code.lower()}.json")
+
         filepath_yaml = os.path.join(folder_path, 'movie.yaml')
         filepath_nfo = os.path.join(folder_path, 'movie.nfo')
         filepath_poster = os.path.join(folder_path, 'poster.jpg')
@@ -180,7 +184,17 @@ class Task:
             info_for_files.pop('thumb', None)
             info_for_files.pop('fanart', None)
             info_for_files.pop('extras', None)
-        
+
+        # --- JSON 파일 생성 ---
+        if make_json:
+            try:
+                with open(filepath_json, 'w', encoding='utf-8') as f:
+                    json.dump(info_for_files, f, ensure_ascii=False, indent=4)
+                logger.debug(f"JSON 생성 완료: {filepath_json}")
+            except Exception as e:
+                logger.error(f"JSON 생성 중 오류 발생: {e}")
+
+        # --- YAML 파일 생성 ---
         if make_yaml and os.path.exists(filepath_yaml) == False:
             yaml_data = {
                 'primary': True,
@@ -234,8 +248,14 @@ class Task:
                         yaml_data['rating'] = float(info_for_files['ratings'][0]['value'])
             except Exception as e:
                 pass
-            SupportYaml.write_yaml(filepath_yaml, yaml_data)
 
+            try:
+                SupportYaml.write_yaml(filepath_yaml, yaml_data)
+                logger.debug(f"YAML 생성 완료: {filepath_yaml}")
+            except Exception as e:
+                logger.error(f"YAML 생성 중 오류 발생: {e}")
+
+        # --- NFO 파일 생성 ---
         if make_nfo and os.path.exists(filepath_nfo) == False:
             # NFO 생성을 위해 info_for_files의 복사본을 전달
             nfo_data = info_for_files.copy()
@@ -243,7 +263,11 @@ class Task:
             nfo_data['extras'] = nfo_data.get('extras') or []
             nfo_data['fanart'] = nfo_data.get('fanart') or []
             from support_site import UtilNfo
-            UtilNfo.make_nfo_movie(nfo_data, output='save', savepath=filepath_nfo)
+            try:
+                UtilNfo.make_nfo_movie(nfo_data, output='save', savepath=filepath_nfo)
+                logger.debug(f"NFO 생성 완료: {filepath_nfo}")
+            except Exception as e:
+                logger.error(f"NFO 생성 중 오류 발생: {e}")
 
 
     def file_save(url, filepath, proxy_url=None):

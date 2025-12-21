@@ -56,6 +56,7 @@ class TaskBase:
             "방송": False,
             "부가파일생성_YAML": ModelSetting.get_bool("jav_uncensored_make_yaml"),
             "부가파일생성_NFO": ModelSetting.get_bool("jav_uncensored_make_nfo"),
+            "부가파일생성_JSON": ModelSetting.get_bool("jav_uncensored_make_json"),
             "부가파일생성_IMAGE": ModelSetting.get_bool("jav_uncensored_make_image"),
             "PLEXMATE스캔": ModelSetting.get_bool("jav_uncensored_scan_with_plex_mate"),
             "드라이런": ModelSetting.get_bool("jav_uncensored_dry_run"),
