@@ -64,6 +64,7 @@ class TaskBase:
             "부가파일생성_NFO": ModelSetting.get_bool("jav_censored_make_nfo"),
             "부가파일생성_JSON": ModelSetting.get_bool("jav_censored_make_json"),
             "부가파일생성_IMAGE": ModelSetting.get_bool("jav_censored_make_image"),
+            "부가파일정보포함": ModelSetting.get_bool("jav_censored_include_extra_info"),
 
             # etc
             "파일당딜레이": ModelSetting.get_int("jav_censored_delay_per_file"),
@@ -946,6 +947,11 @@ class Task:
         if not is_custom_format_set and format_from_template and final_move_type != 'meta_fail':
             final_format_str = format_from_template
 
+        # 1. 마지막 폴더 포맷만 추출하여 품번 전용 폴더인지 판단
+        last_segment = final_format_str.split('/')[-1].lower()
+        info['is_code_folder'] = '{code}' in last_segment
+
+        # 2. 경로 조립
         folders = Task.process_folder_format(config, info, final_format_str, meta_info)
         target_dir = base_path.joinpath(*folders)
 
@@ -1261,8 +1267,6 @@ class Task:
 
                 # 3b. 부가 파일 생성 (이동 성공 후)
                 if meta_info:
-                    include_image_paths = config.get('부가파일정보_이미지경로', True)
-                    
                     printable_meta_info = meta_info.copy()
                     printable_meta_info.pop('original', None)
                     
@@ -1273,7 +1277,8 @@ class Task:
                         make_nfo=config.get('부가파일생성_NFO', False),
                         make_json=config.get('부가파일생성_JSON', False),
                         make_image=config.get('부가파일생성_IMAGE', False),
-                        include_image_paths_in_file=include_image_paths
+                        include_image_paths_in_file=config.get('부가파일정보포함', False),
+                        is_code_folder=info.get('is_code_folder', False)
                     )
 
                 # 3c. 방송 처리 (이동 성공 후)

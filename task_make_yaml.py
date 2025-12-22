@@ -147,18 +147,27 @@ class Task:
         return
 
 
-    def make_files(info, folder_path, make_yaml=True, make_nfo=True, make_json=True, make_image=True, include_image_paths_in_file=True):
-        if make_yaml == False and make_nfo == False and make_json == False and make_image == False:
+    def make_files(info, folder_path, make_yaml=True, make_nfo=True, make_image=True, make_json=False, include_image_paths_in_file=False, is_code_folder=None):
+        if not any([make_yaml, make_nfo, make_json, make_image]):
             return
 
-        filename_code = info.get('originaltitle') or info.get('sorttitle') or info.get('code', 'movie')
-        filepath_json = os.path.join(folder_path, f"{filename_code.lower()}.json")
+        # 1. 파일명 결정
+        code_name = (info.get('originaltitle') or info.get('sorttitle') or info.get('code', 'movie')).lower()
+        if is_code_folder is None:
+            current_folder_name = os.path.basename(folder_path).lower()
+            is_code_folder = current_folder_name.replace('-', '') == code_name.replace('-', '')
+        
+        prefix = 'movie' if is_code_folder else code_name
 
-        filepath_yaml = os.path.join(folder_path, 'movie.yaml')
-        filepath_nfo = os.path.join(folder_path, 'movie.nfo')
-        filepath_poster = os.path.join(folder_path, 'poster.jpg')
-        filepath_fanart = os.path.join(folder_path, 'fanart.jpg')
-        filepath_trailer = os.path.join(folder_path, 'movie-trailer.mp4')
+        filepath_yaml = os.path.join(folder_path, f'{prefix}.yaml')
+        filepath_nfo = os.path.join(folder_path, f'{prefix}.nfo')
+        filepath_json = os.path.join(folder_path, f'{code_name}.json') # JSON은 항상 품번.json
+        
+        # 이미지 파일명 (Plex 에이전트 표준: 품번 폴더가 아니면 품번-poster.jpg 형태)
+        img_prefix = '' if is_code_folder else f'{code_name}-'
+        filepath_poster = os.path.join(folder_path, f'{img_prefix}poster.jpg')
+        filepath_fanart = os.path.join(folder_path, f'{img_prefix}fanart.jpg')
+        filepath_trailer = os.path.join(folder_path, f'{img_prefix}movie-trailer.mp4')
         
         # --- 이미지/트레일러 다운로드 (항상 원본 info 객체 사용) ---
         if make_image:
@@ -171,19 +180,67 @@ class Task:
                 if os.path.exists(filepath_trailer) == False and extra.get('content_type', '') == 'trailer':
                     Task.file_save(extra['content_url'], filepath_trailer)
 
-        # --- NFO/YAML 생성을 위한 데이터 준비 ---
+        # 2. 공용 데이터 추출 함수 (리스트/단일객체 모두 대응)
+        def get_as_list(data, key):
+            v = data.get(key, [])
+            if v is None: return []
+            return v if isinstance(v, list) else [v]
+
+        # 3. 데이터 가공 및 정제
         info_for_files = info.copy()
 
-        if info_for_files.get('actor'):
-            for actor in info_for_files['actor']:
-                if not actor.get('name'):
-                    actor['name'] = actor.get('originalname') or actor.get('name_original') or ''
+        # [공용 변수 준비] 
+        # 정보 포함 옵션이 켜져 있을 때만 데이터를 추출하고, 꺼져 있으면 빈 값을 유지함
+        posters = []
+        arts = []
+        extras_list = []
 
-        if not include_image_paths_in_file:
-            # logger.debug("NFO/YAML 파일에서 이미지 및 부가 정보 경로를 제외합니다.")
+        if include_image_paths_in_file:
+            # 포스터 및 배경 이미지 추출
+            all_thumbs = get_as_list(info_for_files, 'thumb')
+            for t in all_thumbs:
+                if not isinstance(t, dict): continue
+                val = t.get('value')
+                if not val: continue
+                
+                aspect = t.get('aspect')
+                if aspect == 'poster':
+                    posters.append(val)
+                elif aspect == 'landscape':
+                    arts.append(val)
+            
+            # fanart 필드에 있는 주소들도 arts에 합침
+            for f in get_as_list(info_for_files, 'fanart'):
+                url = f if isinstance(f, str) else f.get('value') if isinstance(f, dict) else None
+                if url and url not in arts:
+                    arts.append(url)
+            
+            # 부가 정보 (트레일러 등)
+            extras_list = get_as_list(info_for_files, 'extras')
+        else:
+            # 정보 포함 안 함 설정 시 관련 필드 삭제 (정제)
             info_for_files.pop('thumb', None)
             info_for_files.pop('fanart', None)
             info_for_files.pop('extras', None)
+
+        # 4. 이미지 파일 다운로드 (물리 파일 저장 - 항상 원본 info 참조)
+        if make_image:
+            # info에서 첫 번째 포스터와 첫 번째 풍경 이미지를 찾아 저장
+            poster_url = next((t['value'] for t in get_as_list(info, 'thumb') if isinstance(t, dict) and t.get('aspect') == 'poster'), None)
+            landscape_url = next((t['value'] for t in get_as_list(info, 'thumb') if isinstance(t, dict) and t.get('aspect') == 'landscape'), None)
+            if not landscape_url: # fanart에서라도 찾음
+                landscapes = get_as_list(info, 'fanart')
+                if landscapes: landscape_url = landscapes[0] if isinstance(landscapes[0], str) else landscapes[0].get('value')
+
+            if poster_url and not os.path.exists(filepath_poster):
+                Task.file_save(poster_url, filepath_poster)
+            if landscape_url and not os.path.exists(filepath_fanart):
+                Task.file_save(landscape_url, filepath_fanart)
+            
+            # 트레일러 다운로드
+            trailer = next((e['content_url'] for e in get_as_list(info, 'extras') if isinstance(e, dict) and e.get('content_type') == 'trailer'), None)
+            if trailer and not os.path.exists(filepath_trailer):
+                Task.file_save(trailer, filepath_trailer)
 
         # --- JSON 파일 생성 ---
         if make_json:
@@ -195,7 +252,7 @@ class Task:
                 logger.error(f"JSON 생성 중 오류 발생: {e}")
 
         # --- YAML 파일 생성 ---
-        if make_yaml and os.path.exists(filepath_yaml) == False:
+        if make_yaml and not os.path.exists(filepath_yaml):
             yaml_data = {
                 'primary': True,
                 'code': info_for_files.get('code', ''),
@@ -221,11 +278,11 @@ class Task:
                 'directors': [],
                 'producers': [],
                 'roles': [],
-                'posters': [],
-                'art': [],
+                'posters': posters,
+                'art': arts,
                 'themes': [],
                 'reviews': [],
-                'extras': info_for_files.get('extras', []),
+                'extras': extras_list,
             }
             
             actors = info_for_files.get('actor') if info_for_files.get('actor') else []
@@ -259,9 +316,9 @@ class Task:
         if make_nfo and os.path.exists(filepath_nfo) == False:
             # NFO 생성을 위해 info_for_files의 복사본을 전달
             nfo_data = info_for_files.copy()
-            nfo_data['thumb'] = nfo_data.get('thumb') or []
-            nfo_data['extras'] = nfo_data.get('extras') or []
-            nfo_data['fanart'] = nfo_data.get('fanart') or []
+            nfo_data['thumb'] = [{'value': p, 'aspect': 'poster'} for p in posters]
+            nfo_data['fanart'] = arts
+            nfo_data['extras'] = extras_list
             from support_site import UtilNfo
             try:
                 UtilNfo.make_nfo_movie(nfo_data, output='save', savepath=filepath_nfo)

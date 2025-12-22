@@ -58,6 +58,7 @@ class TaskBase:
             "부가파일생성_NFO": ModelSetting.get_bool("jav_uncensored_make_nfo"),
             "부가파일생성_JSON": ModelSetting.get_bool("jav_uncensored_make_json"),
             "부가파일생성_IMAGE": ModelSetting.get_bool("jav_uncensored_make_image"),
+            "부가파일정보포함": ModelSetting.get_bool("jav_uncensored_include_extra_info"),
             "PLEXMATE스캔": ModelSetting.get_bool("jav_uncensored_scan_with_plex_mate"),
             "드라이런": ModelSetting.get_bool("jav_uncensored_dry_run"),
             'PLEXMATE_URL': F.SystemModelSetting.get('ddns'),

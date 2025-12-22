@@ -44,6 +44,7 @@ class ModuleJavUncensored(PluginModuleBase):
             f"{self.name}_make_nfo": "False",
             f"{self.name}_make_json": "False",
             f"{self.name}_make_image": "False",
+            f"{self.name}_include_extra_info": "False",
             # etc
             f"{self.name}_delay_per_file": "0",
             f"{self.name}_scan_with_plex_mate": "False",

@@ -97,11 +97,11 @@
       </div>
 
       {{ macros.m_hr() }}
-      {{ macros.setting_checkbox('jav_censored_make_yaml', 'YAML 파일 생성', value=arg['jav_censored_make_yaml'], desc=['On: 메타가 있을 경우 YAML 파일을 생성합니다.', '품번 폴더를 생성할 수 있게 폴더 구조가 {code}로 끝나야 합니다.']) }}
-      {{ macros.setting_checkbox('jav_censored_make_nfo', 'NFO 파일 생성', value=arg['jav_censored_make_nfo'], desc=None) }}
-      {{ macros.setting_checkbox('jav_censored_make_json', 'JSON 파일 생성', value=arg['jav_censored_make_json'], desc=None) }}
+      {{ macros.setting_checkbox('jav_censored_make_yaml', 'YAML 파일 생성', value=arg['jav_censored_make_yaml'], desc=['On: 메타가 있을 경우 YAML 파일을 생성합니다.', '품번 폴더({code} 또는 {code_lower}) 생성시 movie.yaml로 생성됩니다(아니면 품번.yaml).']) }}
+      {{ macros.setting_checkbox('jav_censored_make_nfo', 'NFO 파일 생성', value=arg['jav_censored_make_nfo'], desc=['YAML과 동일']) }}
+      {{ macros.setting_checkbox('jav_censored_make_json', 'JSON 파일 생성', value=arg['jav_censored_make_json'], desc=['폴더 포맷에 관계없이 품번.json으로 생성됩니다.']) }}
       {{ macros.setting_checkbox('jav_censored_make_image', '이미지 파일 생성', value=arg['jav_censored_make_image'], desc=None) }}
-
+      {{ macros.setting_checkbox('jav_censored_include_extra_info', '부가파일 내 URL 포함', value=arg['jav_censored_include_extra_info'], desc=['NFO/YAML 내에 이미지/트레일러 URL 포함 여부']) }}
     </div>
   {{ macros.m_tab_content_end() }}  
 
