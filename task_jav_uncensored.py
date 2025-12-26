@@ -24,11 +24,19 @@ class TaskBase:
         logger.info(args)
         job_type = args[0]
 
+        is_manual_retry = (job_type == 'manual_path')
+
+        if job_type == 'manual_path' and len(args) > 1:
+            target_paths = [args[1]]
+            logger.info(f"수동 경로 재처리 모드 시작: {target_paths}")
+        else:
+            target_paths = ModelSetting.get(f"jav_uncensored_download_path").splitlines()
+
         config = {
             "이름": job_type,
             "사용": True,
             # 기본 탭
-            "다운로드폴더": ModelSetting.get_list("jav_uncensored_download_path"),
+            "다운로드폴더": target_paths,
             "최소크기": ModelSetting.get_int("jav_uncensored_min_size"),
             "최대기간": ModelSetting.get_int("jav_uncensored_max_age"),
             "품번파싱제외키워드": ModelSetting.get_list("jav_uncensored_filename_cleanup_list", "|"),
@@ -58,6 +66,7 @@ class TaskBase:
             "부가파일생성_NFO": ModelSetting.get_bool("jav_uncensored_make_nfo"),
             "부가파일생성_JSON": ModelSetting.get_bool("jav_uncensored_make_json"),
             "부가파일생성_IMAGE": ModelSetting.get_bool("jav_uncensored_make_image"),
+            "부가파일덮어쓰기": ModelSetting.get_bool("jav_censored_make_overwrite"),
             "부가파일정보포함": ModelSetting.get_bool("jav_uncensored_include_extra_info"),
             "PLEXMATE스캔": ModelSetting.get_bool("jav_uncensored_scan_with_plex_mate"),
             "드라이런": ModelSetting.get_bool("jav_uncensored_dry_run"),
@@ -67,10 +76,12 @@ class TaskBase:
         config['parse_mode'] = 'uncensored'
         CensoredTask._load_extended_settings(config)
 
-        base_config_with_advanced = config
+        if is_manual_retry:
+            logger.info("수동 재처리 모드: 메타 매칭 실패 시 이동 설정을 강제로 False로 전환합니다.")
+            config["메타매칭실패시이동"] = False
 
         if job_type in ['default', 'dry_run']:
-            final_config = base_config_with_advanced.copy()
+            final_config = config.copy()
             final_config["이름"] = job_type
             if final_config.get('드라이런', False):
                 logger.warning(f"'{final_config['이름']}' 작업: Dry Run 모드가 활성화되었습니다.")
@@ -89,7 +100,7 @@ class TaskBase:
                     logger.info(f"YAML 작업 실행 시작: [{job_name}]")
                     logger.info(f"=========================================")
 
-                    final_config = base_config_with_advanced.copy()
+                    final_config = config.copy()
                     final_config.update(job)
 
                     if '자막우선처리활성화' in job:
@@ -155,9 +166,20 @@ class Task:
 
     @staticmethod
     def _get_final_target_path(config, info, task_context, do_meta_search=False, preloaded_meta=None):
+        """
+        [Uncensored] 설정 우선순위에 따라 최종 이동 경로와 방식을 결정
+        """
         use_meta_option = config.get('메타사용', 'using')
         is_companion_pair = bool(info.get('companion_subs_list'))
         sub_config = config.get('자막우선처리', {})
+        
+        final_path_str = ""
+        final_format_str = config.get('이동폴더포맷')
+        final_move_type = "normal"
+        is_custom_format_set = False
+
+        # Uncensored용 정상 이동 타입 (VR 없음)
+        NORMAL_MOVE_TYPES = {'meta_success', 'normal'}
 
         # --- 1. 메타 정보 획득 ---
         meta_info = None
@@ -169,16 +191,12 @@ class Task:
         
         is_meta_success = (meta_info is not None) if use_meta_option == 'using' else True
         
-        # --- 2. 기본 경로 및 포맷 결정 (메타 성공/실패 기반) ---
-        final_path_str = ""
-        final_format_str = config.get('이동폴더포맷')
-        final_move_type = "normal"
-
+        # --- 2. 기본 경로 결정 ---
         if is_meta_success:
             if use_meta_option == 'using':
                 final_path_str = config.get('메타매칭시이동폴더')
                 final_move_type = "meta_success"
-            else: # not_using
+            else:
                 library_paths = config.get('라이브러리폴더', [])
                 if library_paths:
                     final_path_str = library_paths[0]
@@ -186,23 +204,24 @@ class Task:
                     logger.error("메타 미사용 모드에서 이동할 라이브러리 폴더가 설정되지 않았습니다.")
                     return None, "no_library_path", meta_info
                 final_move_type = "normal"
-        else: # 메타 검색 실패
+        else:
             if config.get('메타매칭실패시이동', False):
                 final_path_str = config.get('메타매칭실패시이동폴더')
                 if '{' in final_path_str and '}' in final_path_str:
                     final_format_str = final_path_str
+                    is_custom_format_set = True
                 else:
                     final_format_str = ""
                 final_move_type = "meta_fail"
             else:
-                # 이동하지 않음
                 return None, "meta_fail_skipped", meta_info
 
         # --- 3. 우선순위에 따른 경로 및 포맷 재정의 (Override) ---
+        
+        # 3-1. 동반 자막
         if is_companion_pair:
             companion_config = config.get('동반자막처리', {})
             comp_path = ""
-
             if is_meta_success:
                 comp_path = config.get('동반자막처리경로_메타성공시') or companion_config.get('경로_메타성공시')
             else:
@@ -221,9 +240,9 @@ class Task:
                 final_format_str = comp_format
                 is_custom_format_set = True
 
-        is_custom_format_set = False
-
+        # 3-2. 커스텀 경로 규칙
         if config.get('커스텀경로활성화', False):
+            # CensoredTask의 헬퍼 사용
             rule = CensoredTask._find_and_merge_custom_path_rules(info, config.get('커스텀경로규칙', []), meta_info)
             if rule and (is_meta_success or rule.get('force_on_meta_fail')):
                 custom_path = rule.get('path') or rule.get('경로', '')
@@ -235,10 +254,11 @@ class Task:
                     final_format_str = custom_format
                     is_custom_format_set = True
 
+        # 3-3. 자막 우선 처리
         if not is_companion_pair and sub_config.get('처리활성화', False):
             is_applicable = False
             rule = sub_config.get('규칙', {})
-            exclude_pattern = rule.get('이동제외패TAIN')
+            exclude_pattern = rule.get('이동제외패턴')
             if not (exclude_pattern and re.search(exclude_pattern, info['original_file'].name, re.IGNORECASE)):
                 if info['file_type'] == 'video':
                     has_internal = any(kw in info['original_file'].name.lower() for kw in sub_config.get('내장자막키워드', []))
@@ -252,14 +272,32 @@ class Task:
                     final_path_str = sub_path
                     final_move_type = 'subbed'
         
-        # --- 최종 경로 조립 ---
+        # --- 4. 최종 경로 조립 ---
         if not final_path_str:
             return None, final_move_type, meta_info
 
         base_path, format_from_template = CensoredTask._resolve_path_template(config, info, meta_info, final_path_str)
 
-        if not is_custom_format_set and format_from_template and final_move_type != 'meta_fail':
-            final_format_str = format_from_template
+        # [포맷 확정 로직]
+        if is_custom_format_set:
+            final_format_str = final_format_str
+        elif final_move_type not in NORMAL_MOVE_TYPES:
+            final_format_str = format_from_template if format_from_template else ""
+        else:
+            global_format = config.get('이동폴더포맷', '').strip()
+            if format_from_template and global_format:
+                final_format_str = f"{format_from_template.rstrip('/')}/{global_format.lstrip('/')}"
+            elif format_from_template:
+                final_format_str = format_from_template
+            else:
+                final_format_str = global_format
+
+        # [is_code_folder 판단 로직]
+        if final_format_str:
+            last_segment = final_format_str.split('/')[-1].lower()
+            info['is_code_folder'] = '{code}' in last_segment
+        else:
+            info['is_code_folder'] = False
 
         folders = CensoredTask.process_folder_format(config, info, final_format_str, meta_info)
         target_dir = base_path.joinpath(*folders)
@@ -286,7 +324,7 @@ class Task:
 
             search_result = meta_module.search(info['pure_code'], manual=False)
             if search_result:
-                best_match = next((item for item in search_result if item.get('score', 0) >= 95), None)
+                best_match = next((item for item in search_result if item and item.get('score', 0) >= 95), None)
                 if best_match:
                     meta_info = meta_module.info(best_match["code"], fp_meta_mode=True)
                     if meta_info:

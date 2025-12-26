@@ -2,6 +2,8 @@ from .setup import *
 from .model_jav_censored import ModelJavCensoredItem
 from .task_jav_censored import TaskBase, Task
 
+from pathlib import Path
+
 class ModuleJavCensored(PluginModuleBase):
     def __init__(self, P):
         super(ModuleJavCensored, self).__init__(P, 'setting', name='jav_censored', scheduler_desc="AV 파일처리 - JavCensored")
@@ -49,6 +51,7 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_make_nfo": "False",
             f"{self.name}_make_json": "False",
             f"{self.name}_make_image": "False",
+            f"{self.name}_make_overwrite": "False",
             f"{self.name}_include_extra_info": "False",
             # etc
             f"{self.name}_delay_per_file": "0",
@@ -56,6 +59,7 @@ class ModuleJavCensored(PluginModuleBase):
             f"{self.name}_dry_run": "False",
         }
         self.web_list_model = ModelJavCensoredItem
+
 
     def process_menu(self, page_name, req):
         arg = P.ModelSetting.to_dict()
@@ -77,7 +81,98 @@ class ModuleJavCensored(PluginModuleBase):
         except Exception as e:
             logger.error(f'Exception:{str(e)}')
             return render_template('sample.html', title=f"{P.package_name}/{self.name}/{page_name}")
-    
+
+
+    def process_command(self, command, arg1, arg2, arg3, req):
+        try:
+            if command == 'filename_test':
+                if arg1 == 'filename':
+                    filename = arg2.strip()
+                    prefix = self.name # 'jav_censored' 또는 'jav_uncensored'
+                    mode = prefix.split('_')[-1]
+                    
+                    # 1. assemble_filename이 이해할 수 있는 한글 키값으로 매핑
+                    config = {
+                        'parse_mode': mode,
+                        '파일명변경': P.ModelSetting.get_bool(f'{prefix}_change_filename'),
+                        '파일명에미디어정보포함': P.ModelSetting.get_bool(f'{prefix}_include_media_info_in_filename'),
+                        '원본파일명포함여부': P.ModelSetting.get_bool(f'{prefix}_include_original_filename'),
+                        '원본파일명처리옵션': P.ModelSetting.get(f'{prefix}_include_original_filename_option'),
+                        '품번파싱제외키워드': P.ModelSetting.get_list(f'{prefix}_filename_cleanup_list', "|"),
+                    }
+                    
+                    # 2. YAML에서 추가 설정(미디어정보 템플릿, 재처리 패턴 등) 로드
+                    from .task_jav_censored import Task as CensoredTask
+                    CensoredTask._load_extended_settings(config)
+                    
+                    # 3. 품번 파싱
+                    from .tool import ToolExpandFileProcess
+                    parsed = ToolExpandFileProcess.parse_jav_filename(
+                        filename, 
+                        parsing_rules=config.get('파싱규칙'),
+                        cleanup_list=config.get('품번파싱제외키워드'),
+                        mode=mode
+                    )
+                    
+                    if not parsed:
+                        return jsonify({'ret': 'warning', 'msg': '품번을 추출할 수 없는 파일명입니다.'})
+
+                    # 4. 조립용 가상 데이터 구성
+                    info = {
+                        'pure_code': parsed['code'],
+                        'label': parsed['label'],
+                        'ext': parsed['ext'],
+                        'original_file': Path(filename),
+                        'file_size': 2684354560, # 2.5GB
+                        'final_media_info': {
+                            'is_valid': True,
+                            'res_tag': 'FHD',
+                            'v_codec': 'H264',
+                            'a_codec': 'AAC',
+                            'fps': 23.976,
+                            'a_bitrate': 192,
+                            'tag_title': 'PREVIEW'
+                        }
+                    }
+
+                    # 5. 최종 이름 조립 (이제 config의 한글 키값들을 정상적으로 읽음)
+                    assembled_name = ToolExpandFileProcess.assemble_filename(config, info)
+
+                    # 6. [수정] 서식 변경: 테이블 제거, 줄바꿈만 사용, 색상 제거
+                    msg = f"<b>입력 파일명</b>: {filename}<br>"
+                    msg += f"<b>추출 품번</b>: {info['pure_code']}<br>"
+                    msg += f"<b>변환 결과</b>: {assembled_name}<br><br>"
+                    msg += "※ 미디어정보/파일크기(2.5GB, FHD)는 가상 데이터입니다."
+
+                    return jsonify({
+                        'ret': 'success',
+                        'title': '파일명 변환 테스트 결과',
+                        'modal': msg
+                    })
+
+            # 2. 메타 없는 영상 재처리 명령
+            elif command == 'meta_no_path_start':
+                path = P.ModelSetting.get(f"{self.name}_meta_no_path").strip()
+                
+                if not path:
+                    temp_path = P.ModelSetting.get(f"{self.name}_temp_path").strip()
+                    if temp_path:
+                        path = os.path.join(temp_path, '[NO META]')
+                
+                if not path:
+                    return jsonify({'ret': 'fail', 'msg': '이동 경로 혹은 처리 실패 폴더 설정이 비어있습니다.'})
+                
+                if not os.path.exists(path):
+                    return jsonify({'ret': 'fail', 'msg': f'처리할 폴더가 존재하지 않습니다.\n({path})'})
+                
+                self.start_celery(TaskBase.start, 'manual_path', path)
+                
+                return jsonify({'ret': 'success', 'msg': f'[{os.path.basename(path)}] 폴더에서 재처리를 시작했습니다.'})
+
+        except Exception as e:
+            logger.error(f'Exception:{str(e)}')
+            return jsonify({'ret': 'exception', 'msg': str(e)})
+
 
     def scheduler_function(self):
         ret = self.start_celery(TaskBase.start, None, "default")

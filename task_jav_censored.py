@@ -25,12 +25,20 @@ class TaskBase:
         logger.info(args)
         job_type = args[0]
 
+        is_manual_retry = (job_type == 'manual_path')
+
+        if job_type == 'manual_path' and len(args) > 1:
+            target_paths = [args[1]]
+            logger.info(f"수동 경로 재처리 모드 시작: {target_paths}")
+        else:
+            target_paths = ModelSetting.get(f"jav_censored_download_path").splitlines()
+
         config = {
             "이름": job_type,
             "사용": True,
             "처리실패이동폴더": ModelSetting.get("jav_censored_temp_path").strip(),
             "중복파일이동폴더": ModelSetting.get("jav_censored_remove_path").strip(),
-            "다운로드폴더": ModelSetting.get("jav_censored_download_path").splitlines(),
+            "다운로드폴더": target_paths,
             "라이브러리폴더": ModelSetting.get("jav_censored_target_path").splitlines(),
 
             "최소크기": ModelSetting.get_int("jav_censored_min_size"),
@@ -64,6 +72,7 @@ class TaskBase:
             "부가파일생성_NFO": ModelSetting.get_bool("jav_censored_make_nfo"),
             "부가파일생성_JSON": ModelSetting.get_bool("jav_censored_make_json"),
             "부가파일생성_IMAGE": ModelSetting.get_bool("jav_censored_make_image"),
+            "부가파일덮어쓰기": ModelSetting.get_bool("jav_censored_make_overwrite"),
             "부가파일정보포함": ModelSetting.get_bool("jav_censored_include_extra_info"),
 
             # etc
@@ -76,10 +85,12 @@ class TaskBase:
         config['parse_mode'] = 'censored'
         Task._load_extended_settings(config)
 
-        base_config_with_advanced = config
+        if is_manual_retry:
+            logger.info("수동 재처리 모드: 메타 매칭 실패 시 이동 설정을 강제로 False로 전환합니다.")
+            config["메타매칭실패시이동"] = False
 
         if job_type in ['default', 'dry_run']:
-            final_config = base_config_with_advanced.copy()
+            final_config = config.copy()
             final_config["이름"] = job_type
             if final_config.get('드라이런', False):
                 logger.warning(f"'{final_config['이름']}' 작업: Dry Run 모드가 활성화되었습니다.")
@@ -98,7 +109,7 @@ class TaskBase:
                     logger.info(f"YAML 작업 실행 시작: [{job_name}]")
                     logger.info(f"=========================================")
 
-                    final_config = base_config_with_advanced.copy()
+                    final_config = config.copy()
                     final_config.update(job)
 
                     if '자막우선처리활성화' in job:
@@ -797,10 +808,7 @@ class Task:
     @staticmethod
     def _resolve_path_template(config: dict, info: dict, meta_info: dict, path_or_format: str) -> (Path, str):
         """
-        주어진 경로/포맷 문자열을 해석하여 (기준 경로, 하위 폴더 포맷)으로 분리합니다.
-        - 경로/포맷에 '{' 변수가 없으면: (Path(경로/포맷), config['이동폴더포맷'])
-        - 경로/포맷에 '{' 변수가 있으면: (Path('/'), 경로/포맷) - 절대경로 템플릿
-                                         (Path(), 경로/포맷) - 상대경로 템플릿
+        경로 문자열을 해석하여 (기준 경로, 포맷 문자열)을 반환합니다.
         """
         if not path_or_format:
             return None, None
@@ -812,54 +820,50 @@ class Task:
             else:
                 return Path(), path_or_format
         else:
-            # 경로가 고정된 경우, 기본 폴더 포맷을 사용
-            return Path(path_or_format), config.get('이동폴더포맷')
+            # 고정 경로인 경우, 포맷은 비워둠
+            return Path(path_or_format), ""
 
 
     @staticmethod
     def _get_final_target_path(config, info, task_context, do_meta_search=False, preloaded_meta=None):
-        """
-        설정 우선순위에 따라 최종 이동 경로와 방식을 결정하는 유일한 함수.
-        반환: (Path객체 | None, 이동타입문자열, 메타정보)
-        """
         use_meta_option = config.get('메타사용', 'not_using')
         is_companion_pair = bool(info.get('companion_subs_list'))
         sub_config = config.get('자막우선처리', {})
+
+        final_path_str = ""
+        final_format_str = config.get('이동폴더포맷')
+        final_move_type = "normal"
+        is_custom_format_set = False
+        
+        # 전역 포맷을 결합할 정상 이동 타입 정의
+        NORMAL_MOVE_TYPES = {'meta_success', 'normal', 'vr'}
 
         # --- 1. 메타 정보 획득 ---
         meta_info = None
         is_meta_success = False
         if preloaded_meta is not None:
-            # 미리 로드된 정보가 있으면 사용
             meta_info = preloaded_meta
         elif do_meta_search and use_meta_option == 'using':
-            # 메타 검색이 필요하고 옵션이 켜져 있을 때만 API 호출
             meta_info = Task._get_metadata(config, info)
 
-        # 메타 사용 시: meta_info가 있으면 성공.
-        # 메타 미사용 시: 항상 성공으로 간주하여 라이브러리 폴더로 이동.
         is_meta_success = (meta_info is not None) if use_meta_option == 'using' else True
 
-        # --- 2. 기본 경로 및 포맷 결정 (메타 성공/실패 기반) ---
-        final_path_str = ""
-        final_format_str = config.get('이동폴더포맷')
-        final_move_type = "normal"
-
+        # --- 2. 기본 경로 및 포맷 결정 ---
         if is_meta_success:
-            library_paths = config.get('라이브러리폴더', [])
-            if library_paths:
-                final_path_str = library_paths[0]
-            else:
-                if use_meta_option == 'not_using':
-                    logger.error("메타 미사용 모드에서 이동할 라이브러리 폴더가 설정되지 않았습니다.")
-                    return None, "no_library_path", meta_info
-                final_path_str = ""
-
             if use_meta_option == 'using':
                 if config.get('메타매칭시이동폴더'):
                     final_path_str = config.get('메타매칭시이동폴더')
-                final_move_type = "dvd"
+                final_move_type = "meta_success"
+            else:
+                library_paths = config.get('라이브러리폴더', [])
+                if library_paths:
+                    final_path_str = library_paths[0]
+                else:
+                    logger.error("메타 미사용 모드에서 이동할 라이브러리 폴더가 설정되지 않았습니다.")
+                    return None, "no_library_path", meta_info
+                final_move_type = "normal"
             
+            # VR 처리 (Censored 전용)
             if meta_info:
                 vr_path_setting = config.get('VR영상이동폴더', '').strip()
                 vr_genres = ["VR専用", "ハイクオリティVR", "VR", "Virtual Reality"]
@@ -871,11 +875,14 @@ class Task:
                         final_path_str = str(base)
                         final_format_str = format_
                         final_move_type = "vr"
-        else: # 메타 검색 실패
+                        is_custom_format_set = True
+        else: 
+            # 메타 검색 실패
             if config.get('메타매칭실패시이동', False):
                 final_path_str = config.get('메타매칭실패시이동폴더')
                 if '{' in final_path_str and '}' in final_path_str:
                     final_format_str = final_path_str
+                    is_custom_format_set = True
                 else:
                     final_format_str = ""
                 final_move_type = "meta_fail"
@@ -883,17 +890,16 @@ class Task:
                 return None, "meta_fail_skipped", meta_info
 
         # --- 3. 우선순위에 따른 경로 및 포맷 재정의 (Override) ---
+        
+        # 3-1. 동반 자막 처리
         if is_companion_pair:
             companion_config = config.get('동반자막처리', {})
             comp_path = ""
-
-            # 메타 성공/실패에 따른 경로 결정 (작업 YAML > 전역 설정 > 기본값 순)
             if is_meta_success:
                 comp_path = config.get('동반자막처리경로_메타성공시') or companion_config.get('경로_메타성공시')
             else:
                 comp_path = config.get('동반자막처리경로_메타실패시') or companion_config.get('경로_메타실패시')
             
-            # 위 값이 없을 경우 하위 호환 경로 사용
             if not comp_path:
                 comp_path = config.get('동반자막처리경로') or companion_config.get('경로')
 
@@ -902,13 +908,12 @@ class Task:
             
             final_move_type = 'companion_kor'
             
-            # 폴더 포맷도 작업 YAML > 전역 설정 순으로 확인
             comp_format = config.get('동반자막처리폴더포맷') or companion_config.get('폴더포맷')
             if comp_format: 
                 final_format_str = comp_format
                 is_custom_format_set = True
 
-        is_custom_format_set = False
+        # 3-2. 커스텀 경로 규칙
         if config.get('커스텀경로활성화', False):
             rule = Task._find_and_merge_custom_path_rules(info, config.get('커스텀경로규칙', []), meta_info)
             if rule and (is_meta_success or rule.get('force_on_meta_fail')):
@@ -921,6 +926,7 @@ class Task:
                     final_format_str = custom_format
                     is_custom_format_set = True
 
+        # 3-3. 자막 우선 처리 (동반자막 아닐 때)
         if not is_companion_pair and sub_config.get('처리활성화', False):
             is_applicable = False
             rule = sub_config.get('규칙', {})
@@ -938,20 +944,35 @@ class Task:
                     final_path_str = sub_path
                     final_move_type = 'subbed'
 
-        # --- 최종 경로 조립 ---
+        # --- 4. 최종 경로 조립 ---
         if not final_path_str:
             return None, final_move_type, meta_info
 
         base_path, format_from_template = Task._resolve_path_template(config, info, meta_info, final_path_str)
 
-        if not is_custom_format_set and format_from_template and final_move_type != 'meta_fail':
-            final_format_str = format_from_template
+        # [포맷 확정 로직]
+        if is_custom_format_set:
+            final_format_str = final_format_str
+        elif final_move_type not in NORMAL_MOVE_TYPES:
+            # 정상 이동이 아니면(실패, 중복 등) 전역 포맷을 붙이지 않음
+            final_format_str = format_from_template if format_from_template else ""
+        else:
+            # 정상 이동이면 전역 포맷 결합
+            global_format = config.get('이동폴더포맷', '').strip()
+            if format_from_template and global_format:
+                final_format_str = f"{format_from_template.rstrip('/')}/{global_format.lstrip('/')}"
+            elif format_from_template:
+                final_format_str = format_from_template
+            else:
+                final_format_str = global_format
 
-        # 1. 마지막 폴더 포맷만 추출하여 품번 전용 폴더인지 판단
-        last_segment = final_format_str.split('/')[-1].lower()
-        info['is_code_folder'] = '{code}' in last_segment
+        # [is_code_folder 판단 로직]
+        if final_format_str:
+            last_segment = final_format_str.split('/')[-1].lower()
+            info['is_code_folder'] = '{code}' in last_segment
+        else:
+            info['is_code_folder'] = False
 
-        # 2. 경로 조립
         folders = Task.process_folder_format(config, info, final_format_str, meta_info)
         target_dir = base_path.joinpath(*folders)
 
@@ -1277,6 +1298,7 @@ class Task:
                         make_nfo=config.get('부가파일생성_NFO', False),
                         make_json=config.get('부가파일생성_JSON', False),
                         make_image=config.get('부가파일생성_IMAGE', False),
+                        make_overwrite=config.get('부가파일덮어쓰기', False),
                         include_image_paths_in_file=config.get('부가파일정보포함', False),
                         is_code_folder=info.get('is_code_folder', False)
                     )
