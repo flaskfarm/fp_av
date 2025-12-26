@@ -68,7 +68,7 @@
       {{ macros.setting_radio_with_value('jav_censored_include_original_filename_option', '원본 파일명 형식', [['original', '원본파일명'], ['original_bytes', '원본파일명(파일크기-byte숫자)'], ['original_giga', '원본파일명(파일크기-GB)'], ['bytes', '파일크기-byte숫자']], value=arg['jav_censored_include_original_filename_option']) }}
     </div>
     {{ macros.m_hr() }}
-    {{ macros.setting_input_text_and_buttons('jav_censored_filename_test', '파일명 변경 테스트', [['jav_censored_filename_test_btn', '테스트']], value=arg['jav_censored_filename_test'], desc=None) }}
+    {{ macros.setting_input_text_and_buttons('jav_censored_filename_test', '파일명 변경 테스트', [['btn_filename_test', '테스트']], value=arg['jav_censored_filename_test'], desc=None) }}
 
   {{ macros.m_tab_content_end() }}
 
@@ -92,7 +92,7 @@
       {{ macros.setting_checkbox('jav_censored_meta_no_move', '메타 없는 영상 이동', value=arg['jav_censored_meta_no_move'], desc=['On: 메타 검색에 실패한 파일을 아래 경로로 이동시킵니다.', 'Off: 이동시키지 않고 원본 위치에 둡니다. (다음 스캔 시 다시 검색)']) }}
       <div id="jav_censored_meta_no_move_div" class="collapse">
         {{ macros.setting_checkbox('jav_censored_meta_no_change_filename', '메타 없는 영상 이동 시 파일명 변경', value=arg['jav_censored_meta_no_change_filename'], desc=['On: 품번 기반으로 파일명을 변경하여 이동합니다.', 'Off: 원본 파일명 그대로 이동합니다.']) }}
-        {{ macros.setting_input_text('jav_censored_meta_no_path', '메타 없는 영상 이동 경로', desc=['메타 없는 영상 파일이 이동할 루트 폴더입니다.', '비워두면 처리 실패시 폴더 아래에 [NO META] 폴더를 만들고 그 아래로 이동합니다'], value=arg['jav_censored_meta_no_path']) }}
+        {{ macros.setting_input_text_and_buttons('jav_censored_meta_no_path', '메타 없는 영상 이동 경로', [['jav_censored_meta_no_path_start_btn', '즉시 처리 시도']], value=arg['jav_censored_meta_no_path'], desc=['메타 없는 영상 파일이 이동할 루트 폴더입니다.', '비워두면 처리 실패시 폴더 아래에 [NO META] 폴더를 만들고 그 아래로 이동합니다']) }}
         {{ macros.setting_input_int('jav_censored_meta_no_retry_every', '메타 없는 영상 재시도 주기', value=arg['jav_censored_meta_no_retry_every'], min='0', placeholder='0', desc='메타 없는 것으로 분류된 영상 파일을 재시도 합니다. 0이면 재시도 하지 않음. 주기: 일') }}
       </div>
 
@@ -101,6 +101,7 @@
       {{ macros.setting_checkbox('jav_censored_make_nfo', 'NFO 파일 생성', value=arg['jav_censored_make_nfo'], desc=['YAML과 동일']) }}
       {{ macros.setting_checkbox('jav_censored_make_json', 'JSON 파일 생성', value=arg['jav_censored_make_json'], desc=['폴더 포맷에 관계없이 품번.json으로 생성됩니다.']) }}
       {{ macros.setting_checkbox('jav_censored_make_image', '이미지 파일 생성', value=arg['jav_censored_make_image'], desc=None) }}
+      {{ macros.setting_checkbox('jav_censored_make_overwrite', '부가파일 덮어쓰기', value=arg['jav_censored_make_overwrite'], desc=['On: 이미 부가 파일(YAML, NFO, 이미지 등)이 존재하더라도 새로 생성하여 덮어씁니다.', 'Off: 파일이 이미 존재하는 경우 생성을 건너뜁니다. (JSON은 항상 갱신)']) }}
       {{ macros.setting_checkbox('jav_censored_include_extra_info', '부가파일 내 URL 포함', value=arg['jav_censored_include_extra_info'], desc=['NFO/YAML 내에 이미지/트레일러 URL 포함 여부']) }}
     </div>
   {{ macros.m_tab_content_end() }}  
@@ -158,21 +159,23 @@ $('#jav_censored_meta_no_move').change(function() {
 });
 
 
-$("body").on('click', '#jav_censored_filename_test_btn', function(e){
+$("body").on('click', '#btn_filename_test', function(e){
   e.preventDefault();
-  filename = document.getElementById("jav_censored_filename_test").value;
-  $.ajax({
-    url: '/' + package_name + '/ajax/' + sub + '/filename_test',
-    type: "POST", 
-    cache: false,
-    data: {filename:filename},
-    dataType: "json",
-    success: function (ret) {
-      m_modal(ret)
-    }
-  });
+  var filename = $('#jav_censored_filename_test').val();
+  
+  if (!filename || !filename.trim()) {
+    $.notify('<strong>테스트할 파일명을 입력하세요.</strong>', {type: 'warning'});
+    return;
+  }
+
+  globalSendCommand('filename_test', 'filename', filename);
 });
 
+
+$("body").on('click', '#jav_censored_meta_no_path_start_btn', function(e){
+  e.preventDefault();
+  globalSendCommand('meta_no_path_start', '', '');
+});
 
 </script>    
 {% endblock %}
