@@ -97,7 +97,6 @@ class TaskBase:
 
             TaskBase.__task(final_config)
 
-        elif job_type == 'yaml':
             yaml_filepath = args[1]
             try:
                 yaml_data = SupportYaml.read_yaml(yaml_filepath)
@@ -110,8 +109,25 @@ class TaskBase:
                     logger.info(f"=========================================")
 
                     final_config = config.copy()
-                    final_config.update(job)
+                    
+                    # 안전한 덮어쓰기 로직 적용
+                    for key, value in job.items():
+                        # 1. 값이 없거나 빈 문자열이면 무시 (기본값 유지)
+                        if value is None or (isinstance(value, str) and not value.strip()):
+                            # logger.warning(f"설정 무시: '{key}' 값이 비어있습니다.")
+                            continue
+                        
+                        # 2. 특정 중요 옵션 유효성 검사 (오타 방지)
+                        if key == '원본파일명처리옵션':
+                            valid_options = ['original', 'original_bytes', 'original_giga', 'bytes']
+                            if value not in valid_options:
+                                logger.error(f"설정 오류: '{key}'의 값 '{value}'은 유효하지 않아 무시합니다. (허용값: {valid_options})")
+                                continue
+                        
+                        # 3. 검증 통과 시 덮어쓰기
+                        final_config[key] = value
 
+                    # 아래 로직들은 job에 해당 키가 '있을 때만' 동작하므로 안전함
                     if '자막우선처리활성화' in job:
                         final_config.setdefault('자막우선처리', {})['처리활성화'] = job['자막우선처리활성화']
                     
