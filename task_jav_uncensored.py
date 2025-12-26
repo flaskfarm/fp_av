@@ -166,20 +166,14 @@ class Task:
 
     @staticmethod
     def _get_final_target_path(config, info, task_context, do_meta_search=False, preloaded_meta=None):
-        """
-        [Uncensored] 설정 우선순위에 따라 최종 이동 경로와 방식을 결정
-        """
         use_meta_option = config.get('메타사용', 'using')
         is_companion_pair = bool(info.get('companion_subs_list'))
         sub_config = config.get('자막우선처리', {})
         
         final_path_str = ""
-        final_format_str = config.get('이동폴더포맷')
+        final_format_str = config.get('이동폴더포맷', '').strip()
         final_move_type = "normal"
-        is_custom_format_set = False
-
-        # Uncensored용 정상 이동 타입 (VR 없음)
-        NORMAL_MOVE_TYPES = {'meta_success', 'normal'}
+        is_failed_move = False # 플래그
 
         # --- 1. 메타 정보 획득 ---
         meta_info = None
@@ -207,16 +201,13 @@ class Task:
         else:
             if config.get('메타매칭실패시이동', False):
                 final_path_str = config.get('메타매칭실패시이동폴더')
-                if '{' in final_path_str and '}' in final_path_str:
-                    final_format_str = final_path_str
-                    is_custom_format_set = True
-                else:
-                    final_format_str = ""
+                final_format_str = ""
                 final_move_type = "meta_fail"
+                is_failed_move = True # [실패 플래그 설정]
             else:
                 return None, "meta_fail_skipped", meta_info
 
-        # --- 3. 우선순위에 따른 경로 및 포맷 재정의 (Override) ---
+        # --- 3. 오버라이드 (Censored와 동일 로직) ---
         
         # 3-1. 동반 자막
         if is_companion_pair:
@@ -238,11 +229,10 @@ class Task:
             comp_format = config.get('동반자막처리폴더포맷') or companion_config.get('폴더포맷')
             if comp_format: 
                 final_format_str = comp_format
-                is_custom_format_set = True
 
         # 3-2. 커스텀 경로 규칙
         if config.get('커스텀경로활성화', False):
-            # CensoredTask의 헬퍼 사용
+            # Uncensored는 CensoredTask의 헬퍼 사용
             rule = CensoredTask._find_and_merge_custom_path_rules(info, config.get('커스텀경로규칙', []), meta_info)
             if rule and (is_meta_success or rule.get('force_on_meta_fail')):
                 custom_path = rule.get('path') or rule.get('경로', '')
@@ -252,7 +242,6 @@ class Task:
                 custom_format = rule.get('format') or rule.get('폴더포맷', '')
                 if custom_format: 
                     final_format_str = custom_format
-                    is_custom_format_set = True
 
         # 3-3. 자막 우선 처리
         if not is_companion_pair and sub_config.get('처리활성화', False):
@@ -276,23 +265,22 @@ class Task:
         if not final_path_str:
             return None, final_move_type, meta_info
 
-        base_path, format_from_template = CensoredTask._resolve_path_template(config, info, meta_info, final_path_str)
+        # 헬퍼 호출
+        base_path, path_template = CensoredTask._resolve_path_template(config, info, meta_info, final_path_str)
 
-        # [포맷 확정 로직]
-        if is_custom_format_set:
+        # [포맷 확정 로직] 플래그 사용
+        if is_failed_move:
+            final_format_str = ""
+        
+        # [결합]
+        if path_template and final_format_str:
+            final_format_str = f"{path_template.rstrip('/')}/{final_format_str.lstrip('/')}"
+        elif path_template:
+            final_format_str = path_template
+        elif final_format_str:
             final_format_str = final_format_str
-        elif final_move_type not in NORMAL_MOVE_TYPES:
-            final_format_str = format_from_template if format_from_template else ""
-        else:
-            global_format = config.get('이동폴더포맷', '').strip()
-            if format_from_template and global_format:
-                final_format_str = f"{format_from_template.rstrip('/')}/{global_format.lstrip('/')}"
-            elif format_from_template:
-                final_format_str = format_from_template
-            else:
-                final_format_str = global_format
 
-        # [is_code_folder 판단 로직]
+        # is_code_folder 판단
         if final_format_str:
             last_segment = final_format_str.split('/')[-1].lower()
             info['is_code_folder'] = '{code}' in last_segment

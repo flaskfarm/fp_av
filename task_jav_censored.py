@@ -831,12 +831,9 @@ class Task:
         sub_config = config.get('자막우선처리', {})
 
         final_path_str = ""
-        final_format_str = config.get('이동폴더포맷')
+        final_format_str = config.get('이동폴더포맷', '').strip()
         final_move_type = "normal"
-        is_custom_format_set = False
-        
-        # 전역 포맷을 결합할 정상 이동 타입 정의
-        NORMAL_MOVE_TYPES = {'meta_success', 'normal', 'vr'}
+        is_failed_move = False # 실패/예외 이동 플래그
 
         # --- 1. 메타 정보 획득 ---
         meta_info = None
@@ -848,7 +845,7 @@ class Task:
 
         is_meta_success = (meta_info is not None) if use_meta_option == 'using' else True
 
-        # --- 2. 기본 경로 및 포맷 결정 ---
+        # --- 2. 기본 경로 및 타입 결정 ---
         if is_meta_success:
             if use_meta_option == 'using':
                 if config.get('메타매칭시이동폴더'):
@@ -863,7 +860,7 @@ class Task:
                     return None, "no_library_path", meta_info
                 final_move_type = "normal"
             
-            # VR 처리 (Censored 전용)
+            # VR 처리
             if meta_info:
                 vr_path_setting = config.get('VR영상이동폴더', '').strip()
                 vr_genres = ["VR専用", "ハイクオリティVR", "VR", "Virtual Reality"]
@@ -873,25 +870,23 @@ class Task:
                     base, format_ = Task._resolve_path_template(config, info, meta_info, vr_path_setting)
                     if base is not None:
                         final_path_str = str(base)
-                        final_format_str = format_
+                        # VR 경로에 포맷이 포함된 경우(format_) 덮어씀
+                        if format_: final_format_str = format_
                         final_move_type = "vr"
-                        is_custom_format_set = True
         else: 
-            # 메타 검색 실패
+            # 메타 실패
             if config.get('메타매칭실패시이동', False):
                 final_path_str = config.get('메타매칭실패시이동폴더')
-                if '{' in final_path_str and '}' in final_path_str:
-                    final_format_str = final_path_str
-                    is_custom_format_set = True
-                else:
-                    final_format_str = ""
+                # 실패 경로는 포맷을 비우거나 경로 자체에 포함된 것만 사용
+                final_format_str = "" 
                 final_move_type = "meta_fail"
+                is_failed_move = True # [실패 플래그 설정]
             else:
                 return None, "meta_fail_skipped", meta_info
 
-        # --- 3. 우선순위에 따른 경로 및 포맷 재정의 (Override) ---
+        # --- 3. 경로 및 포맷 오버라이드 ---
         
-        # 3-1. 동반 자막 처리
+        # 3-1. 동반 자막
         if is_companion_pair:
             companion_config = config.get('동반자막처리', {})
             comp_path = ""
@@ -911,7 +906,6 @@ class Task:
             comp_format = config.get('동반자막처리폴더포맷') or companion_config.get('폴더포맷')
             if comp_format: 
                 final_format_str = comp_format
-                is_custom_format_set = True
 
         # 3-2. 커스텀 경로 규칙
         if config.get('커스텀경로활성화', False):
@@ -924,9 +918,8 @@ class Task:
                 custom_format = rule.get('format') or rule.get('폴더포맷', '')
                 if custom_format: 
                     final_format_str = custom_format
-                    is_custom_format_set = True
 
-        # 3-3. 자막 우선 처리 (동반자막 아닐 때)
+        # 3-3. 자막 우선 처리
         if not is_companion_pair and sub_config.get('처리활성화', False):
             is_applicable = False
             rule = sub_config.get('규칙', {})
@@ -948,25 +941,22 @@ class Task:
         if not final_path_str:
             return None, final_move_type, meta_info
 
-        base_path, format_from_template = Task._resolve_path_template(config, info, meta_info, final_path_str)
+        # 경로 해석 (base_path와 path_template 분리)
+        base_path, path_template = Task._resolve_path_template(config, info, meta_info, final_path_str)
 
-        # [포맷 확정 로직]
-        if is_custom_format_set:
+        # [포맷 확정 로직] 플래그 사용
+        if is_failed_move:
+            final_format_str = "" # 실패 시 포맷 제거
+        
+        # [결합] 경로 템플릿 + 포맷 문자열
+        if path_template and final_format_str:
+            final_format_str = f"{path_template.rstrip('/')}/{final_format_str.lstrip('/')}"
+        elif path_template:
+            final_format_str = path_template
+        elif final_format_str:
             final_format_str = final_format_str
-        elif final_move_type not in NORMAL_MOVE_TYPES:
-            # 정상 이동이 아니면(실패, 중복 등) 전역 포맷을 붙이지 않음
-            final_format_str = format_from_template if format_from_template else ""
-        else:
-            # 정상 이동이면 전역 포맷 결합
-            global_format = config.get('이동폴더포맷', '').strip()
-            if format_from_template and global_format:
-                final_format_str = f"{format_from_template.rstrip('/')}/{global_format.lstrip('/')}"
-            elif format_from_template:
-                final_format_str = format_from_template
-            else:
-                final_format_str = global_format
 
-        # [is_code_folder 판단 로직]
+        # is_code_folder 판단
         if final_format_str:
             last_segment = final_format_str.split('/')[-1].lower()
             info['is_code_folder'] = '{code}' in last_segment
