@@ -101,7 +101,19 @@ class TaskBase:
                     logger.info(f"=========================================")
 
                     final_config = config.copy()
-                    final_config.update(job)
+
+                    for key, value in job.items():
+                        if value is None or (isinstance(value, str) and not value.strip()):
+                            # logger.warning(f"설정 무시: '{key}' 값이 비어있습니다.")
+                            continue
+                        
+                        if key == '원본파일명처리옵션':
+                            valid_options = ['original', 'original_bytes', 'original_giga', 'bytes']
+                            if value not in valid_options:
+                                logger.error(f"설정 오류: '{key}'의 값 '{value}'은 유효하지 않아 무시합니다. (허용값: {valid_options})")
+                                continue
+                        
+                        final_config[key] = value
 
                     if '자막우선처리활성화' in job:
                         final_config.setdefault('자막우선처리', {})['처리활성화'] = job['자막우선처리활성화']
