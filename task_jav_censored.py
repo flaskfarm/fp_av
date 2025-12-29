@@ -97,6 +97,7 @@ class TaskBase:
 
             TaskBase.__task(final_config)
 
+        elif job_type == 'yaml':
             yaml_filepath = args[1]
             try:
                 yaml_data = SupportYaml.read_yaml(yaml_filepath)
