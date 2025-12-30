@@ -976,7 +976,9 @@ class Task:
         # is_code_folder 판단
         if final_format_str:
             last_segment = final_format_str.split('/')[-1].lower()
-            info['is_code_folder'] = '{code}' in last_segment
+            code_tags = ['{code}', '{code_lower}']
+
+            info['is_code_folder'] = any(tag in last_segment for tag in code_tags)
         else:
             info['is_code_folder'] = False
 
