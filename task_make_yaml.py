@@ -147,7 +147,7 @@ class Task:
         return
 
 
-    def make_files(info, folder_path, make_yaml=True, make_nfo=True, make_json=False, make_image=True, make_overwrite=False, include_image_paths_in_file=False, is_code_folder=None):
+    def make_files(info, folder_path, make_yaml=True, make_nfo=True, make_json=False, make_image=True, make_overwrite=False, include_media_path=False, is_code_folder=None):
         if not any([make_yaml, make_nfo, make_json, make_image]):
             return
 
@@ -185,7 +185,7 @@ class Task:
         arts = []
         extras_list = []
 
-        if include_image_paths_in_file:
+        if include_media_path:
             # 포스터 및 배경 이미지 추출
             all_thumbs = get_as_list(info_for_files, 'thumb')
             for t in all_thumbs:
