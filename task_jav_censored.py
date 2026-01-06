@@ -73,7 +73,7 @@ class TaskBase:
             "부가파일생성_JSON": ModelSetting.get_bool("jav_censored_make_json"),
             "부가파일생성_IMAGE": ModelSetting.get_bool("jav_censored_make_image"),
             "부가파일덮어쓰기": ModelSetting.get_bool("jav_censored_make_overwrite"),
-            "부가파일정보포함": ModelSetting.get_bool("jav_censored_include_extra_info"),
+            "부가파일미디어경로포함": ModelSetting.get_bool("jav_censored_include_media_path"),
 
             # etc
             "파일당딜레이": ModelSetting.get_int("jav_censored_delay_per_file"),
@@ -1308,7 +1308,7 @@ class Task:
                         make_json=config.get('부가파일생성_JSON', False),
                         make_image=config.get('부가파일생성_IMAGE', False),
                         make_overwrite=config.get('부가파일덮어쓰기', False),
-                        include_image_paths_in_file=config.get('부가파일정보포함', False),
+                        include_media_path=config.get('부가파일미디어경로포함', False),
                         is_code_folder=info.get('is_code_folder', False)
                     )
 
