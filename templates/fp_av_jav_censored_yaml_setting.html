@@ -16,7 +16,7 @@
 <form id='setting' name='setting'>
   <div class="tab-content mb-4" id="nav-tabContent">
   {{ macros.m_tab_content_start('basic', true) }}
-    {{ macros.setting_input_text('jav_censored_yaml_filepath', '설정파일 경로', desc=None, value=arg['jav_censored_yaml_filepath']) }}
+    {{ macros.setting_input_text_and_buttons('jav_censored_yaml_filepath', '설정파일 경로', [['globalEditBtn', '편집', [['file', arg['jav_censored_yaml_filepath']]] ]], desc=None, value=arg['jav_censored_yaml_filepath']) }}
   {{ macros.m_tab_content_end() }}  
 
   {{ macros.m_tab_content_start('auto', false) }}
