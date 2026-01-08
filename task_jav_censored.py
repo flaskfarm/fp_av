@@ -65,8 +65,10 @@ class TaskBase:
             "메타매칭실패시파일명변경": ModelSetting.get_bool("jav_censored_meta_no_change_filename"),
             "메타매칭실패시이동폴더": ModelSetting.get("jav_censored_meta_no_path").strip(),
 
-            "재시도": True,
+            # "재시도": True, # 죽은 설정?
             "방송": False,
+            "방송경로변환": None, # {'/mnt/local': '/cloud/path'} 형태
+
             # 부가파일 생성 옵션 추가
             "부가파일생성_YAML": ModelSetting.get_bool("jav_censored_make_yaml"),
             "부가파일생성_NFO": ModelSetting.get_bool("jav_censored_make_nfo"),
@@ -936,6 +938,8 @@ class Task:
                 if custom_format: 
                     final_format_str = custom_format
 
+                is_failed_move = False
+
         # 3-3. 자막 우선 처리
         if not is_companion_pair and sub_config.get('처리활성화', False):
             is_applicable = False
@@ -1101,6 +1105,8 @@ class Task:
             first_info = group_infos[0]
             _, _, meta_info_for_group = Task._get_final_target_path(config, first_info, task_context, do_meta_search=True)
 
+            processed_dirs_for_group = set()
+
             for info in group_infos:
                 try:
                     item_count += 1
@@ -1144,6 +1150,14 @@ class Task:
                     
                     info.update({'target_dir': target_dir, 'move_type': move_type, 'meta_info': meta_info_for_group})
                     
+                    # 부가파일 생성 여부 플래그 결정
+                    current_target_dir = str(target_dir)
+                    if current_target_dir not in processed_dirs_for_group:
+                        info['should_create_meta'] = True
+                        processed_dirs_for_group.add(current_target_dir)
+                    else:
+                        info['should_create_meta'] = False
+
                     # 스캔 대기열 추가 로직
                     current_target_dir = target_dir
                     if scan_enabled and current_target_dir is not None:
@@ -1296,7 +1310,7 @@ class Task:
                 logger.info(f"파일 이동 성공: -> {newfile}")
 
                 # 3b. 부가 파일 생성 (이동 성공 후)
-                if meta_info:
+                if meta_info and info.get('should_create_meta', False):
                     printable_meta_info = meta_info.copy()
                     printable_meta_info.pop('original', None)
                     
@@ -1314,6 +1328,15 @@ class Task:
 
                 # 3c. 방송 처리 (이동 성공 후)
                 if config.get('방송', False):
+                    gds_path_str = str(newfile)
+                    replace_rules = config.get('방송경로변환')
+
+                    if replace_rules and isinstance(replace_rules, dict):
+                        for src, tgt in replace_rules.items():
+                            if src in gds_path_str:
+                                gds_path_str = gds_path_str.replace(src, tgt)
+                                break # 보통 한 번만 변환하면 되므로 break (필요시 제거)
+
                     bot = {
                         't1': 'gds_tool', 't2': 'fp', 't3': 'av',
                         'data': {'gds_path': str(newfile).replace('/mnt/AV/MP/GDS', '/ROOT/GDRIVE/VIDEO/AV')}
