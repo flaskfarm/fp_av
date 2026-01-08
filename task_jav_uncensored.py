@@ -255,6 +255,8 @@ class Task:
                 if custom_format: 
                     final_format_str = custom_format
 
+                is_failed_move = False
+
         # 3-3. 자막 우선 처리
         if not is_companion_pair and sub_config.get('처리활성화', False):
             is_applicable = False
@@ -383,6 +385,8 @@ class Task:
             first_info = group_infos[0]
             _, _, meta_info_for_group = Task._get_final_target_path(config, first_info, task_context, do_meta_search=True)
 
+            processed_dirs_for_group = set()
+
             for info in group_infos:
                 try:
                     item_count += 1
@@ -425,6 +429,14 @@ class Task:
                         continue
                     
                     info.update({'target_dir': target_dir, 'move_type': move_type, 'meta_info': meta_info_for_group})
+                    
+                    # 부가파일 생성 여부 플래그 결정
+                    current_target_dir = str(target_dir)
+                    if current_target_dir not in processed_dirs_for_group:
+                        info['should_create_meta'] = True
+                        processed_dirs_for_group.add(current_target_dir)
+                    else:
+                        info['should_create_meta'] = False
                     
                     # 스캔 대기열 추가 로직
                     current_target_dir = target_dir
