@@ -10,17 +10,19 @@
             <option value="desc">최근순</option>
             <option value="asc">오래된순</option>
           </select>
-          <select id="option" name="option" class="form-control form-control-sm">
+          <select id="option1" name="option1" class="form-control form-control-sm">
             <option value="all">전체</option>
-            <option value="normal">일반 (메타검색 사용 안함)</option>
-            <option value="dvd">DVD</option>
-            <option value="ama">AMA</option>
-            <option value="no_meta">메타 검색 실패</option>
-            <option value="already_exist">중복삭제</option>
+            <option value="meta_success">메타 성공 (VR 포함)</option>
+            <option value="normal">일반 (메타 미사용)</option>
+            <option value="meta_fail">메타 실패</option>
+            <option value="companion">동반 자막 처리</option>
+            <option value="custom_path">커스텀 경로</option>
+            <option value="subbed">자막 우선 처리</option>
+            <option value="failed">처리 실패 (분석실패/기타)</option>
           </select>
         </span>
         <span class="col-md-6">
-          <input id="search_word" name="search_word" class="form-control form-control-sm w-75" type="text" placeholder="원본파일명" aria-label="Search">
+          <input id="search_word" name="search_word" class="form-control form-control-sm w-75" type="text" placeholder="원본파일명 or 타겟파일명" aria-label="Search">
           <button id="search" class="btn btn-sm btn-outline-success">검색</button>
           <button id="reset_btn" class="btn btn-sm btn-outline-success">리셋</button>
         </span>
@@ -30,9 +32,10 @@
   <div id='page1'></div>
   {{ macros.m_hr_head_top() }}
   {{ macros.m_row_start('0') }}
-  {{ macros.m_col(2,  macros.m_strong('Created Time')) }}
-  {{ macros.m_col(2,  macros.m_strong('Move')) }}
-  {{ macros.m_col(8,  macros.m_strong('Info')) }}
+  {{ macros.m_col(1,  macros.m_strong('ID')) }}
+  {{ macros.m_col(2,  macros.m_strong('Time')) }}
+  {{ macros.m_col(2,  macros.m_strong('Type / Status')) }}
+  {{ macros.m_col(7,  macros.m_strong('File Info')) }}
   {{ macros.m_row_end() }}
   {{ macros.m_hr_head_bottom() }}
   <div id="list_div"></div>
@@ -47,83 +50,121 @@ var current_data = null;
 var last_list_option = "{{arg['jav_censored_last_list_option']}}";
 
 $(document).ready(function(){
-  make_list(null);
-  tmp = last_list_option.split('|');
-  console.log(last_list_option)
-  if (tmp.length == 5) {
-    $("#order").val(tmp[0]);
-    $("#keyword").val(tmp[2]);
-    $("#option1").val(tmp[3]);
-    $("#option2").val(tmp[4]);
-    globalRequestSearch(tmp[1]);
+  var tmp = last_list_option.split('|');
+  if (tmp.length == 4) {
+    $("#option1").val(tmp[0]);
+    $("#order").val(tmp[1]);
+    $("#search_word").val(tmp[2]);
+    globalRequestSearch(tmp[3]);
   } else {
     globalRequestSearch('1');
   }
-
-  /*
-  tmp = last_list_option.split('|');
-  console.log(tmp);
-  if (tmp.length == 4) {
-    document.getElementById("option").value = tmp[0];
-    document.getElementById("order").value = tmp[1];
-    document.getElementById("search_word").value = tmp[2];
-    global_sub_request_search(tmp[3]);
-  } else {
-    global_sub_request_search('1');
-  }
-    */
 });
 
 $("#search").click(function(e) {
   e.preventDefault();
-  global_sub_request_search('1');
+  globalRequestSearch('1');
 });
 
 $("body").on('click', '#page', function(e){
   e.preventDefault();
-  global_sub_request_search($(this).data('page'));
+  globalRequestSearch($(this).data('page'));
 });
 
-$("body").on('click', '#reset_btn', function(e){
+$("#reset_btn").click(function(e){
   e.preventDefault();
-  document.getElementById("order").value = 'desc';
-  document.getElementById("option").value = 'all';
-  document.getElementById("search_word").value = '';
-  global_sub_request_search('1')
+  $("#order").val('desc');
+  $("#option1").val('all');
+  $("#search_word").val('');
+  globalRequestSearch('1');
 });
 
 $("body").on('change', '#order', function(e){
-  global_sub_request_search('1');
+  globalRequestSearch('1');
 });
 
 
 function make_list(data) {
   str = ''
   for (i in data) {
-    console.log(data[i]);
     str += j_row_start();
-    tmp = data[i].id + '<br>' + data[i].created_time;
-    str += j_col(2, tmp);
-   
-    if (data[i].move_type == 'normal') {
-      tmp = '일반'
-    } else if (data[i].move_type == 'dvd') {
-      tmp = 'DVD'
-    } else if (data[i].move_type == 'ama') {
-      tmp = 'AMA'
-    } else if (data[i].move_type == 'no_meta') {
-      tmp = '메타검색실패'
-    } else if (data[i].move_type != null && data[i].move_type.indexOf('already_exist') != -1) {
-      tmp = '중복삭제'
-    } else {
-      tmp = '--'
-    }
-    str += j_col(2, tmp);
+    
+    // 1. ID
+    str += j_col(1, data[i].id);
+    
+    // 2. Time
+    var created_time = data[i].created_time.split(' ').join('<br>');
+    str += j_col(2, created_time);
 
-    tmp = '소스 파일 : ' + data[i].source_filename + '<br>';
-    tmp += '타겟 파일 : ' + data[i].target_filename + '<br>';
-    tmp += '타겟 폴더 : ' + data[i].target_dir;
-    str += j_col(8, tmp);
+    // 3. Type / Status
+    var raw_type = data[i].move_type || '';
+    var type_label = '';
+    var status_label = '';
+    var color_class = 'secondary';
+
+    var suffix = '';
+    if (raw_type.endsWith('_already_exist')) {
+        suffix = 'already_exist';
+        raw_type = raw_type.replace('_already_exist', '');
+    } else if (raw_type.endsWith('_already_there')) {
+        suffix = 'already_there';
+        raw_type = raw_type.replace('_already_there', '');
+    } else if (raw_type.endsWith('_skipped')) {
+        suffix = 'skipped';
+        raw_type = raw_type.replace('_skipped', '');
+    }
+
+    switch(raw_type) {
+        case 'meta_success': 
+        case 'dvd': 
+            type_label = '메타 성공'; color_class = 'success'; break;
+        case 'vr': 
+            type_label = 'VR'; color_class = 'info'; break;
+        case 'normal': 
+            type_label = '일반'; color_class = 'primary'; break;
+        case 'meta_fail': 
+        case 'no_meta':
+            type_label = '메타 실패'; color_class = 'danger'; break;
+        case 'custom_path':
+            type_label = '커스텀'; color_class = 'warning'; break;
+        case 'subbed':
+            type_label = '자막 우선'; color_class = 'warning'; break;
+        case 'companion_kor':
+            type_label = '동반(영상)'; color_class = 'primary'; break;
+        case 'companion_kor_sub':
+            type_label = '동반(자막)'; color_class = 'secondary'; break;
+        case 'failed_video':
+            type_label = '분석 실패'; color_class = 'dark'; break;
+        case 'etc_file':
+            type_label = '기타 파일'; color_class = 'light text-dark'; break;
+        default:
+            type_label = raw_type;
+    }
+
+    if (suffix == 'already_exist') {
+        status_label = '<span class="badge badge-warning">중복/이동</span>';
+    } else if (suffix == 'already_there') {
+        status_label = '<span class="badge badge-secondary">변동없음</span>';
+    } else if (suffix == 'skipped') {
+        status_label = '<span class="badge badge-dark">스킵됨</span>';
+    } else {
+        status_label = '<span class="badge badge-success">이동 완료</span>';
+    }
+
+    var type_html = `<h5><span class="badge badge-${color_class}">${type_label}</span></h5>${status_label}`;
+    str += j_col(2, type_html);
+
+    // 4. File Info
+    var info_html = '';
+    info_html += `<b>Source:</b> ${data[i].source_filename}<br>`;
+    if (data[i].target_filename) {
+        info_html += `<b>Target:</b> ${data[i].target_filename}<br>`;
+        info_html += `<b>Folder:</b> <small>${data[i].target_dir}</small>`;
+    } else {
+        info_html += `<span class="text-muted">(파일 이동 없음)</span>`;
+    }
+    
+    str += j_col(7, info_html);
 
     str += j_row_end();
     if (i != data.length -1) str += j_hr();
