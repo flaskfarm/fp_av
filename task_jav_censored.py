@@ -309,30 +309,41 @@ class Task:
                 info['final_media_info'] = None
         else:
             from collections import defaultdict
-            code_groups = defaultdict(list)
+            
+            # 분할 파일 세트끼리만 묶기 위한 딕셔너리
+            # Key: (품번, prefix, suffix) -> 유니크한 세트 식별자
+            set_groups = defaultdict(list)
+
             for info in execution_plan:
-                code_groups[info['pure_code']].append(info)
-
-            for pure_code, group_infos in code_groups.items():
-                is_set = any(info.get('is_part_of_set') for info in group_infos)
-
-                if is_set:
-                    merge_result = Task._merge_and_standardize_media_info(group_infos, ext_config)
-                    if merge_result.get('is_valid_set'):
-                        # 세트가 유효하면 병합된 정보 사용
-                        for info in group_infos:
-                            info['final_media_info'] = merge_result['final_media']
-                    else:
-                        # 세트가 유효하지 않으면 그룹 해제하고 개별 정보 사용
-                        logger.warning(f"'{pure_code}' 그룹 미디어 정보 오류로 분할 세트 처리를 취소합니다.")
-                        failed_files_set = {f['original_file'].name for f in merge_result.get('failed_files', [])}
-                        for info in group_infos:
-                            info.update({'is_part_of_set': False, 'parsed_part_type': ''})
-                            info['final_media_info'] = {'is_valid': False} if info['original_file'].name in failed_files_set else info.get('media_info')
+                if info.get('is_part_of_set'):
+                    # 분할 파일인 경우: 고유 세트 키로 그룹핑
+                    set_key = (info['pure_code'], info.get('part_set_prefix'), info.get('part_set_suffix'))
+                    set_groups[set_key].append(info)
                 else:
-                    # 세트가 아닌 경우, 각자의 미디어 정보 사용
+                    # 단일 파일인 경우: 개별 미디어 정보 즉시 할당
+                    info['final_media_info'] = info.get('media_info')
+
+            # 식별된 세트들에 대해서만 병합(Merge) 로직 수행
+            for key, group_infos in set_groups.items():
+                pure_code = key[0]
+                merge_result = Task._merge_and_standardize_media_info(group_infos, ext_config)
+                
+                if merge_result.get('is_valid_set'):
+                    # 세트가 유효(해상도/코덱 일치)하면 병합된 정보 사용
                     for info in group_infos:
-                        info['final_media_info'] = info.get('media_info')
+                        info['final_media_info'] = merge_result['final_media']
+                else:
+                    # 세트 내 스펙 불일치 시 그룹 해제 및 개별 처리
+                    logger.warning(f"'{pure_code}' 분할 세트의 미디어 정보 불일치로 세트 처리를 취소합니다.")
+                    failed_files_set = {f['original_file'].name for f in merge_result.get('failed_files', [])}
+                    
+                    for info in group_infos:
+                        info.update({'is_part_of_set': False, 'parsed_part_type': ''})
+                        # 정보 분석에 실패했던 파일만 invalid 처리, 나머지는 본인 정보 사용
+                        if info['original_file'].name in failed_files_set:
+                            info['final_media_info'] = {'is_valid': False}
+                        else:
+                            info['final_media_info'] = info.get('media_info')
 
         # 7. 최종 파일명 조립 (tool.py 호출)
         for info in execution_plan:
