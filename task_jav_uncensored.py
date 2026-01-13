@@ -213,9 +213,8 @@ class Task:
         else:
             if config.get('메타매칭실패시이동', False):
                 final_path_str = config.get('메타매칭실패시이동폴더')
-                final_format_str = ""
                 final_move_type = "meta_fail"
-                is_failed_move = True # [실패 플래그 설정]
+                is_failed_move = True
             else:
                 return None, "meta_fail_skipped", meta_info
 
@@ -232,6 +231,7 @@ class Task:
             
             if not comp_path:
                 comp_path = config.get('동반자막처리경로') or companion_config.get('경로')
+                is_failed_move = False 
 
             if comp_path: 
                 final_path_str = comp_path
@@ -274,7 +274,8 @@ class Task:
                 if sub_path:
                     final_path_str = sub_path
                     final_move_type = 'subbed'
-        
+                    is_failed_move = False
+
         # --- 4. 최종 경로 조립 ---
         if not final_path_str:
             return None, final_move_type, meta_info
