@@ -88,6 +88,7 @@
       {{ macros.setting_checkbox('jav_uncensored_make_nfo', 'NFO 파일 생성', value=arg['jav_uncensored_make_nfo'], desc=['YAML과 동일']) }}
       {{ macros.setting_checkbox('jav_uncensored_make_json', 'JSON 파일 생성', value=arg['jav_uncensored_make_json'], desc=['폴더 포맷에 관계없이 품번.json으로 생성됩니다.']) }}
       {{ macros.setting_checkbox('jav_uncensored_make_image', '이미지 파일 생성', value=arg['jav_uncensored_make_image'], desc=None) }}
+      {{ macros.setting_checkbox('jav_uncensored_make_trailer', '트레일러 파일 생성', value=arg['jav_uncensored_make_trailer'], desc=None) }}
       {{ macros.setting_checkbox('jav_censored_make_overwrite', '부가파일 덮어쓰기', value=arg['jav_censored_make_overwrite'], desc=['On: 이미 부가 파일(YAML, NFO, 이미지 등)이 존재하더라도 새로 생성하여 덮어씁니다.', 'Off: 파일이 이미 존재하는 경우 생성을 건너뜁니다. (JSON은 항상 갱신)']) }}
       {{ macros.setting_checkbox('jav_uncensored_include_media_path', '부가파일 내 미디어 경로 포함', value=arg['jav_uncensored_include_media_path'], desc=['JSON/NFO/YAML 내에 이미지/트레일러 URL 포함 여부']) }}
     </div>

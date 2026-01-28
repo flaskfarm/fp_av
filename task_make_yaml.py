@@ -147,8 +147,8 @@ class Task:
         return
 
 
-    def make_files(info, folder_path, make_yaml=True, make_nfo=True, make_json=False, make_image=True, make_overwrite=False, include_media_path=False, is_code_folder=None):
-        if not any([make_yaml, make_nfo, make_json, make_image]):
+    def make_files(info, folder_path, make_yaml=False, make_nfo=False, make_json=False, make_image=False, make_trailer=False, make_overwrite=False, include_media_path=False, is_code_folder=None):
+        if not any([make_yaml, make_nfo, make_json, make_image, make_trailer]):
             return
 
         # 1. 파일명 결정
@@ -237,11 +237,12 @@ class Task:
                 else:
                     logger.debug(f"이미 존재함 (건너뜀): {os.path.basename(filepath_fanart)}")
             
-            if trailer_url:
-                if make_overwrite or not os.path.exists(filepath_trailer):
-                    Task.file_save(trailer_url, filepath_trailer)
-                else:
-                    logger.debug(f"이미 존재함 (건너뜀): {os.path.basename(filepath_trailer)}")
+        # 5. 트레일러 물리 파일 저장
+        if make_trailer:
+            trailer_url = next((e['content_url'] for e in get_as_list(info, 'extras') if isinstance(e, dict) and e.get('content_type') == 'trailer'), None)
+
+            if trailer_url and (make_overwrite or not os.path.exists(filepath_trailer)):
+                Task.file_save(trailer_url, filepath_trailer)
 
         # --- JSON 파일 생성 ---
         if make_json:

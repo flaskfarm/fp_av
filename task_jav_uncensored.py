@@ -66,6 +66,7 @@ class TaskBase:
             "부가파일생성_NFO": ModelSetting.get_bool("jav_uncensored_make_nfo"),
             "부가파일생성_JSON": ModelSetting.get_bool("jav_uncensored_make_json"),
             "부가파일생성_IMAGE": ModelSetting.get_bool("jav_uncensored_make_image"),
+            "부가파일생성_TRAILER": ModelSetting.get_bool("jav_uncensored_make_trailer"),
             "부가파일덮어쓰기": ModelSetting.get_bool("jav_uncensored_make_overwrite"),
             "부가파일미디어경로포함": ModelSetting.get_bool("jav_uncensored_include_media_path"),
             "PLEXMATE스캔": ModelSetting.get_bool("jav_uncensored_scan_with_plex_mate"),

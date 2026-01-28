@@ -46,6 +46,7 @@ class ModuleJavUncensored(PluginModuleBase):
             f"{self.name}_make_nfo": "False",
             f"{self.name}_make_json": "False",
             f"{self.name}_make_image": "False",
+            f"{self.name}_make_trailer": "False",
             f"{self.name}_make_overwrite": "False",
             f"{self.name}_include_media_path": "False",
             # etc
