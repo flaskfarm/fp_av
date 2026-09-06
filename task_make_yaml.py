@@ -331,10 +331,20 @@ class Task:
                 
                 actors = info_for_files.get('actor') if info_for_files.get('actor') else []
                 for actor in actors:
+                    if not isinstance(actor, dict):
+                        continue
+                    name_ko_val = str(actor.get('name_ko') or '').strip()
+                    name_org_val = str(actor.get('name_org') or '').strip()
+                    name_en_val = str(actor.get('name_en') or '').strip()
+                    display_name = name_ko_val or name_org_val or name_en_val
+
                     actor_data = {
-                        'name': actor.get('name', ''),
-                        'role': actor.get('originalname', ''),
-                        'photo': actor.get('thumb', '').replace(F.SystemModelSetting.get('ddns'), '')
+                        'name': display_name,
+                        'name_ko': name_ko_val,
+                        'name_org': name_org_val,
+                        'name_en': name_en_val,
+                        'role': name_org_val or str(actor.get('role') or '출연').strip(),
+                        'photo': str(actor.get('thumb') or '').replace(F.SystemModelSetting.get('ddns'), '')
                     }
                     yaml_data['roles'].append(actor_data)
 
@@ -358,17 +368,54 @@ class Task:
 
         # --- NFO 파일 생성 ---
         if make_nfo:
-            if make_overwrite or not os.path.exists(filepath_nfo):
+            # 0바이트 파일이 이미 생성되어 있는 경우도 재작성 대상에 포함
+            is_nfo_empty = os.path.exists(filepath_nfo) and os.path.getsize(filepath_nfo) == 0
+
+            if make_overwrite or not os.path.exists(filepath_nfo) or is_nfo_empty:
                 nfo_data = info_for_files.copy()
                 nfo_data['thumb'] = [{'value': p, 'aspect': 'poster'} for p in posters]
                 nfo_data['fanart'] = arts
                 nfo_data['extras'] = extras_list
+
+                # UtilNfo가 요구하는 표준 'name' 키 보장 및 정제
+                nfo_actors = []
+                for a in info_for_files.get('actor') or []:
+                    if not isinstance(a, dict):
+                        continue
+                    name_ko_val = str(a.get('name_ko') or '').strip()
+                    name_org_val = str(a.get('name_org') or '').strip()
+                    name_en_val = str(a.get('name_en') or '').strip()
+                    name_val = str(a.get('name') or '').strip()
+
+                    # 한국어 -> 원문 -> 영어 -> 기존 name 순으로 표시 이름 결정
+                    display_name = name_val or name_ko_val or name_org_val or name_en_val
+                    if not display_name:
+                        continue
+
+                    nfo_actors.append({
+                        'name': display_name,
+                        'name_ko': name_ko_val,
+                        'name_org': name_org_val,
+                        'name_en': name_en_val,
+                        'role': str(a.get('role') or name_org_val or '출연').strip(),
+                        'thumb': str(a.get('thumb') or '').replace(F.SystemModelSetting.get('ddns'), '')
+                    })
+                nfo_data['actor'] = nfo_actors
+
                 from support_site import UtilNfo
                 try:
                     UtilNfo.make_nfo_movie(nfo_data, output='save', savepath=filepath_nfo)
                     logger.debug(f"NFO 생성 완료: {filepath_nfo}")
                 except Exception as e:
                     logger.error(f"NFO 생성 중 오류 발생: {e}")
+                    # 오류 발생 시 생성된 0바이트 파일 정리 (재시도 방해 방지)
+                    if os.path.exists(filepath_nfo) and os.path.getsize(filepath_nfo) == 0:
+                        try:
+                            os.remove(filepath_nfo)
+                        except Exception:
+                            pass
+            else:
+                logger.debug(f"이미 존재함 (건너뜀): {os.path.basename(filepath_nfo)}")
 
 
     def file_save(url, filepath, proxy_url=None):

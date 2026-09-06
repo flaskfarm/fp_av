@@ -80,6 +80,11 @@ class TaskBase:
             "동반자막경로별도처리": ModelSetting.get_bool("jav_uncensored_companion_use_separate_path"),
             "동반자막처리경로": ModelSetting.get("jav_uncensored_companion_path").strip(),
             "동반자막처리경로_메타실패시": ModelSetting.get("jav_uncensored_companion_meta_fail_path").strip(),
+
+            "공유용라이브러리": ModelSetting.get_bool("jav_uncensored_is_shared_library") if ModelSetting.get("jav_uncensored_is_shared_library") is not None else False,
+            "배우이미지우선순위": ModelSetting.get("jav_uncensored_override_actor_img_order") or "",
+            "메타이미지모드": ModelSetting.get("jav_uncensored_override_image_mode") or "",
+            "메타옵션_이미지제거": ModelSetting.get_bool("jav_uncensored_strip_images") if ModelSetting.get("jav_uncensored_strip_images") is not None else False,
         }
 
         config['parse_mode'] = 'uncensored'
@@ -358,10 +363,41 @@ class Task:
         meta_module = CensoredTask.get_meta_module('jav_uncensored')
         if not meta_module:
             return None
-        
-        # [동적 모드 전환]
-        skip_trans = config.get('_skip_trans_temp', True)
-        fp_meta_mode = skip_trans
+
+        # extra_opts 초기화 및 옵션 정제
+        extra_opts = {}
+
+        skip_trans = None
+        if config.get('번역스킵') is not None:
+            skip_trans = config.get('번역스킵')
+        elif config.get('skip_trans') is not None:
+            skip_trans = config.get('skip_trans')
+        elif config.get('_skip_trans_temp') is not None:
+            skip_trans = config.get('_skip_trans_temp')
+
+        if skip_trans is not None:
+            extra_opts['skip_trans'] = skip_trans
+
+        # 한글/영문 키 호환 오버라이드 추출
+        is_shared = config.get('공유용라이브러리') or config.get('is_shared_library') or False
+        override_actor_img_order = config.get('배우이미지우선순위') or config.get('actor_img_order') or ""
+        override_image_mode = config.get('메타이미지모드') or config.get('image_mode') or ""
+        override_strip_images = config.get('메타옵션_이미지제거') or config.get('strip_images') or False
+
+        if is_shared:
+            # 공유용 라이브러리 모드: 개인 서버 주소 노출 방지 옵션 주입
+            extra_opts['actor_img_order'] = override_actor_img_order or 'google_fileid, site_img_url'
+            extra_opts['image_mode'] = override_image_mode or 'ff_proxy'
+            if override_strip_images:
+                extra_opts['strip_images'] = True
+        else:
+            # 개인용 라이브러리 모드: 사용자가 명시적으로 오버라이드한 값만 주입
+            if override_actor_img_order:
+                extra_opts['actor_img_order'] = override_actor_img_order
+            if override_image_mode:
+                extra_opts['image_mode'] = override_image_mode
+            if override_strip_images:
+                extra_opts['strip_images'] = True
 
         best_match = None
         match_site = "N/A"
@@ -384,17 +420,10 @@ class Task:
                     best_match = next((item for item in search_result if item and item.get('score', 0) >= 95), None)
 
             if best_match:
-                meta_info = meta_module.info(best_match["code"], fp_meta_mode=fp_meta_mode, skip_trans=skip_trans)
+                meta_info = meta_module.info(best_match["code"], extra_opts=extra_opts)
                 if meta_info:
                     match_site = best_match.get('site', 'N/A')
-                    logger.info(f"'{info['pure_code']}' 메타 검색 성공: {meta_info.get('originaltitle')} (from: {match_site}, 번역스킵:{skip_trans}, FP모드:{fp_meta_mode})")
-                    
-                    if not skip_trans:
-                        for actor in (meta_info.get("actor") or []):
-                            try:
-                                meta_module.process_actor(actor)
-                            except Exception as e:
-                                logger.error(f"배우 '{actor.get('originalname')}' 정보 처리 중 오류: {e}")
+                    logger.info(f"'{info['pure_code']}' 메타 검색 성공: {meta_info.get('originaltitle')} (from: {match_site}, 번역스킵:{extra_opts.get('skip_trans', '기본값')}, 공유모드:{is_shared})")
                     return meta_info
 
         except Exception as e:
@@ -636,4 +665,3 @@ class Task:
                     logger.error(traceback.format_exc())
 
         logger.info("fp_av_jav_uncensored: 모든 작업이 완료되었습니다.")
-

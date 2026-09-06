@@ -91,6 +91,12 @@ class TaskBase:
             "동반자막경로별도처리": ModelSetting.get_bool("jav_censored_companion_use_separate_path"),
             "동반자막처리경로": ModelSetting.get("jav_censored_companion_path").strip(),
             "동반자막처리경로_메타실패시": ModelSetting.get("jav_censored_companion_meta_fail_path").strip(),
+
+            # 메타 취득 시 임시 오버라이드 옵션 (개인용 vs 공유용 분기 지원)
+            "공유용라이브러리": ModelSetting.get_bool("jav_censored_is_shared_library") if ModelSetting.get("jav_censored_is_shared_library") is not None else False,
+            "배우이미지우선순위": ModelSetting.get("jav_censored_override_actor_img_order") or "",
+            "메타이미지모드": ModelSetting.get("jav_censored_override_image_mode") or "",
+            "메타옵션_이미지제거": ModelSetting.get_bool("jav_censored_strip_images") if ModelSetting.get("jav_censored_strip_images") is not None else False,
         }
 
         config['parse_mode'] = 'censored'
@@ -1055,10 +1061,40 @@ class Task:
             logger.error("메타데이터 플러그인을 찾을 수 없습니다. 메타 검색을 건너뜁니다.")
             return None
 
-        # [동적 모드 전환] 번역 스킵 여부와 FP 경량 모드를 연동
-        # 번역 스킵(경로 계산 등)일 때는 fp_meta_mode=True, 완전한 메타 생성 시에는 fp_meta_mode=False
-        skip_trans = config.get('_skip_trans_temp', True)
-        fp_meta_mode = skip_trans
+        # extra_opts 초기화 및 옵션 정제
+        extra_opts = {}
+
+        skip_trans = None
+        if config.get('번역스킵') is not None:
+            skip_trans = config.get('번역스킵')
+        elif config.get('skip_trans') is not None:
+            skip_trans = config.get('skip_trans')
+        elif config.get('_skip_trans_temp') is not None:
+            skip_trans = config.get('_skip_trans_temp')
+
+        if skip_trans is not None:
+            extra_opts['skip_trans'] = skip_trans
+
+        # 한글/영문 키 호환 오버라이드 추출
+        is_shared = config.get('공유용라이브러리') or config.get('is_shared_library') or False
+        override_actor_img_order = config.get('배우이미지우선순위') or config.get('actor_img_order') or ""
+        override_image_mode = config.get('메타이미지모드') or config.get('image_mode') or ""
+        override_strip_images = config.get('메타옵션_이미지제거') or config.get('strip_images') or False
+
+        if is_shared:
+            # 공유용 라이브러리 모드: 개인 서버 주소 노출 방지 옵션 주입
+            extra_opts['actor_img_order'] = override_actor_img_order or 'google_fileid, site_img_url'
+            extra_opts['image_mode'] = override_image_mode or 'ff_proxy'
+            if override_strip_images:
+                extra_opts['strip_images'] = True
+        else:
+            # 개인용 라이브러리 모드: 사용자가 명시적으로 오버라이드한 값만 주입
+            if override_actor_img_order:
+                extra_opts['actor_img_order'] = override_actor_img_order
+            if override_image_mode:
+                extra_opts['image_mode'] = override_image_mode
+            if override_strip_images:
+                extra_opts['strip_images'] = True
 
         # 기본 검색어 설정 (파싱된 품번)
         search_name = info.get('search_keyword') or info['pure_code']
@@ -1126,7 +1162,7 @@ class Task:
         if best_match:
             try:
                 keyword_param = info.get('search_keyword') if manual_url else search_name
-                meta_info = meta_module.info(best_match["code"], keyword=keyword_param, fp_meta_mode=fp_meta_mode, skip_trans=skip_trans)
+                meta_info = meta_module.info(best_match["code"], keyword=keyword_param, extra_opts=extra_opts)
                 if meta_info:
                     match_site = best_match.get('site', 'N/A')
             except Exception as e:
@@ -1134,13 +1170,7 @@ class Task:
                 logger.error(traceback.format_exc())
                 
         if meta_info:
-            logger.info(f"'{info['pure_code']}' 메타 검색 성공: {meta_info.get('originaltitle')} (from: {match_site}, 번역스킵:{skip_trans}, FP모드:{fp_meta_mode})")
-            if not skip_trans:
-                for actor in (meta_info.get("actor") or []):
-                    try:
-                        meta_module.process_actor(actor)
-                    except Exception as e:
-                        logger.error(f"배우 '{actor.get('originalname')}' 이름 번역 중 오류: {e}")
+            logger.info(f"'{info['pure_code']}' 메타 검색 성공: {meta_info.get('originaltitle')} (from: {match_site}, 번역스킵:{extra_opts.get('skip_trans', '기본값')}, 공유모드:{is_shared})")
             return meta_info
         else:
             logger.info(f"'{info['pure_code']}'에 대한 유효한 메타 정보를 찾지 못했습니다.")
@@ -1645,7 +1675,7 @@ class Task:
                 code_str = original_title
             
             actor_list = meta_data.get('actor') or []
-            actor_names = [safe_fn(actor.get('name', '')) for actor in actor_list[:3] if actor.get('name')]
+            actor_names = [safe_fn(actor.get('name_ko') or actor.get('name_org', '')) for actor in actor_list[:3] if actor.get('name_ko') or actor.get('name_org')]
             year_str = str(meta_data.get("year")) if meta_data.get("year") is not None else ""
             
             data.update({
@@ -1932,7 +1962,7 @@ class Task:
                     label_to_check = meta_info.get("originaltitle").split('-')[0].lower()
             
             if meta_info.get("actor"):
-                actors_to_check = [a.get('name', '').strip() for a in (meta_info.get('actor') or []) if a.get('name', '').strip()]
+                actors_to_check = [(a.get('name_ko') or a.get('name_org', '')).strip() for a in (meta_info.get('actor') or []) if (a.get('name_ko') or a.get('name_org', '')).strip()]
             if meta_info.get("studio"):
                 studio_to_check = meta_info.get("studio").strip()
 

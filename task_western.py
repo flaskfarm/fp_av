@@ -90,6 +90,12 @@ class TaskBase:
             "동반자막처리경로": ModelSetting.get("western_companion_path").strip(),
             "동반자막처리경로_메타실패시": ModelSetting.get("western_companion_meta_fail_path").strip(),
 
+            # 메타 취득 시 임시 오버라이드 옵션
+            "공유용라이브러리": ModelSetting.get_bool("western_is_shared_library") if ModelSetting.get("western_is_shared_library") is not None else False,
+            "배우이미지우선순위": ModelSetting.get("western_override_actor_img_order") or "",
+            "메타이미지모드": ModelSetting.get("western_override_image_mode") or "",
+            "메타옵션_이미지제거": ModelSetting.get_bool("western_strip_images") if ModelSetting.get("western_strip_images") is not None else False,
+
             # 기타
             "파일당딜레이": ModelSetting.get_int("western_delay_per_file"),
             "PLEXMATE스캔": ModelSetting.get_bool("western_scan_with_plex_mate"),
@@ -669,7 +675,7 @@ class Task:
     def _get_metadata(config, info):
         local_meta = info.get('local_meta_json')
         if local_meta:
-            logger.info(f"'{info['pure_code']}' 로컬 JSON 메타데이터를 사용하여 검색을 건너뜁니다.")
+            logger.info(f"'{info.get('pure_code', '')}' 로컬 JSON 메타데이터를 사용하여 검색을 건너뜁니다.")
             return local_meta
 
         meta_module = CensoredTask.get_meta_module('western')
@@ -677,19 +683,52 @@ class Task:
             return None
             
         min_score_cutoff = config.get('메타매칭커트라인', 80)
-            
-        # 2단계 검증을 위해 동적으로 전달받는 스킵 옵션
-        skip_trans = config.get('_skip_trans_temp', True)
+
+        # extra_opts 초기화 및 옵션 정제
+        extra_opts = {}
+
+        skip_trans = None
+        if config.get('번역스킵') is not None:
+            skip_trans = config.get('번역스킵')
+        elif config.get('skip_trans') is not None:
+            skip_trans = config.get('skip_trans')
+        elif config.get('_skip_trans_temp') is not None:
+            skip_trans = config.get('_skip_trans_temp')
+
+        if skip_trans is not None:
+            extra_opts['skip_trans'] = skip_trans
+
+        # 한글/영문 키 호환 오버라이드 추출
+        is_shared = config.get('공유용라이브러리') or config.get('is_shared_library') or False
+        override_actor_img_order = config.get('배우이미지우선순위') or config.get('actor_img_order') or ""
+        override_image_mode = config.get('메타이미지모드') or config.get('image_mode') or ""
+        override_strip_images = config.get('메타옵션_이미지제거') or config.get('strip_images') or False
+
+        if is_shared:
+            # 공유용 라이브러리 모드: 개인 서버 주소 노출 방지 옵션 주입
+            extra_opts['actor_img_order'] = override_actor_img_order or 'google_fileid, site_img_url'
+            extra_opts['image_mode'] = override_image_mode or 'ff_proxy'
+            if override_strip_images:
+                extra_opts['strip_images'] = True
+        else:
+            # 개인용 라이브러리 모드: 사용자가 명시적으로 오버라이드한 값만 주입
+            if override_actor_img_order:
+                extra_opts['actor_img_order'] = override_actor_img_order
+            if override_image_mode:
+                extra_opts['image_mode'] = override_image_mode
+            if override_strip_images:
+                extra_opts['strip_images'] = True
+
+        search_name = info.get('search_keyword') or info.get('pure_code', '알수없음')
 
         try:
             delay_seconds = config.get('파일당딜레이', 0)
             if delay_seconds > 0:
                 time.sleep(delay_seconds)
 
-            search_name = info.get('search_keyword') or info['pure_code']
             best_match = None
-            
             manual_endpoint = info.get('manual_endpoint')
+            
             if manual_endpoint:
                 logger.info(f"'{search_name}' 수동 엔드포인트로 강제 메타 획득 시도: {manual_endpoint}")
                 if manual_endpoint.startswith('/movies/'):
@@ -703,29 +742,31 @@ class Task:
                     forced_code = None
                 
                 if forced_code:
-                    meta_info = meta_module.info(forced_code, fp_meta_mode=True, skip_trans=skip_trans)
+                    meta_info = meta_module.info(forced_code, extra_opts=extra_opts)
                     if meta_info:
-                        logger.info(f"'{search_name}' 수동 매칭 성공!: {meta_info.get('originaltitle')} (번역스킵여부: {skip_trans})")
+                        logger.info(f"'{search_name}' 수동 매칭 성공!: {meta_info.get('originaltitle')} (번역스킵:{extra_opts.get('skip_trans', '기본값')}, 공유모드:{is_shared})")
                         return meta_info
                     else:
                         logger.warning(f"'{search_name}' 수동 매칭 실패 (잘못된 URL이거나 서버 오류). 자동 검색으로 넘어갑니다.")
 
-            search_result = meta_module.search(search_name, manual=False)
+            media_path = str(info['original_file']) if info.get('original_file') else None
+            search_result = meta_module.search(search_name, manual=False, media_path=media_path)
             
             if search_result:
                 best_match = next((item for item in search_result if item.get('score', 0) >= min_score_cutoff), None)
             
             if best_match:
-                meta_info = meta_module.info(best_match["code"], fp_meta_mode=True, skip_trans=skip_trans)
+                meta_info = meta_module.info(best_match["code"], extra_opts=extra_opts)
                 if meta_info:
                     match_site = best_match.get('site', 'N/A')
-                    logger.info(f"'{search_name}' 메타 검색 성공: {meta_info.get('originaltitle')} (from: {match_site}, 번역스킵여부: {skip_trans})")
+                    logger.info(f"'{search_name}' 메타 검색 성공: {meta_info.get('originaltitle')} (from: {match_site}, 번역스킵:{extra_opts.get('skip_trans', '기본값')}, 공유모드:{is_shared})")
                     return meta_info
             
             logger.info(f"'{search_name}'에 대한 유효한 메타 정보를 찾지 못했습니다.")
             
         except Exception as e:
             logger.error(f"Western 메타 검색 에러 ('{search_name}'): {e}")
+            logger.error(traceback.format_exc())
             
         return None
 
