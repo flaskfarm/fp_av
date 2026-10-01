@@ -838,7 +838,24 @@ class Task:
 
         # 템플릿 변수 매핑
         studio_str = safe_fn(meta_info.get('studio') or info.get('studio', 'NO_STUDIO'))
-        title_str = safe_fn(meta_info.get('title') or meta_info.get('originaltitle') or file_path.stem)
+
+        # Western 메타데이터는 'title'에 '[Studio] Actor - Title'을 조합해 넣고, 'originaltitle'에 순수 제목을 넣음
+        raw_title = meta_info.get('originaltitle') or meta_info.get('title') or file_path.stem
+
+        # 혹시 originaltitle이 없어 title로 폴백했을 때 '[Studio] Actor - ' 접두어가 붙어있는 경우 정제
+        if raw_title.startswith('[') and ']' in raw_title:
+            bracket_end = raw_title.find(']')
+            after_bracket = raw_title[bracket_end + 1:].strip()
+            # 대괄호 뒤에 '배우 - ' 가 붙어있으면 배우명도 제거
+            for actor_name in valid_actors:
+                if after_bracket.lower().startswith(actor_name.lower()):
+                    after_bracket = after_bracket[len(actor_name):].strip(' -_')
+                    break
+            if after_bracket:
+                raw_title = after_bracket
+
+        title_str = safe_fn(raw_title)
+
         year_str = str(meta_info.get('year') or '')
         code_str = safe_fn(meta_info.get('code') or file_path.stem)
 
