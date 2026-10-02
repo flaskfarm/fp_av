@@ -1019,13 +1019,13 @@ class Task:
 
             else:
                 # 단독 파일인 경우: 다운로드 폴더는 보존하고 파일만 단독 이동
-                newfile = dest_dir.joinpath(newfilename)
+                newfile = target_dir.joinpath(newfilename)
 
                 if is_dry_run:
                     logger.warning(f"[Dry Run] 메타 실패 (단독 파일 이동 예정): '{file}' -> '{newfile}'")
                     return None
 
-                dest_dir.mkdir(parents=True, exist_ok=True)
+                target_dir.mkdir(parents=True, exist_ok=True)
                 try:
                     if newfile.exists():
                         file.unlink()
@@ -1153,6 +1153,27 @@ class Task:
                         logger.warning(f"'{info['original_file'].name}'의 이동 경로를 결정할 수 없어 건너뜁니다.")
                         continue
                     
+                    if move_type in ['no_meta', 'meta_fail']:
+                        fail_path_setting = config.get('메타매칭실패시이동폴더', '').strip()
+                        has_custom_format = ('{' in fail_path_setting and '}' in fail_path_setting)
+                        subfolder = Task._get_subfolder_to_move(info['original_file'], config.get('다운로드폴더', []))
+
+                        if subfolder:
+                            # A. 서브폴더가 있는 경우: 서브폴더명 첫 글자 알파벳 하위 경로 적용
+                            if not has_custom_format:
+                                first_letter = Task._get_first_letter(subfolder.name)
+                                target_dir = target_dir.joinpath(first_letter)
+                        else:
+                            # B. 단독 파일인 경우: 파일명 앞단의 스튜디오를 파싱하여 [알파벳]/[스튜디오] 폴더로 지정
+                            studio = info.get('studio') or info.get('label') or ''
+                            safe_studio = ToolExpandFileProcess.get_safe_filename(studio)
+                            if safe_studio and safe_studio.lower() not in ['unknown', 'no_studio']:
+                                first_letter = Task._get_first_letter(safe_studio)
+                                target_dir = target_dir.joinpath(safe_studio) if has_custom_format else target_dir.joinpath(first_letter, safe_studio)
+                            else:
+                                first_letter = Task._get_first_letter(info['original_file'].stem)
+                                target_dir = target_dir if has_custom_format else target_dir.joinpath(first_letter)
+
                     current_target_dir_str = str(target_dir)
                     info['should_create_meta'] = False
                     
