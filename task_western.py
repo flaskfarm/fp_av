@@ -812,7 +812,11 @@ class Task:
         # 해상도 및 미디어 정보 추출 (ffprobe 우선, 실패 시 정규식 폴백)
         res_tag, v_codec, a_codec = "", "", ""
         ext_config = config.get('미디어정보설정', {})
-        media_info = ToolExpandFileProcess._get_media_info(file_path, ext_config)
+        media_info = info.get('media_info')
+        if not media_info:
+            ext_config = config.get('미디어정보설정', {})
+            media_info = ToolExpandFileProcess._get_media_info(file_path, ext_config)
+            info['media_info'] = media_info
         
         if media_info and media_info.get('is_valid'):
             res_tag = media_info.get('res_tag', '')
@@ -964,6 +968,23 @@ class Task:
             logger.warning(f"'{file.name}'의 최종 이동 경로를 결정할 수 없어 건너뜁니다.")
             return entity.set_move_type(None)
 
+        if move_type == "failed_video":
+            failed_video_path_str = config.get('처리실패이동폴더', '').strip()
+            if not failed_video_path_str and not config.get('미디어정보실패시이동경로'):
+                logger.info(f"미디어 분석 실패: '처리실패이동폴더'가 비어있어 이동을 건너뜁니다: {file.name}")
+                return entity.set_move_type("failed_video_skipped")
+
+            newfile = target_dir.joinpath(file.name)
+
+            if is_dry_run:
+                logger.warning(f"[Dry Run] 미디어 분석 실패 이동 예정: '{file}' -> '{newfile}'")
+                return None
+
+            target_dir.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(file), str(newfile))
+            logger.info(f"미디어 분석 실패 파일을 이동했습니다: {newfile}")
+            return entity.set_target(newfile).set_move_type(move_type)
+
         # 메타 매칭 실패 (meta_fail, no_meta) 처리
         if move_type in ["no_meta", "meta_fail"]:
             # 서브폴더 존재 여부 확인 (다운로드 루트 폴더 보호)
@@ -1019,13 +1040,13 @@ class Task:
 
             else:
                 # 단독 파일인 경우: 다운로드 폴더는 보존하고 파일만 단독 이동
-                newfile = dest_dir.joinpath(newfilename)
+                newfile = target_dir.joinpath(newfilename)
 
                 if is_dry_run:
                     logger.warning(f"[Dry Run] 메타 실패 (단독 파일 이동 예정): '{file}' -> '{newfile}'")
                     return None
 
-                dest_dir.mkdir(parents=True, exist_ok=True)
+                target_dir.mkdir(parents=True, exist_ok=True)
                 try:
                     if newfile.exists():
                         file.unlink()
@@ -1065,7 +1086,7 @@ class Task:
         if config.get('매칭실패이동후스캔', False):
             valid_scan_types.update(['no_meta', 'meta_fail'])
         
-        failed_types = {'etc_file', 'meta_fail_skipped', 'no_meta_deleted_due_to_duplication'}
+        failed_types = {'failed_video', 'etc_file', 'meta_fail_skipped', 'no_meta_deleted_due_to_duplication'}
 
         any_meta_option_on = any([
             config.get('부가파일생성_YAML', False),
@@ -1147,12 +1168,59 @@ class Task:
                     
                     target_dir, move_type, meta_info = None, None, meta_info_for_group
 
-                    target_dir, move_type, _ = Task._get_final_target_path(config, info, task_context, preloaded_meta=meta_info_for_group)
+                    template = config.get('파일명템플릿') or ''
+                    need_media_info = config.get('메타데이터기반파일명변경', False) and any(k in template for k in ['{res_tag}', '{v_codec}', '{a_codec}', '{fps}'])
+                    
+                    is_media_info_failed = False
+                    if need_media_info and info.get('file_type') == 'video':
+                        ext_config = config.get('미디어정보설정', {})
+                        media_info_res = ToolExpandFileProcess._get_media_info(info['original_file'], ext_config)
+                        info['media_info'] = media_info_res
+                        if not media_info_res or not media_info_res.get('is_valid', True):
+                            is_media_info_failed = True
+
+                    if is_media_info_failed and config.get('미디어정보실패시이동', True):
+                        logger.warning(f"'{info['original_file'].name}'의 미디어 정보 분석에 실패하여 실패 경로로 이동합니다.")
+                        move_type = 'failed_video'
+                        failed_path_str = config.get('미디어정보실패시이동경로', '')
+                        if failed_path_str:
+                            base_path, format_str = CensoredTask._resolve_path_template(config, info, meta_info_for_group, failed_path_str)
+                            folders = CensoredTask.process_folder_format(config, info, format_str, meta_info_for_group)
+                            target_dir = base_path.joinpath(*folders)
+                        else:
+                            base_failed_path = config.get('처리실패이동폴더', '').strip()
+                            if base_failed_path:
+                                target_dir = Path(base_failed_path).joinpath("[FAILED_VIDEO]")
+                            else:
+                                continue
+                    else:
+                        target_dir, move_type, _ = Task._get_final_target_path(config, info, task_context, preloaded_meta=meta_info_for_group)
 
                     if not target_dir:
                         logger.warning(f"'{info['original_file'].name}'의 이동 경로를 결정할 수 없어 건너뜁니다.")
                         continue
                     
+                    if move_type in ['no_meta', 'meta_fail']:
+                        fail_path_setting = config.get('메타매칭실패시이동폴더', '').strip()
+                        has_custom_format = ('{' in fail_path_setting and '}' in fail_path_setting)
+                        subfolder = Task._get_subfolder_to_move(info['original_file'], config.get('다운로드폴더', []))
+
+                        if subfolder:
+                            # A. 서브폴더가 있는 경우: 서브폴더명 첫 글자 알파벳 하위 경로 적용
+                            if not has_custom_format:
+                                first_letter = Task._get_first_letter(subfolder.name)
+                                target_dir = target_dir.joinpath(first_letter)
+                        else:
+                            # B. 단독 파일인 경우: 파일명 앞단의 스튜디오를 파싱하여 [알파벳]/[스튜디오] 폴더로 지정
+                            studio = info.get('studio') or info.get('label') or ''
+                            safe_studio = ToolExpandFileProcess.get_safe_filename(studio)
+                            if safe_studio and safe_studio.lower() not in ['unknown', 'no_studio']:
+                                first_letter = Task._get_first_letter(safe_studio)
+                                target_dir = target_dir.joinpath(safe_studio) if has_custom_format else target_dir.joinpath(first_letter, safe_studio)
+                            else:
+                                first_letter = Task._get_first_letter(info['original_file'].stem)
+                                target_dir = target_dir if has_custom_format else target_dir.joinpath(first_letter)
+
                     current_target_dir_str = str(target_dir)
                     info['should_create_meta'] = False
                     
