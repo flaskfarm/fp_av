@@ -1,3 +1,4 @@
+from .util_runtime import cooperate, cached_media_info, pause
 import os
 import re
 import shutil
@@ -41,6 +42,7 @@ class ToolExpandFileProcess:
         # 1. 현재 폴더 내의 "유효한(보존 대상) 본편 미디어/자막"의 이름(stem)을 수집
         valid_stems = set()
         for f in path.iterdir():
+            cooperate()
             if f.is_file():
                 if f.stat().st_size >= min_size * 1024**2 or f.suffix.lower() in subtitle_exts:
                     valid_stems.add(f.stem.lower())
@@ -49,6 +51,7 @@ class ToolExpandFileProcess:
         
         # 2. 파일 및 폴더 삭제 로직
         for child in path.iterdir():
+            cooperate()
             try:
                 if child.stat().st_mtime < time.time() - max_age:
                     # old enough
@@ -82,6 +85,7 @@ class ToolExpandFileProcess:
 
         subtitle_exts = subtitle_exts or set()
         for file in path.rglob("*"):
+            cooperate()
             if not cls._is_legit_file(file, subtitle_exts=subtitle_exts):
                 continue
             if file.is_dir():
@@ -144,6 +148,7 @@ class ToolExpandFileProcess:
 
         files = []
         for file in cls._iterdir(source, min_size=min_size, subtitle_exts=subtitle_exts):
+            cooperate()
             if file.suffix.lower() in subtitle_exts:
                 files.append(file)
                 continue
@@ -498,6 +503,7 @@ class ToolExpandFileProcess:
             UtilFunc._initialize_chardet()
 
         for s_info in subtitles:
+            cooperate()
             found_pair = False
             
             s_info['is_korean'] = True 
@@ -508,6 +514,7 @@ class ToolExpandFileProcess:
             sub_name = s_info['original_file'].name
             
             for v_info in sorted(videos, key=lambda x: len(x['original_file'].name), reverse=True):
+                cooperate()
                 video_stem = v_info['original_file'].stem
                 
                 if sub_name.startswith(video_stem):
@@ -699,6 +706,7 @@ class ToolExpandFileProcess:
     ##########################
 
     @classmethod
+    @cached_media_info
     def _get_media_info(cls, file_path, ffprobe_config) -> Dict[str, Any] | None:
         """ffprobe를 사용하여 미디어 정보를 추출하고 표준화합니다."""
         ffprobe_bin = ffprobe_config.get('ffprobe_path', '/usr/bin/ffprobe')
@@ -719,7 +727,7 @@ class ToolExpandFileProcess:
                 if result.returncode != 0:
                     if attempt < max_retries:
                         logger.warning(f"ffprobe 실행 실패 (시도 {attempt+1}/{max_retries+1}), {retry_delay}초 후 재시도: {file_path.name}")
-                        time.sleep(retry_delay)
+                        pause(retry_delay)
                         continue
                     else:
                         logger.error(f"ffprobe 실행 최종 실패: {file_path.name} - {result.stderr.strip()}")
@@ -728,7 +736,7 @@ class ToolExpandFileProcess:
                 if not result.stdout.strip():
                     if attempt < max_retries:
                         logger.warning(f"ffprobe 빈 응답 수신 (시도 {attempt+1}/{max_retries+1}), {retry_delay}초 후 재시도: {file_path.name}")
-                        time.sleep(retry_delay)
+                        pause(retry_delay)
                         continue
                     else:
                         logger.error(f"ffprobe 최종 실패: 빈 응답 수신 - {file_path.name}")
@@ -740,7 +748,7 @@ class ToolExpandFileProcess:
             except subprocess.TimeoutExpired:
                 if attempt < max_retries:
                     logger.warning(f"ffprobe 타임아웃 (시도 {attempt+1}/{max_retries+1}), {retry_delay}초 후 재시도: {file_path.name}")
-                    time.sleep(retry_delay)
+                    pause(retry_delay)
                     continue
                 else:
                     logger.error(f"ffprobe 타임아웃 최종 실패: {file_path.name}")
@@ -749,7 +757,7 @@ class ToolExpandFileProcess:
             except json.JSONDecodeError as e:
                 if attempt < max_retries:
                     logger.warning(f"ffprobe 결과 JSON 파싱 실패 (시도 {attempt+1}/{max_retries+1}), {retry_delay}초 후 재시도: {file_path.name}")
-                    time.sleep(retry_delay)
+                    pause(retry_delay)
                     continue
                 else:
                     logger.error(f"ffprobe 결과 JSON 파싱 최종 실패: {file_path.name} - {str(e)}")
@@ -960,8 +968,12 @@ class UtilFunc:
         else: # "flexible"
             if dst.exists():
                 return True
-            bytes_in_dst = {f.stat().st_size for f in dst.parent.iterdir() if f.is_file()}
-            return src.stat().st_size in bytes_in_dst
+            source_size = src.stat().st_size
+            for candidate in dst.parent.iterdir():
+                cooperate()
+                if candidate.is_file() and candidate.stat().st_size == source_size:
+                    return True
+            return False
 
 
     @staticmethod

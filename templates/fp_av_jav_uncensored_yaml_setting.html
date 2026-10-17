@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
+{% set av_panel_module = "jav_uncensored_yaml" %}
 
 {{ macros.m_button_group([['globalSettingSaveBtn', '설정 저장'], ['globalOneExecuteBtn', '1회 실행'], ['globalImmediatelyExecuteBtn', '즉시 실행']])}}
 {{ macros.m_row_start('5') }}
@@ -26,6 +27,8 @@
   {{ macros.m_tab_content_end() }}
   </div><!--tab-content-->
 </form>
+
+{% include "fp_av_job_panel.html" %}
 
 
 <script type="text/javascript">

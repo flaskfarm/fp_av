@@ -1,8 +1,9 @@
+from .util_jobs import JobPanelMixin
 from .setup import *
 from .task_jav_censored import TaskBase
 from .task_jav_censored_tool import TaskCensoredJavTool
 
-class ModuleJavCensoredYaml(PluginModuleBase):
+class ModuleJavCensoredYaml(JobPanelMixin, PluginModuleBase):
     def __init__(self, P):
         super(ModuleJavCensoredYaml, self).__init__(P, 'setting', name='jav_censored_yaml', scheduler_desc="AV 파일처리 - JavCensored with YAML")
         self.db_default = {
@@ -23,6 +24,9 @@ class ModuleJavCensoredYaml(PluginModuleBase):
             return render_template('sample.html', title=f"{P.package_name}/{self.name}/{page_name}")
 
     def process_command(self, command, arg1, arg2, arg3, req):
+        result = self.job_command(command, arg1, arg2)
+        if result is not None:
+            return result
         if command == 'gds':
             ret = self.start_celery(TaskCensoredJavTool.start, None, command, arg1)
             return {"ret":"success", "message":"run task"}

@@ -1,3 +1,7 @@
+if __package__:
+    from .util_runtime import cooperate
+else:
+    from util_runtime import cooperate
 import re, os, traceback
 
 config = {
@@ -11,7 +15,9 @@ class Task:
     def start():
 
         for base, dirs, files in os.walk(config["root"]):
+            cooperate()
             for f in files:
+                cooperate()
                 match = re.match(r"\w+-\d{3,5}[\.-]", f)
                 if match:
                     if match.group(0).upper() not in config['code_list']:

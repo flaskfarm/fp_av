@@ -1,3 +1,4 @@
+from .util_jobs import JobPanelMixin
 from .setup import *
 from .model_jav_uncensored import ModelJavUncensoredItem
 from .task_jav_uncensored import TaskBase
@@ -5,7 +6,7 @@ from .task_jav_uncensored import TaskBase
 from pathlib import Path
 
 # [수정] 클래스 이름을 Uncensored용으로 변경합니다.
-class ModuleJavUncensored(PluginModuleBase):
+class ModuleJavUncensored(JobPanelMixin, PluginModuleBase):
     def __init__(self, P):
         super(ModuleJavUncensored, self).__init__(P, 'setting', name='jav_uncensored', scheduler_desc="AV 파일처리 - JavUncensored")
 
@@ -83,6 +84,9 @@ class ModuleJavUncensored(PluginModuleBase):
 
 
     def process_command(self, command, arg1, arg2, arg3, req):
+        result = self.job_command(command, arg1, arg2)
+        if result is not None:
+            return result
         try:
             if command == 'filename_test':
                 if arg1 == 'filename':

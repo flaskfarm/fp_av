@@ -1,3 +1,5 @@
+from .util_jobs import monitored_task, progress
+from .util_runtime import cooperate, processing_job, metadata_delay
 from .setup import *
 from pathlib import Path
 import base64, json
@@ -20,6 +22,7 @@ from .task_make_yaml import Task as TaskMakeYaml
 
 class TaskBase:
     @F.celery.task(bind=True, acks_late=False)
+    @monitored_task('jav_uncensored')
     def start(self, *args):
         logger.info(f"Task 수신 인자: {args}")
         job_type = args[0]
@@ -33,7 +36,7 @@ class TaskBase:
 
         is_manual_retry = (job_type == 'manual_path')
 
-        if job_type == 'manual_path' and len(args) > 1:
+        if job_type in ['manual_path', 'one_path'] and len(args) > 1:
             target_paths = [args[1]]
             logger.info(f"수동 경로 재처리 모드 시작: {target_paths}")
         else:
@@ -102,7 +105,7 @@ class TaskBase:
             logger.info("수동 재처리 모드: 메타 매칭 실패 시 이동 설정을 강제로 False로 전환합니다.")
             config["메타매칭실패시이동"] = False
 
-        if job_type in ['default', 'dry_run']:
+        if job_type in ['default', 'dry_run', 'manual_path', 'one_path']:
             final_config = config.copy()
             final_config["이름"] = job_type
             if final_config.get('드라이런', False):
@@ -115,9 +118,11 @@ class TaskBase:
             try:
                 yaml_data = SupportYaml.read_yaml(yaml_filepath)
                 for job in yaml_data.get('작업', []):
+                    cooperate()
                     if not job.get('사용', True): continue
 
                     job_name = job.get('이름', '이름 없는 작업')
+                    progress(stage=f'YAML: {job_name}', current=0, total=0, item='', force=True)
                     logger.info(f"=========================================")
                     logger.info(f"YAML 작업 실행 시작: [{job_name}]")
                     logger.info(f"=========================================")
@@ -156,6 +161,7 @@ class TaskBase:
                     TaskBase.__task(final_config)
             except Exception as e:
                 logger.error(f"YAML 파일 처리 중 오류 발생: {e}")
+                raise
 
 
     @staticmethod
@@ -181,7 +187,9 @@ class Task:
 
 
     @staticmethod
+    @processing_job
     def start(config):
+        progress(job_name=config.get('이름', ''), force=True)
 
         task_context = {
             'module_name': 'jav_uncensored',
@@ -373,6 +381,7 @@ class Task:
             return None
 
         # extra_opts 초기화 및 옵션 정제
+        metadata_delay(config)
         extra_opts = {}
 
         skip_trans = None
@@ -483,11 +492,14 @@ class Task:
             [int(c) if c.isdigit() else c.lower() for c in re.split(r'([0-9]+)', x['original_file'].name)]
         ))
 
+        progress('파일 처리', current=0, total=len(execution_plan), item='', force=True)
         for pure_code, group_infos_iter in groupby(execution_plan, key=lambda x: x['pure_code']):
+            cooperate()
             group_infos = list(group_infos_iter)
             logger.debug(f"'{pure_code}' 그룹 처리 시작 ({len(group_infos)}개 파일)")
 
             first_info = next((i for i in group_infos if i.get('file_type') == 'video'), group_infos[0])
+            progress(item=first_info['original_file'].name, force=True)
             has_local_meta = bool(first_info.get('local_meta_json'))
             
             config['_skip_trans_temp'] = (not any_meta_option_on) or (not make_overwrite)
@@ -528,7 +540,9 @@ class Task:
             processed_dirs_for_group = set()
 
             for info in group_infos:
+                cooperate()
                 try:
+                    progress(current=item_count, item=info['original_file'].name)
                     item_count += 1
                     log_prefix = f"[{item_count:03d}/{total_items_in_plan:03d}]"
                     logger.info(f"{log_prefix} 처리 시작: {info['original_file'].name}")
@@ -629,6 +643,7 @@ class Task:
                     # 2. 동반 자막 선이동
                     if 'companion_subs_list' in info:
                         for s_info in info['companion_subs_list']:
+                            cooperate()
                             sub_ext = s_info['original_file'].suffix
                             logger.info(f"{log_prefix} 동반 자막 선이동: {s_info['original_file'].name}")
                             
@@ -673,3 +688,4 @@ class Task:
                     logger.error(traceback.format_exc())
 
         logger.info("fp_av_jav_uncensored: 모든 작업이 완료되었습니다.")
+        progress(current=item_count, item='', force=True)

@@ -1,7 +1,8 @@
+from .util_jobs import JobPanelMixin
 from .setup import *
 from .task_jav_uncensored import TaskBase
 
-class ModuleJavUncensoredYaml(PluginModuleBase):
+class ModuleJavUncensoredYaml(JobPanelMixin, PluginModuleBase):
     def __init__(self, P):
         super(ModuleJavUncensoredYaml, self).__init__(P, 'setting', name='jav_uncensored_yaml', scheduler_desc="AV 파일처리 - JavUncensored with YAML")
         self.db_default = {
