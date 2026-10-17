@@ -973,7 +973,7 @@ class Task:
 
     @staticmethod
     def __file_move_logic(config, info, model_class, task_context=None):
-        """Western 전용 파일/폴더 이동 로직 (메타 실패 시 폴더 보존 및 알파벳 서브폴더 자동 분류)"""
+        """Western 전용 파일/폴더 이동 로직 (계산된 대상 경로 사용 및 메타 실패 폴더 보존)"""
         if task_context is None:
             task_context = {}
         moved_folders = task_context.setdefault('moved_folders', {})
@@ -1012,18 +1012,7 @@ class Task:
             # 서브폴더 존재 여부 확인 (다운로드 루트 폴더 보호)
             subfolder = Task._get_subfolder_to_move(file, config.get('다운로드폴더', []))
 
-            # 이동 경로에 포맷({..}) 지정 여부 확인 및 알파벳 서브폴더 적용
-            fail_path_setting = config.get('메타매칭실패시이동폴더', '').strip()
-            has_custom_format = ('{' in fail_path_setting and '}' in fail_path_setting)
-
-            # 포맷 미지정 시: 서브폴더면 폴더명, 단독 파일이면 파일명 기준으로 첫 글자 추출
-            base_name_for_letter = subfolder.name if subfolder else file.stem
-            first_letter = Task._get_first_letter(base_name_for_letter)
-
-            # 포맷 템플릿이 없을 때만 알파벳 서브폴더(A-Z, 09, #)를 타겟 경로 하위에 추가
             dest_dir = target_dir
-            if not has_custom_format:
-                dest_dir = target_dir.joinpath(first_letter)
 
             if subfolder:
                 subfolder_key = str(subfolder.resolve())
