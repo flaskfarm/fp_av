@@ -1,8 +1,9 @@
+from .util_jobs import JobPanelMixin
 from .setup import *
 from .model_western import ModelWesternItem
 from .task_western import TaskBase
 
-class ModuleWestern(PluginModuleBase):
+class ModuleWestern(JobPanelMixin, PluginModuleBase):
     def __init__(self, P):
         super(ModuleWestern, self).__init__(P, 'setting', name='western', scheduler_desc="AV 파일처리 - Western")
 
@@ -93,6 +94,9 @@ class ModuleWestern(PluginModuleBase):
         ret = self.start_celery(TaskBase.start, None, "default")
 
     def process_command(self, command, arg1, arg2, arg3, req):
+        result = self.job_command(command, arg1, arg2)
+        if result is not None:
+            return result
         try:
             if command == 'meta_no_path_start':
                 path = P.ModelSetting.get(f"{self.name}_meta_no_path").strip()

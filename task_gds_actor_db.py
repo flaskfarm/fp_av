@@ -1,3 +1,4 @@
+from .util_runtime import cooperate
 from .setup import *
 from pathlib import Path
 ModelSetting = P.ModelSetting
@@ -26,12 +27,14 @@ class Task:
         cursor = conn.cursor()
 
         for folder in os.listdir(config['mount_path']):
+            cooperate()
             path_folder = os.path.join(config['mount_path'], folder)
             
             data = SupportRclone.lsjson(f"{config['remote']}/{folder}", config_path=config['config_path'])
             #logger.info(f"폴더: {folder}, 데이터: {data}")
 
             for item in data:
+                cooperate()
                 profile_img_path = f"jav/actors/{folder}/{item['Path']}"
 
                 cursor.execute('''UPDATE actors SET google_fileid = ? WHERE profile_img_path = ?''', (item['ID'], profile_img_path))

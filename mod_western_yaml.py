@@ -1,7 +1,8 @@
+from .util_jobs import JobPanelMixin
 from .setup import *
 from .task_western import TaskBase
 
-class ModuleWesternYaml(PluginModuleBase):
+class ModuleWesternYaml(JobPanelMixin, PluginModuleBase):
     def __init__(self, P):
         super(ModuleWesternYaml, self).__init__(P, 'setting', name='western_yaml', scheduler_desc="AV 파일처리 - Western with YAML")
         self.db_default = {

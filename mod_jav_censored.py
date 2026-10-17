@@ -1,10 +1,11 @@
+from .util_jobs import JobPanelMixin
 from .setup import *
 from .model_jav_censored import ModelJavCensoredItem
 from .task_jav_censored import TaskBase, Task
 
 from pathlib import Path
 
-class ModuleJavCensored(PluginModuleBase):
+class ModuleJavCensored(JobPanelMixin, PluginModuleBase):
     def __init__(self, P):
         super(ModuleJavCensored, self).__init__(P, 'setting', name='jav_censored', scheduler_desc="AV 파일처리 - JavCensored")
         self.db_default = {
@@ -99,6 +100,9 @@ class ModuleJavCensored(PluginModuleBase):
 
 
     def process_command(self, command, arg1, arg2, arg3, req):
+        result = self.job_command(command, arg1, arg2)
+        if result is not None:
+            return result
         try:
             if command == 'filename_test':
                 if arg1 == 'filename':

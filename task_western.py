@@ -1,3 +1,5 @@
+from .util_jobs import monitored_task, progress
+from .util_runtime import cooperate, processing_job, metadata_delay
 from .setup import *
 from pathlib import Path
 import traceback
@@ -17,6 +19,7 @@ from .task_make_yaml import Task as TaskMakeYaml
 
 class TaskBase:
     @F.celery.task(bind=True, acks_late=False)
+    @monitored_task('western')
     def start(self, *args):
         logger.info(f"Task 수신 인자: {args}")
         job_type = args[0]
@@ -30,7 +33,7 @@ class TaskBase:
 
         is_manual_retry = (job_type == 'manual_path')
 
-        if is_manual_retry and len(args) > 1:
+        if job_type in ['manual_path', 'one_path'] and len(args) > 1:
             target_paths = [args[1]]
             logger.info(f"수동 경로 재처리 모드 시작: {target_paths}")
         else:
@@ -130,7 +133,7 @@ class TaskBase:
             config["메타데이터기반파일명변경"] = False
 
         # 작업 실행 분기
-        if job_type in ['default', 'dry_run', 'manual_path']:
+        if job_type in ['default', 'dry_run', 'manual_path', 'one_path']:
             final_config = config.copy()
             final_config["이름"] = job_type
             if final_config.get('드라이런', False):
@@ -144,12 +147,14 @@ class TaskBase:
                 yaml_data = SupportYaml.read_yaml(yaml_filepath)
                 if not yaml_data:
                     logger.error(f"YAML 파일을 읽을 수 없거나 비어있습니다: {yaml_filepath}")
-                    return
+                    raise ValueError("YAML 파일이 비어있습니다.")
 
                 for job in yaml_data.get('작업', []):
+                    cooperate()
                     if not job.get('사용', True): continue
 
                     job_name = job.get('이름', '이름 없는 작업')
+                    progress(stage=f'YAML: {job_name}', current=0, total=0, item='', force=True)
                     logger.info(f"=========================================")
                     logger.info(f"YAML 작업 실행 시작: [{job_name}]")
                     logger.info(f"=========================================")
@@ -182,6 +187,7 @@ class TaskBase:
             except Exception as e:
                 logger.error(f"YAML 파일 처리 중 오류 발생: {e}")
                 logger.error(traceback.format_exc())
+                raise
 
     @staticmethod
     def __task(config):
@@ -193,7 +199,9 @@ class Task:
     metadata_module = None
 
     @staticmethod
+    @processing_job
     def start(config):
+        progress(job_name=config.get('이름', ''), force=True)
         task_context = {
             'module_name': 'western',
             'parse_mode': 'western',
@@ -215,6 +223,7 @@ class Task:
         task_context['scanned_directories_cache'] = set()
 
         # 1. 파일 목록 수집
+        progress('파일 수집', current=0, total=0, item='', force=True)
         all_files = CensoredTask.__collect_initial_files(config, config['module_name'])
         if not all_files:
             return
@@ -226,9 +235,11 @@ class Task:
             dir_to_files = defaultdict(list)
 
             for f in all_files:
+                cooperate()
                 dir_to_files[f.parent].append(f)
             
             for parent_dir, files_in_dir in dir_to_files.items():
+                cooperate()
                 is_sub_dir = any(parent_dir != Path(dl_path) and Path(dl_path) in parent_dir.parents for dl_path in config['다운로드폴더'])
                 
                 if is_sub_dir:
@@ -247,7 +258,10 @@ class Task:
         parsed_infos = []
         unparsed_infos = []
 
-        for file in all_files:
+        progress('파일 준비 및 분석', current=0, total=len(all_files), force=True)
+        for prepare_index, file in enumerate(all_files):
+            progress(current=prepare_index, item=file.name)
+            cooperate()
             effective_name = file.name
             if file in rename_map:
                 effective_name = rename_map[file] + file.suffix
@@ -259,12 +273,17 @@ class Task:
             else:
                 unparsed_infos.append(info)
 
+        progress(current=len(all_files), item='', force=True)
+
         if unparsed_infos:
             for info in unparsed_infos:
+                cooperate()
                 CensoredTask.__move_to_no_label_folder(config, info['original_file'])
 
         if not parsed_infos:
             return
+
+        progress('실행 계획 수립', current=0, total=0, item='', force=True)
 
         # 3. 실행 계획 수립 (동반자막/기타 파일 처리)
         execution_plan = []
@@ -284,6 +303,7 @@ class Task:
                     target_dir.mkdir(parents=True, exist_ok=True)
                 
                 for info in etc_files:
+                    cooperate()
                     file = info['original_file']
                     newfile = target_dir.joinpath(file.name)
                     
@@ -329,6 +349,7 @@ class Task:
 
         # 5. 파일명은 항상 원본 파일명 유지 (단, 분할 대표 키는 유지)
         for info in execution_plan:
+            cooperate()
             info['newfilename'] = info.get('effective_name', info['original_file'].name)
             info['is_part_of_set'] = False
 
@@ -354,6 +375,7 @@ class Task:
         # Base 이름(분할 태그를 제외한 이름)을 기준으로 그룹핑
         base_groups = defaultdict(list)
         for info in video_infos:
+            cooperate()
             stem = info['original_file'].stem
             match = part_pattern.search(stem)
             
@@ -369,6 +391,7 @@ class Task:
 
         # 각 그룹별 검증 및 세트 플래그 설정
         for base_name, group_infos in base_groups.items():
+            cooperate()
             if len(group_infos) < 2:
                 continue # 파일이 하나면 세트가 아님
 
@@ -379,6 +402,7 @@ class Task:
             # 서양은 파일명 변경을 안 하므로, 'pure_code'(대표 키워드)만 하나로 통일해 줌
             # 이렇게 하면 나중에 __execute_plan의 groupby 로직에 의해 이 파일들이 하나의 묶음으로 처리됨
             for info in group_infos:
+                cooperate()
                 info['is_part_of_set'] = True
                 
                 # JAV 시스템이 이들을 같은 영화로 묶어서 1회만 메타 검색/생성 하도록 유도
@@ -652,6 +676,7 @@ class Task:
             
             if current_path.exists() and current_path.is_dir():
                 for existing_dir in current_path.iterdir():
+                    cooperate()
                     if existing_dir.is_dir() and existing_dir.name.lower() == folder_part.lower():
                         matched_existing_folder = existing_dir.name
                         existing_dir_path = existing_dir
@@ -702,6 +727,7 @@ class Task:
         min_score_cutoff = config.get('메타매칭커트라인', 80)
 
         # extra_opts 초기화 및 옵션 정제
+        metadata_delay(config)
         extra_opts = {}
 
         skip_trans = None
@@ -739,10 +765,6 @@ class Task:
         search_name = info.get('search_keyword') or info.get('pure_code', '알수없음')
 
         try:
-            delay_seconds = config.get('파일당딜레이', 0)
-            if delay_seconds > 0:
-                time.sleep(delay_seconds)
-
             best_match = None
             manual_endpoint = info.get('manual_endpoint')
             
@@ -1106,10 +1128,13 @@ class Task:
             [int(c) if c.isdigit() else c.lower() for c in re.split(r'([0-9]+)', x['original_file'].name)]
         ))
 
+        progress('파일 처리', current=0, total=len(execution_plan), item='', force=True)
         for pure_code, group_infos_iter in groupby(execution_plan, key=lambda x: x['pure_code']):
+            cooperate()
             group_infos = list(group_infos_iter)
             
             first_info = next((i for i in group_infos if i.get('file_type') == 'video'), group_infos[0])
+            progress(item=first_info['original_file'].name, force=True)
             has_local_meta = bool(first_info.get('local_meta_json'))
             
             group_log_prefix = f"[{item_count+1:03d}/{len(execution_plan):03d}]"
@@ -1152,6 +1177,7 @@ class Task:
 
             if meta_info_for_group and config.get('메타데이터기반파일명변경', False):
                 for info in group_infos:
+                    cooperate()
                     if info.get('file_type') == 'video':
                         new_name = Task.assemble_western_filename(config, info, meta_info_for_group)
                         info['newfilename'] = new_name
@@ -1160,7 +1186,9 @@ class Task:
             processed_dirs_for_group = set()
 
             for info in group_infos:
+                cooperate()
                 try:
+                    progress(current=item_count, item=info['original_file'].name)
                     item_count += 1
                     log_prefix = f"[{item_count:03d}/{total_items_in_plan:03d}]"
                     
@@ -1174,6 +1202,7 @@ class Task:
                     is_media_info_failed = False
                     if need_media_info and info.get('file_type') == 'video':
                         ext_config = config.get('미디어정보설정', {})
+                        # The job cache reuses filename analysis, including failures.
                         media_info_res = ToolExpandFileProcess._get_media_info(info['original_file'], ext_config)
                         info['media_info'] = media_info_res
                         if not media_info_res or not media_info_res.get('is_valid', True):
@@ -1296,6 +1325,7 @@ class Task:
                     # 2. 동반 자막 선이동 (단, 메타 실패 폴더 통째 이동 대상인 경우 자막도 폴더에 보존되므로 개별 선이동 제외)
                     if 'companion_subs_list' in info and not is_subfolder_fail:
                         for s_info in info['companion_subs_list']:
+                            cooperate()
                             sub_ext = s_info['original_file'].suffix
                             logger.info(f"{log_prefix} 동반 자막 선이동: {s_info['original_file'].name}")
                             
@@ -1346,3 +1376,4 @@ class Task:
                     logger.error(traceback.format_exc())
 
         logger.info("fp_av_western: 모든 작업이 완료되었습니다.")
+        progress(current=item_count, item='', force=True)

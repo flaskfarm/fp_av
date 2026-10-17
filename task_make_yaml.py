@@ -1,3 +1,5 @@
+import uuid
+from .util_runtime import cooperate
 from .setup import *
 from pathlib import Path
 ModelSetting = P.ModelSetting
@@ -52,10 +54,13 @@ class Task:
         logger.info(f"처리완료 폴더: {len(Task.config['finish_folder'])}개")
 
         for alphabet in os.listdir(Task.config["root"]):
+            cooperate()
             path_alphabet = os.path.join(Task.config["root"], alphabet)
             for label in os.listdir(path_alphabet):
+                cooperate()
                 path_label = os.path.join(path_alphabet, label)
                 for code in os.listdir(path_label):
+                    cooperate()
                     try:
                         path_code = os.path.join(path_label, code)
                         #logger.debug(path_code)
@@ -110,6 +115,7 @@ class Task:
             #if site == "javdb":
             #    tmp = search_name.replace(" ", "-").upper()
             #data = meta_module.search2(tmp, site, manual=False)
+            cooperate()
             logger.info(f"메타 검색({site}): {data['code']}")
             data['search'] = Task.meta_module.search2(data['code'], site['site'], manual=False)
             if data['search'] == None:
@@ -419,7 +425,9 @@ class Task:
 
 
     def file_save(url, filepath, proxy_url=None):
+        cooperate()
         filename = os.path.basename(filepath)
+        partial = str(filepath) + '.part-' + uuid.uuid4().hex
         try:
             logger.debug(f"파일 다운로드 시도: {filename} <- {url}")
             proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else {}
@@ -434,11 +442,13 @@ class Task:
 
             with requests.get(url, stream=True, proxies=proxies, headers=headers, verify=False, timeout=180) as r:
                 r.raise_for_status()
-                with open(filepath, 'wb') as f:
+                with open(partial, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=8192):
+                        cooperate()
                         if chunk:
                             f.write(chunk)
             
+            os.replace(partial, filepath)
             logger.debug(f"파일 다운로드 성공: {filename}")
             return True
             
@@ -448,6 +458,12 @@ class Task:
         except Exception as e:
             logger.error(f"파일 다운로드 실패: {filename} - {str(e)}")
             return False
+        finally:
+            try:
+                if os.path.exists(partial):
+                    os.unlink(partial)
+            except OSError:
+                pass
 
 
     def get_meta_module():
@@ -480,6 +496,7 @@ class Task:
 
         
         for tmp in reversed(Task.config['folder_list']):
+            cooperate()
             tmp = tmp.replace("/gdrive/Shareddrives/VIDEO5 - AV/MP/GDS", "/mnt/AV_MP/GDS")
             data = {'path_code': tmp}    
             print(f"Processing11: {tmp}")

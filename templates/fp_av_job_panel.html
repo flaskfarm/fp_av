@@ -1,0 +1,37 @@
+<div class="card mb-3 av-job-panel" data-package="{{ arg['package_name'] }}" data-module="{{ av_panel_module }}">
+  <div class="card-header d-flex flex-wrap align-items-center justify-content-between py-2">
+    <button class="btn btn-link btn-sm p-0 text-decoration-none" type="button" data-toggle="collapse" data-target="#av-job-details" aria-expanded="true" aria-controls="av-job-details">파일 처리 작업</button>
+    <span><span class="badge badge-secondary av-job-state">대기 중</span> <small class="av-job-connection text-muted" aria-live="polite">상태 연결 중…</small></span>
+  </div>
+  <div class="collapse show" id="av-job-details">
+    <div class="card-body py-3">
+      {% if not av_panel_module.endswith('_yaml') %}
+      <label for="av-job-path" class="small">이번 실행에 사용할 폴더 (선택)</label>
+      <input id="av-job-path" class="form-control form-control-sm mb-2" placeholder="비워두면 저장된 다운로드 폴더 설정으로 실행">
+      {% endif %}
+      <div class="d-flex flex-wrap align-items-center mb-2">
+        <button type="button" class="btn btn-sm btn-primary mr-2 av-job-start">1회 실행</button>
+        <button type="button" class="btn btn-sm btn-outline-danger mr-2 av-job-stop" disabled>작업 중단</button>
+        <button type="button" class="btn btn-sm btn-outline-secondary mr-2 av-job-reset" title="작업 종료 후 진행 상황과 로그를 초기화합니다.">상태 초기화</button>
+        <small class="av-job-time text-muted"></small>
+      </div>
+      <div class="small text-muted mb-2">이 작업의 자동·수동 실행 상태를 표시합니다. 중단 요청 후 다음 확인 지점에서 멈추며, 진행 중인 외부 호출은 반환될 때까지 기다립니다.</div>
+      <div class="av-job-notice small mb-2" role="status" aria-live="polite"></div>
+      <div class="d-flex flex-wrap justify-content-between small mb-1">
+        <strong class="av-job-stage">대기 중</strong>
+        <span class="av-job-count">처리 0 / 0</span>
+      </div>
+      <div class="progress mb-2" style="height: 18px;">
+        <div class="progress-bar av-job-progress" role="progressbar" aria-label="현재 단계 진행률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" style="width:0%">0%</div>
+      </div>
+      <div class="av-job-source small text-muted"></div>
+      <div class="av-job-item small mb-2 text-break" aria-live="polite"></div>
+      <div class="d-flex justify-content-between align-items-center mt-3 mb-1">
+        <span class="small font-weight-bold">실시간 작업 로그 <span class="text-muted font-weight-normal">최근 300줄</span></span>
+        <span class="small"><label class="mb-0 mr-2"><input type="checkbox" class="av-job-autoscroll" checked> 자동 스크롤</label><button type="button" class="btn btn-sm btn-outline-secondary av-job-clear">로그 비우기</button></span>
+      </div>
+      <div class="av-job-logs p-2 rounded" role="log" aria-label="AV 파일 처리 로그" style="height:{{ 420 if av_panel_module.endswith('_yaml') else 220 }}px;{% if av_panel_module.endswith('_yaml') %}min-height:180px;resize:vertical;{% endif %}overflow:auto;background:#10151c;color:#b8d7f9;font-family:monospace;font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;"></div>
+    </div>
+  </div>
+</div>
+<script src="{{ url_for('.static', filename='job_panel.js') }}"></script>
