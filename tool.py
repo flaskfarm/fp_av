@@ -26,12 +26,150 @@ class SafeFormatter(string.Formatter):
             return super().get_value(key, args, kwargs)
 
 
+class SidecarBundle:
+    """Prepare local companions without consuming sources before video publish."""
+    def __init__(self, target, overwrite=False):
+        import tempfile
+        self.target = Path(target)
+        self.target.mkdir(parents=True, exist_ok=True)
+        self.folder = Path(tempfile.mkdtemp(prefix='.fp_av_prepare_', dir=self.target))
+        self.overwrite = overwrite
+        self.published = []
+        self.backups = []
+        self.sources = []
+        self.reserved = set()
+        self.optional_names = set()
+        self.ready = {}
+        self.confirmed_sources = {}
+        self.failures = {}
+        self.committed = False
+        self.cleanup_pending = False
+
+    def _reserve_name(self, name, source):
+        if (Path(name).name != name or name.casefold() in self.reserved or os.path.lexists(self.folder / name)
+                or any(entry[0].absolute() == Path(source).absolute() for entry in self.sources)):
+            raise FileExistsError('준비 경로가 이미 예약되어 있습니다: ' + name)
+        self.reserved.add(name.casefold())
+
+    def copy_source(self, source, name, optional=False):
+        before = Path(source).stat()
+        self._reserve_name(name, source)
+        staged = self.folder / name
+        created = False
+        try:
+            with open(source, 'rb') as reader, open(staged, 'xb') as writer:
+                created = True
+                shutil.copyfileobj(reader, writer)
+            shutil.copystat(source, staged)
+            after = Path(source).stat()
+            proof = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            if proof != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+                raise OSError('동반파일이 준비 중 변경되었습니다.')
+        except BaseException:
+            if created:
+                staged.unlink()
+            raise
+        self.sources.append((Path(source), proof, name))
+        if optional:
+            self.optional_names.add(name)
+        return staged
+
+    def write_json(self, data, name, source):
+        stat = Path(source).stat()
+        proof = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+        self._reserve_name(name, source)
+        with open(self.folder / name, 'x', encoding='utf-8') as fp:
+            json.dump(data, fp, ensure_ascii=False, indent=4)
+        self.sources.append((Path(source), proof, name))
+
+    def publish(self):
+        files = list(self.folder.iterdir())
+        for staged in files:
+            cooperate()
+            if not staged.is_file():
+                continue
+            target = self.target / staged.name
+            if staged.name in self.optional_names:
+                try:
+                    UtilFunc.move(staged, target)
+                    stat = target.stat()
+                    proof = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+                    self.published.append((target, proof))
+                    self.ready[staged.name] = proof
+                except OSError as exc:
+                    self.failures[staged.name] = 'collision' if isinstance(exc, FileExistsError) else 'publish_failed'
+                    logger.warning('자막만 보류하고 영상 처리를 계속합니다: %s (%s)', staged.name, self.failures[staged.name])
+                continue
+            if os.path.lexists(target):
+                if not self.overwrite:
+                    # Equal companion bytes can be reused; distinct existing
+                    # metadata/subtitles are never silently replaced.
+                    import filecmp
+                    if filecmp.cmp(staged, target, shallow=False):
+                        stat = target.stat()
+                        self.ready[staged.name] = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+                        staged.unlink()
+                        continue
+                    raise FileExistsError('기존 동반파일과 충돌합니다: ' + target.name)
+                backup = self.folder / ('.backup_' + staged.name)
+                UtilFunc.move(target, backup)
+                self.backups.append((target, backup))
+            UtilFunc.move(staged, target)
+            stat = target.stat()
+            self.published.append((target, (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)))
+            self.ready[staged.name] = self.published[-1][1]
+
+    def commit(self):
+        # Video already moved. A later notification/DB-log failure must not
+        # remove prepared metadata from the successfully published video.
+        self.committed = True
+        for source, proof, name in self.sources:
+            try:
+                target = self.target / name
+                if name not in self.ready:
+                    continue
+                current = target.stat()
+                if self.ready[name] != (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns):
+                    raise OSError('준비 파일의 소유 상태가 변경되었습니다.')
+                self.confirmed_sources[str(source)] = target
+                if source.exists() and source.resolve() != target.resolve():
+                    stat = source.stat()
+                    if proof != (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns):
+                        raise OSError('원본 동반파일의 내용이 변경되었습니다.')
+                    source.unlink()
+            except OSError:
+                self.cleanup_pending = True
+                logger.warning('영상 이동은 완료됐으나 원본 동반파일 정리가 보류됐습니다: %s', source.name)
+
+    def close(self):
+        preserve = self.cleanup_pending
+        if not self.committed:
+            for target, owned in reversed(self.published):
+                try:
+                    if target.exists():
+                        stat = target.stat()
+                        if (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns) != owned:
+                            raise FileExistsError('준비 파일의 소유 상태가 변경되었습니다.')
+                        target.unlink()
+                except OSError:
+                    preserve = True
+                    logger.warning('동반파일 정리를 보류합니다: %s', target.name)
+            for target, backup in reversed(self.backups):
+                try:
+                    UtilFunc.move(backup, target)
+                except OSError:
+                    preserve = True
+                    logger.warning('기존 동반파일 백업 복원을 보류합니다: %s', target.name)
+        if not preserve:
+            shutil.rmtree(self.folder)
+
+
 class ToolExpandFileProcess:
     ##########################
     # preprocess_cleanup
     ##########################
     @classmethod
-    def preprocess_cleanup(cls, path, min_size: int = 0, max_age: int = 0, subtitle_exts: set = None):
+    def preprocess_cleanup(cls, path, min_size: int = 0, max_age: int = 0, subtitle_exts: set = None, dry_run=False):
         """max_age in sec"""
         path = Path(path)
         if not path.is_dir():
@@ -58,7 +196,8 @@ class ToolExpandFileProcess:
                     if child.is_dir():
                         if not list(cls._iterdir(child, min_size=min_size, subtitle_exts=subtitle_exts)):
                             logger.debug(f"폴더 삭제: {child}")
-                            shutil.rmtree(child)
+                            if not dry_run:
+                                shutil.rmtree(child)
                     elif child.is_file():
                         # 본편 영상이나 자막은 유지
                         if child.stat().st_size >= min_size * 1024**2 or child.suffix.lower() in subtitle_exts:
@@ -72,7 +211,8 @@ class ToolExpandFileProcess:
                                 
                         # 짝꿍 영상이 없는 고아(Orphan) 파일이거나 보호대상이 아닌 파일(이미지, 광고 등)이면 삭제
                         logger.debug(f"파일 삭제 (찌꺼기/고아 파일): {child}")
-                        child.unlink()
+                        if not dry_run:
+                            child.unlink()
             except Exception as e:
                 logger.warning(f"전처리 중 '{child}' 처리 실패: {e}")
 
@@ -155,9 +295,9 @@ class ToolExpandFileProcess:
 
             newdir = None
             if len(file.name) == 40 and file.name.isalnum():
-                newdir = errpath.joinpath("[FILENAME HASHED]")
+                newdir = errpath.joinpath("[FILENAME HASHED]") if errpath else None
             elif len(file.name.encode("utf-8")) > 200:
-                newdir = errpath.joinpath("[FILENAME TOO LONG]")
+                newdir = errpath.joinpath("[FILENAME TOO LONG]") if errpath else None
             else:
                 is_not_allowed = False
                 filename_lower = file.name.lower()
@@ -170,7 +310,7 @@ class ToolExpandFileProcess:
                     is_not_allowed = True
 
                 if is_not_allowed:
-                    newdir = errpath.joinpath("[FILENAME NOT ALLOWED]")
+                    newdir = errpath.joinpath("[FILENAME NOT ALLOWED]") if errpath else None
                 else:
                     files.append(file)
                     continue
@@ -184,7 +324,7 @@ class ToolExpandFileProcess:
                 if is_dry_run:
                     logger.warning(f"[Dry Run] 전처리: '{file.name}' -> '{newfile}' (이동 예정)")
                 else:
-                    shutil.move(file, newfile)
+                    UtilFunc.move(file, newfile)
             else:
                 if errpath is None:
                     logger.warning(f"전처리 실패 파일 건너뛰기 (처리실패폴더 미지정): {file.name}")
@@ -502,8 +642,13 @@ class ToolExpandFileProcess:
         if can_detect_korean:
             UtilFunc._initialize_chardet()
 
+        claimed = {str(sub['original_file'].absolute()) for video in videos
+                   for sub in video.get('companion_subs_list', [])}
         for s_info in subtitles:
             cooperate()
+            source_key = str(s_info['original_file'].absolute())
+            if source_key in claimed:
+                continue
             found_pair = False
             
             s_info['is_korean'] = True 
@@ -533,13 +678,14 @@ class ToolExpandFileProcess:
                         if 'companion_subs_list' not in v_info:
                             v_info['companion_subs_list'] = []
                         
-                        current_ext = s_info['original_file'].suffix.lower()
-                        has_same_ext = any(exist_sub['original_file'].suffix.lower() == current_ext for exist_sub in v_info['companion_subs_list'])
-                        
-                        if not has_same_ext:
-                            v_info['companion_subs_list'].append(s_info)
-                            found_pair = True
-                            break 
+                        s_info['_companion_language'] = sub_name[len(video_stem):-len(s_info['original_file'].suffix)].lstrip('.')
+                        if sum(video['original_file'].stem == video_stem for video in videos) > 1:
+                            s_info['_subtitle_pairing'] = 'ambiguous'
+                            logger.warning('동반자막 영상 매칭이 모호하여 기존 우선순위에 연결하고 원본은 보존합니다: %s', sub_name)
+                        v_info['companion_subs_list'].append(s_info)
+                        claimed.add(source_key)
+                        found_pair = True
+                        break
             
             if not found_pair:
                 unmatched_subs.append(s_info)
@@ -552,7 +698,7 @@ class ToolExpandFileProcess:
     ##########################
 
     @staticmethod
-    def _format_conditional_template(template_str, data):
+    def _format_conditional_template(template_str, data, format_all=False):
         """
         [[...]] 구문을 해석하여 조건부 템플릿을 포맷팅합니다.
         예: "[[{res_tag}]][[{v_codec}]]"
@@ -562,6 +708,9 @@ class ToolExpandFileProcess:
             try:
                 keys = re.findall(r'\{(\w+)\}', inner_template)
                 if not keys or all(data.get(key) for key in keys):
+                    if format_all:
+                        # 블록 선택 후 전체를 한 번만 포맷하여 값 안의 중괄호를 재해석하지 않습니다.
+                        return inner_template
                     # 조건 만족 시, 내부 템플릿을 포맷팅하여 반환
                     return string.Formatter().format(inner_template, **data)
                 else:
@@ -573,6 +722,8 @@ class ToolExpandFileProcess:
 
         # [[ 와 ]] 사이의 내용을 찾아 repl 함수로 치환
         formatted_str = re.sub(r'\[\[(.*?)\]\]', repl, template_str, flags=re.DOTALL)
+        if format_all:
+            formatted_str = SafeFormatter().format(formatted_str, **data)
 
         # 후처리: 연속된 공백을 하나로 만들고, 양 끝의 불필요한 공백/구분자 제거
         # 예: " FHD. .H264 " -> "FHD.H264"
@@ -977,8 +1128,107 @@ class UtilFunc:
 
 
     @staticmethod
+    def destination_state(src, dst, config=None):
+        src, dst = Path(src), Path(dst)
+        if src.resolve() == dst.resolve() or (src.exists() and dst.exists() and os.path.samefile(src, dst)):
+            return 'same'
+        if dst.exists() or dst.is_symlink():
+            return 'duplicate' if config is not None and UtilFunc.is_duplicate(src, dst, config) else 'conflict'
+        return 'new'
+
+    @staticmethod
+    def unique_destination(target, timestamp=None, group_stem=None):
+        target = Path(target)
+        if not os.path.lexists(target):
+            return target
+        stamp = int(time.time()) if timestamp is None else timestamp
+        sequence = 1
+        while True:
+            cooperate()
+            prefix = str(stamp) if sequence == 1 else f'{stamp}-{sequence}'
+            candidate = (target.with_name(f'{group_stem}.duplicate{sequence}{target.name[len(group_stem):]}')
+                         if group_stem else target.with_name(f'[{prefix}] {target.name}'))
+            if not os.path.lexists(candidate):
+                return candidate
+            sequence += 1
+
+    @staticmethod
+    def move_unique(source, target, timestamp=None, group_stem=None):
+        # Retry only name collisions; the actual no-clobber move is authoritative.
+        for attempt in range(1000):
+            cooperate()
+            candidate = UtilFunc.unique_destination(target, timestamp, group_stem)
+            try:
+                return UtilFunc.move(source, candidate)
+            except FileExistsError:
+                continue
+        raise FileExistsError('고유 이동 경로를 확보하지 못했습니다.')
+
+    @staticmethod
     def move(src: Path, trg: Path):
-        if trg.exists():
-            trg = trg.with_name(f"[{int(time.time())}] {trg.name}")
-        shutil.move(src, trg)
+        src, trg = Path(src), Path(trg)
+        if UtilFunc.destination_state(src, trg) == 'same':
+            return trg
+        if src.is_symlink():
+            os.symlink(os.readlink(src), trg, target_is_directory=src.is_dir())
+            src.unlink()
+            return trg
+        if src.is_dir():
+            if trg.resolve().is_relative_to(src.resolve()):
+                raise ValueError('원본 폴더 내부로 이동할 수 없습니다.')
+            if trg.exists():
+                raise FileExistsError(str(trg))
+            try:
+                # rename() can replace a directory created after the check.
+                # Linux's no-replace variant keeps that competing destination.
+                import ctypes
+                import errno
+                rename = getattr(ctypes.CDLL(None, use_errno=True), 'renameat2', None)
+                if rename is None:
+                    raise OSError(errno.ENOSYS, 'renameat2 unavailable')
+                if rename(-100, os.fsencode(src), -100, os.fsencode(trg), 1) != 0:
+                    raise OSError(ctypes.get_errno(), 'directory publish failed', str(trg))
+            except OSError as exc:
+                import errno
+                if exc.errno not in (errno.EXDEV, errno.ENOSYS, errno.EINVAL, errno.EOPNOTSUPP):
+                    raise
+                def copy_file(source, target):
+                    with open(source, 'rb') as reader, open(target, 'xb') as writer:
+                        while True:
+                            cooperate()
+                            chunk = reader.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            writer.write(chunk)
+                    shutil.copystat(source, target)
+                shutil.copytree(src, trg, symlinks=True, copy_function=copy_file)
+                shutil.rmtree(src)
+            return trg
+        # link is an atomic no-clobber publish on the same filesystem. Never
+        # let shutil.move silently replace another video or quarantine file.
+        try:
+            os.link(src, trg)
+        except OSError as exc:
+            import errno
+            if exc.errno not in (errno.EXDEV, errno.EPERM, errno.EOPNOTSUPP):
+                raise
+            created = None
+            try:
+                with open(src, 'rb') as source, open(trg, 'xb') as target:
+                    created = os.fstat(target.fileno())
+                    while True:
+                        chunk = source.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        cooperate()
+                        target.write(chunk)
+                shutil.copystat(src, trg)
+            except BaseException:
+                if created is not None and trg.exists():
+                    current = trg.stat()
+                    if (current.st_dev, current.st_ino) == (created.st_dev, created.st_ino):
+                        trg.unlink()
+                raise
+        src.unlink()
         logger.debug("Moved: %s -> %s", src.name, trg)
+        return trg

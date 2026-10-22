@@ -1,4 +1,5 @@
 from .util_jobs import monitored_task, progress
+from .util_shared_library import apply_shared_preview_policy, is_shared_library, shared_actor_image_order
 from .util_runtime import cooperate, processing_job, metadata_delay
 from .setup import *
 from pathlib import Path
@@ -7,6 +8,7 @@ import traceback
 import re
 import os
 import shutil
+import copy
 import time
 import requests
 import json
@@ -104,8 +106,10 @@ class TaskBase:
             "동반자막처리경로_메타실패시": ModelSetting.get("jav_censored_companion_meta_fail_path").strip(),
 
             # 메타 취득 시 임시 오버라이드 옵션 (개인용 vs 공유용 분기 지원)
-            "공유용라이브러리": ModelSetting.get_bool("jav_censored_is_shared_library") if ModelSetting.get("jav_censored_is_shared_library") is not None else False,
-            "배우이미지우선순위": ModelSetting.get("jav_censored_override_actor_img_order") or "",
+            # 공유용 옵션은 YAML 작업에서만 지정합니다.
+            "공유용라이브러리": False,
+            "공유용라이브러리_배우이미지우선순위": "",
+            "공유용라이브러리_유저프리뷰클립사용": False,
             "메타이미지모드": ModelSetting.get("jav_censored_override_image_mode") or "",
             "메타옵션_이미지제거": ModelSetting.get_bool("jav_censored_strip_images") if ModelSetting.get("jav_censored_strip_images") is not None else False,
         }
@@ -118,7 +122,7 @@ class TaskBase:
             config["메타매칭실패시이동"] = False
 
         if job_type in ['default', 'dry_run', 'manual_path', 'one_path']:
-            final_config = config.copy()
+            final_config = copy.deepcopy(config)
             final_config["이름"] = job_type
             if final_config.get('드라이런', False):
                 logger.warning(f"'{final_config['이름']}' 작업: Dry Run 모드가 활성화되었습니다.")
@@ -139,7 +143,7 @@ class TaskBase:
                     logger.info(f"YAML 작업 실행 시작: [{job_name}]")
                     logger.info(f"=========================================")
 
-                    final_config = config.copy()
+                    final_config = copy.deepcopy(config)
                     
                     # 안전한 덮어쓰기 로직 적용
                     for key, value in job.items():
@@ -156,7 +160,7 @@ class TaskBase:
                                 continue
                         
                         # 3. 검증 통과 시 덮어쓰기
-                        final_config[key] = value
+                        final_config[key] = copy.deepcopy(value)
 
                     # 아래 로직들은 job에 해당 키가 '있을 때만' 동작하므로 안전함
                     if '자막우선처리활성화' in job:
@@ -276,9 +280,9 @@ class Task:
                     
                     try:
                         if newfile.exists():
-                            newfile.unlink()
-                            
-                        shutil.move(str(file), str(newfile))
+                            logger.warning('기타 파일 목적지 충돌로 원본을 보존합니다: %s', file.name)
+                            continue
+                        UtilFunc.move(file, newfile)
                         logger.debug(f"기타 파일 이동 (중복 무시): {file.name} -> {target_dir}")
                         
                         entity = task_context['db_model'](config.get('이름'), str(file.parent), file.name)
@@ -519,7 +523,7 @@ class Task:
                     current_module = config.get('parse_mode')
                     for rule in subbed_path_config_yaml.get('규칙', []):
                         if rule.get('모듈', '').lower() == current_module:
-                            default_subbed_path_config['규칙'] = rule
+                            default_subbed_path_config['규칙'] = copy.deepcopy(rule)
                             default_subbed_path_config['규칙']['이동제외패턴'] = rule.get('이동제외패턴', '').strip()
                             # logger.debug(f"자막 우선 처리 규칙 로드: 모듈={current_module}, 경로={rule.get('경로')}")
                             break
@@ -608,20 +612,19 @@ class Task:
             target_dir.mkdir(parents=True, exist_ok=True)
 
             if target_file.exists():
-                logger.warning(f"NO LABEL 폴더에 동일 파일명이 존재하여 원본을 삭제합니다: {file_path.name}")
-                file_path.unlink()
+                logger.warning(f"NO LABEL 목적지 충돌로 원본을 보존합니다: {file_path.name}")
                 return
 
-            shutil.move(file_path, target_file)
+            UtilFunc.move(file_path, target_file)
             logger.info(f"품번 추출 실패 파일을 이동: {target_file}")
         except Exception as e:
             logger.error(f"{file_path.name} 이동 중 오류: {e}")
 
 
     @staticmethod
-    def __add_meta_no_path(module_name):
+    def __add_meta_no_path(module_name, dry_run=False):
         """메타 매칭 실패 파일을 주기적으로 재시도하기 위해 스캔 목록에 추가합니다."""
-        meta_no_path_str = ModelSetting.get(f'{module_name}_meta_no_path').strip()
+        meta_no_path_str = (ModelSetting.get(f'{module_name}_meta_no_path') or '').strip()
         if not meta_no_path_str: return []
 
         if '{' in meta_no_path_str:
@@ -635,10 +638,14 @@ class Task:
 
         last_retry_key = f"{module_name}_meta_no_last_retry"
         last_retry_str = ModelSetting.get(last_retry_key)
-        if (datetime.now() - datetime.fromisoformat(last_retry_str)).days < retry_every:
-            return []
+        try:
+            if last_retry_str and (datetime.now() - datetime.fromisoformat(last_retry_str)).days < retry_every:
+                return []
+        except (TypeError, ValueError):
+            logger.warning('매칭 실패 재시도 시각이 없어 최초 재시도로 처리합니다.')
 
-        ModelSetting.set(last_retry_key, datetime.now().isoformat())
+        if not dry_run:
+            ModelSetting.set(last_retry_key, datetime.now().isoformat())
         logger.info(f"매칭 실패 파일 재시도 폴더를 스캔 목록에 추가: {meta_no_path}")
         return [meta_no_path]
 
@@ -657,7 +664,7 @@ class Task:
         src_list = Task.get_path_list(config['다운로드폴더'])
 
         # 주기적 재시도
-        src_list.extend(Task.__add_meta_no_path(module_name))
+        src_list.extend(Task.__add_meta_no_path(module_name, dry_run=config.get('드라이런', False)))
 
         all_files = []
         for src in src_list:
@@ -666,7 +673,7 @@ class Task:
                 src, 
                 config.get('최소크기', 0), 
                 config.get('최대기간', 0),
-                config['subtitle_exts']
+                config['subtitle_exts'], dry_run=config.get('드라이런', False)
             )
             _f = ToolExpandFileProcess.preprocess_listdir(src, temp_path, config)
             all_files.extend(_f or [])
@@ -1107,7 +1114,10 @@ class Task:
         local_meta = info.get('local_meta_json')
         if local_meta:
             logger.info(f"'{info['pure_code']}' 로컬 JSON 메타데이터를 사용하여 검색을 건너뜁니다.")
-            return local_meta
+            return apply_shared_preview_policy(config, local_meta, 'JAV_CEN')
+
+        if config.get('드라이런', False):
+            return Task.readonly_metadata(config, info, 'JAV_CEN')
 
         meta_module = Task.get_meta_module('jav_censored')
         if not meta_module:
@@ -1116,28 +1126,19 @@ class Task:
 
         # extra_opts 초기화 및 옵션 정제
         metadata_delay(config)
-        extra_opts = {}
-
-        skip_trans = None
-        if config.get('번역스킵') is not None:
-            skip_trans = config.get('번역스킵')
-        elif config.get('skip_trans') is not None:
-            skip_trans = config.get('skip_trans')
-        elif config.get('_skip_trans_temp') is not None:
-            skip_trans = config.get('_skip_trans_temp')
-
-        if skip_trans is not None:
-            extra_opts['skip_trans'] = skip_trans
+        extra_opts = {'_media_completion': {}}
+        if not config.get('드라이런', False) and info.get('file_type') == 'video':
+            extra_opts['media_path'] = str(info['original_file'])
 
         # 한글/영문 키 호환 오버라이드 추출
-        is_shared = config.get('공유용라이브러리') or config.get('is_shared_library') or False
-        override_actor_img_order = config.get('배우이미지우선순위') or config.get('actor_img_order') or ""
+        is_shared = is_shared_library(config)
+        override_actor_img_order = config.get('actor_img_order') or ""
         override_image_mode = config.get('메타이미지모드') or config.get('image_mode') or ""
         override_strip_images = config.get('메타옵션_이미지제거') or config.get('strip_images') or False
 
         if is_shared:
             # 공유용 라이브러리 모드: 개인 서버 주소 노출 방지 옵션 주입
-            extra_opts['actor_img_order'] = override_actor_img_order or 'google_fileid, site_img_url'
+            extra_opts['actor_img_order'] = shared_actor_image_order(config)
             extra_opts['image_mode'] = override_image_mode or 'ff_proxy'
             if override_strip_images:
                 extra_opts['strip_images'] = True
@@ -1163,16 +1164,17 @@ class Task:
         if manual_url:
             logger.info(f"'{info['pure_code']}' JAV 수동 URL 매칭 시도: {manual_url}")
             try:
-                res = meta_module.search(manual_url, manual=True)
+                res = meta_module.search(manual_url, manual=True, media_path=str(info['original_file']))
                 if res and isinstance(res, list) and len(res) > 0:
-                    if res[0].get('score', 0) >= 95:
+                    if res[0].get('code') and (res[0].get('site') or res[0].get('site_key')) and res[0].get('score', 0) >= 95:
                         best_match = res[0]
             except Exception as e:
                 logger.error(f"JAV 수동 URL 검색 중 예외 발생: {e}")
                 logger.error(traceback.format_exc())
 
-        # 수동 매칭이 없거나 실패한 경우, 일반 자동 검색 진행
-        if not best_match:
+        # An explicit URL identifies the requested work; failed parsing must
+        # not silently select another work through a filename fallback.
+        if not best_match and not manual_url:
             label = ""
             try:
                 if '-' in search_name:
@@ -1188,8 +1190,9 @@ class Task:
 
             custom_search_settings = config.get('메타검색에사용할사이트')
 
-            if custom_search_settings:
-                site_list = [s for s in custom_search_settings if not config.get('메타검색에공식사이트만사용', False) or s.get('사이트') in ['dmm', 'mgstage']]
+            if custom_search_settings or config.get('메타검색에공식사이트만사용', False):
+                requested_sites = custom_search_settings or [{'사이트': 'dmm', '점수': 95}, {'사이트': 'mgstage', '점수': 95}]
+                site_list = [s for s in requested_sites if not config.get('메타검색에공식사이트만사용', False) or s.get('사이트') in ['dmm', 'mgstage']]
                 for rule in site_list:
                     cooperate()
                     site_name, min_score = rule.get('사이트'), rule.get('점수', 95)
@@ -1197,7 +1200,7 @@ class Task:
                     try:
                         res = meta_module.search2(search_name, site_name, manual=False)
                         if res and isinstance(res, list):
-                            match = next((item for item in res if item.get('score', 0) >= min_score), None)
+                            match = next((item for item in res if item.get('code') and (item.get('site') or item.get('site_key')) and item.get('score', 0) >= min_score), None)
                             if match:
                                 logger.debug(f"'{site_name}' 사이트에서 '{search_name}'에 대한 유효한 매치(점수: {match.get('score')})를 찾았습니다. 검색을 중단합니다.")
                                 best_match = match
@@ -1206,27 +1209,29 @@ class Task:
                         logger.error(f"'{site_name}' 사이트 검색 중 예외 발생: {e}")
             else:
                 try:
-                    res = meta_module.search(search_name, manual=False)
+                    res = meta_module.search(search_name, manual=False, media_path=str(info['original_file']))
                     if res and isinstance(res, list) and len(res) > 0:
-                        if res[0].get('score', 0) >= 95:
-                            best_match = res[0]
+                        best_match = next((item for item in res if item.get('code') and
+                            (item.get('site') or item.get('site_key')) and item.get('score', 0) >= 95), None)
                 except Exception as e:
                     logger.error(f"메타데이터 통합 검색(search) 중 예외 발생: {e}")
 
         # 매칭된 결과가 있으면 상세 정보 조회
-        if best_match:
+        if best_match and best_match.get('code') and (best_match.get('site') or best_match.get('site_key')):
             try:
                 keyword_param = info.get('search_keyword') if manual_url else search_name
                 meta_info = meta_module.info(best_match["code"], keyword=keyword_param, extra_opts=extra_opts)
                 if meta_info:
+                    if extra_opts.get('media_path'):
+                        Task.record_media_completion(info, extra_opts['_media_completion'])
                     match_site = best_match.get('site', 'N/A')
             except Exception as e:
                 logger.error(f"'{best_match['code']}'의 상세 정보 획득 중 예외 발생: {e}")
                 logger.error(traceback.format_exc())
                 
         if meta_info:
-            logger.info(f"'{info['pure_code']}' 메타 검색 성공: {meta_info.get('originaltitle')} (from: {match_site}, 번역스킵:{extra_opts.get('skip_trans', '기본값')}, 공유모드:{is_shared})")
-            return meta_info
+            logger.info(f"'{info['pure_code']}' 메타 검색 성공: {meta_info.get('originaltitle')} (from: {match_site}, 공유모드:{is_shared})")
+            return apply_shared_preview_policy(config, meta_info, 'JAV_CEN')
         else:
             logger.info(f"'{info['pure_code']}'에 대한 유효한 메타 정보를 찾지 못했습니다.")
             return None
@@ -1283,46 +1288,11 @@ class Task:
 
             first_info = next((i for i in group_infos if i.get('file_type') == 'video'), group_infos[0])
             progress(item=first_info['original_file'].name, force=True)
-            has_local_meta = bool(first_info.get('local_meta_json'))
             
             # 경로 계산 1회 수행 및 재사용
-            config['_skip_trans_temp'] = (not any_meta_option_on) or (not make_overwrite)
             target_dir_for_group, _, meta_info_for_group = Task._get_final_target_path(config, first_info, task_context, do_meta_search=True)
 
-            # 로컬 메타가 없을 때만 누락 파일 검사 및 재요청
-            if meta_info_for_group and any_meta_option_on and not make_overwrite and not has_local_meta:
-                needs_files = False
-                if target_dir_for_group:
-                    if not target_dir_for_group.exists():
-                        needs_files = True
-                    else:
-                        is_code_folder = first_info.get('is_code_folder', False)
-                        identifier = (meta_info_for_group.get('originaltitle') or meta_info_for_group.get('sorttitle') or meta_info_for_group.get('code', 'movie')).lower()
-                        
-                        video_stem = Path(first_info.get('newfilename', first_info['original_file'].name)).stem
-                        if first_info.get('is_part_of_set') and first_info.get('parsed_part_type'):
-                            part_type = first_info.get('parsed_part_type')
-                            if video_stem.endswith(part_type):
-                                video_stem = video_stem[:-len(part_type)]
-
-                        prefix = 'movie' if is_code_folder else video_stem
-                        img_prefix = '' if is_code_folder else f'{video_stem}-'
-                        trailer_name = 'movie-trailer.mp4' if is_code_folder else f'{video_stem}-trailer.mp4'
-
-                        if config.get('부가파일생성_YAML', False) and not target_dir_for_group.joinpath(f'{prefix}.yaml').exists(): needs_files = True
-                        elif config.get('부가파일생성_NFO', False) and not target_dir_for_group.joinpath(f'{prefix}.nfo').exists(): needs_files = True
-                        elif config.get('부가파일생성_JSON', False) and not target_dir_for_group.joinpath(f'{identifier}.json').exists(): needs_files = True
-                        elif config.get('부가파일생성_IMAGE', False):
-                            if meta_info_for_group.get('thumb') and not target_dir_for_group.joinpath(f'{img_prefix}poster.jpg').exists(): needs_files = True
-                            if (meta_info_for_group.get('fanart') or meta_info_for_group.get('thumb')) and not target_dir_for_group.joinpath(f'{img_prefix}fanart.jpg').exists(): needs_files = True
-                        elif config.get('부가파일생성_TRAILER', False) and meta_info_for_group.get('extras') and not target_dir_for_group.joinpath(trailer_name).exists(): needs_files = True
-
-                if needs_files:
-                    logger.debug(f"'{pure_code}' 부가 파일 생성/갱신이 필요하여 번역이 포함된 메타데이터를 다시 요청합니다.")
-                    config['_skip_trans_temp'] = False 
-                    meta_info_for_group = Task._get_metadata(config, first_info)
-
-            # 메타데이터 품번 동기화
+            # 확정된 메타데이터의 품번으로 파일명을 동기화한다.
             if meta_info_for_group and meta_info_for_group.get('originaltitle'):
                 meta_code_raw = meta_info_for_group['originaltitle']
                 meta_code_lower = meta_code_raw.lower()
@@ -1349,6 +1319,7 @@ class Task:
 
             for info in group_infos:
                 cooperate()
+                bundle = None
                 try:
                     progress(current=item_count, item=info['original_file'].name)
                     item_count += 1
@@ -1393,82 +1364,56 @@ class Task:
                        any_meta_option_on and \
                        info.get('file_type') == 'video':
                         info['should_create_meta'] = True
-                        processed_dirs_for_group.add(current_target_dir_str)
 
                     info.update({'target_dir': target_dir, 'move_type': move_type, 'meta_info': meta_info_for_group})
 
-                    # 1. 사전 부가 파일 생성
-                    local_json_moved = False
-                    if not config.get('드라이런', False):
-                        target_dir.mkdir(parents=True, exist_ok=True)
-                        
-                        if info.get('file_type') == 'video':
-                            json_file = info['original_file'].with_suffix('.json')
-                            if json_file.exists() and info.get('local_meta_json'):
-                                try:
-                                    target_json_name = (meta_info_for_group.get('originaltitle') or meta_info_for_group.get('sorttitle') or meta_info_for_group.get('code', 'movie')).lower()
-                                    target_json_path = target_dir.joinpath(f"{target_json_name}.json")
-                                    
-                                    if json_file.resolve() != target_json_path.resolve():
-                                        if target_json_path.exists():
-                                            json_file.unlink()
-                                        else:
-                                            shutil.move(str(json_file), str(target_json_path))
-                                            logger.debug(f"로컬 JSON 메타 파일 사전 이동 완료: {target_json_path.name}")
-                                    local_json_moved = True
-                                except Exception as e:
-                                    pass
-                        
+                    destination = target_dir / info.get('newfilename', info['original_file'].name)
+                    if not info['original_file'].exists():
+                        logger.warning('영상 원본이 없어 동반자막도 보존합니다: %s', info['original_file'].name)
+                        continue
+                    if (info['original_file'].resolve() == destination.resolve() or
+                            (destination.exists() and not UtilFunc.is_duplicate(info['original_file'], destination, config))):
+                        logger.warning('목적지 동일 파일/이름 충돌로 원본을 보존합니다: %s', destination.name)
+                        continue
+
+                    duplicate_video = (move_type in valid_scan_types and info.get('file_type') == 'video' and
+                                       info['original_file'].exists() and
+                                       UtilFunc.is_duplicate(info['original_file'], destination, config))
+                    if move_type in valid_scan_types and not duplicate_video:
+                        Task.complete_metadata_before_move(config, info, 'jav_censored')
+
+                    # Prepare copies, publish sidecars, then move the video last.
+                    if (not config.get('드라이런', False) and info.get('file_type') == 'video'
+                            and move_type in valid_scan_types
+                            and not UtilFunc.is_duplicate(info['original_file'], destination, config)):
+                        bundle = Task.prepare_source_bundle(config, info, meta_info_for_group, 'jav_censored')
                         if info['should_create_meta'] and meta_info_for_group:
-                            logger.info(f"{log_prefix} 부가 파일 사전 생성 중...: {target_dir}")
-                            printable_meta_info = meta_info_for_group.copy()
+                            printable_meta_info = copy.deepcopy(meta_info_for_group)
                             printable_meta_info.pop('original', None)
-                            
-                            video_stem_for_meta = Path(info.get('newfilename', info['original_file'].name)).stem
-                            if info.get('is_part_of_set') and info.get('parsed_part_type'):
-                                part_type = info.get('parsed_part_type')
-                                if video_stem_for_meta.endswith(part_type):
-                                    video_stem_for_meta = video_stem_for_meta[:-len(part_type)]
-
-                            try:
-                                TaskMakeYaml.make_files(
-                                    printable_meta_info,
-                                    current_target_dir_str,
-                                    make_yaml=config.get('부가파일생성_YAML', False),
-                                    make_nfo=config.get('부가파일생성_NFO', False),
-                                    make_json=config.get('부가파일생성_JSON', False) and not local_json_moved, # 이미 옮겼으면 생략!
-                                    make_image=config.get('부가파일생성_IMAGE', False),
-                                    make_trailer=config.get('부가파일생성_TRAILER', False),
-                                    make_overwrite=config.get('부가파일덮어쓰기', False),
-                                    include_media_path=config.get('부가파일미디어경로포함', False),
-                                    is_code_folder=info.get('is_code_folder', False),
-                                    module_name='jav',
-                                    original_filename=video_stem_for_meta
-                                )
-                            except Exception as meta_e:
-                                logger.error(f"부가 파일 생성 중 오류: {meta_e}")
-
-                    # 2. 동반 자막 이동
-                    if 'companion_subs_list' in info:
-                        for s_info in info['companion_subs_list']:
-                            cooperate()
-                            sub_ext = s_info['original_file'].suffix
-                            logger.info(f"{log_prefix} 동반 자막 선이동: {s_info['original_file'].name}")
-                            
-                            new_video_stem = Path(info.get('newfilename', info['original_file'].name)).stem
-                            final_sub_name = new_video_stem
-                            
-                            if s_info.get('is_korean', True) and config.get('동반자막언어코드추가', True) and not re.search(r'\.(ko|kr|kor)$', new_video_stem, re.I):
-                                final_sub_name += '.ko'
-                            final_sub_name += sub_ext
-
-                            s_info.update({'target_dir': target_dir, 'move_type': 'companion_kor_sub', 'newfilename': final_sub_name})
-                            s_entity = Task.__file_move_logic(config, s_info, db_model)
-                            if s_entity and s_entity.target_path: 
-                                s_entity.save()
+                            printable_meta_info.setdefault('extra_info', {}).pop('source_video_path', None)
+                            sidecar_result = TaskMakeYaml.make_files(
+                                printable_meta_info, str(bundle.folder),
+                                make_yaml=config.get('부가파일생성_YAML', False),
+                                make_nfo=config.get('부가파일생성_NFO', False),
+                                make_json=config.get('부가파일생성_JSON', False) and not info.get('_local_json_prepared'),
+                                make_image=config.get('부가파일생성_IMAGE', False),
+                                make_trailer=config.get('부가파일생성_TRAILER', False),
+                                make_overwrite=config.get('부가파일덮어쓰기', False),
+                                include_media_path=config.get('부가파일미디어경로포함', False),
+                                is_code_folder=info.get('is_code_folder', False),
+                                module_name='jav',
+                                original_filename=info['_sidecar_stem'], existing_folder=str(target_dir), storage_result=info.get('_media_completion'))
+                            if sidecar_result is False:
+                                raise RuntimeError('필수 부가파일 저장 실패로 영상 이동을 보류합니다.')
+                        bundle.publish()
 
                     # 3. 본 영상 이동
                     entity = Task.__file_move_logic(config, info, db_model)
+                    if bundle and entity and entity.target_path and not info['original_file'].exists():
+                        bundle.commit()
+                        processed_dirs_for_group.add(current_target_dir_str)
+                    if info.get('file_type') == 'video':
+                        Task.finish_companion_subtitles(config, info, entity, db_model, bundle)
                     
                     if entity or config.get('드라이런', False):
                         if entity: 
@@ -1486,6 +1431,9 @@ class Task:
                                 logger.warning(f"'{info['original_file'].name}' 이동 실패: 대상 경로가 없습니다.")
                                 continue
 
+                        if entity and entity.target_path and entity.move_type in valid_scan_types:
+                            Task.complete_moved_metadata(config, info, entity, 'jav_censored')
+
                         # 4. 스캔 요청: 모든 파일 이동이 끝난 후, 대상이 '영상(video)'일 때만 1회 즉시 호출
                         if scan_enabled and entity and entity.target_path and entity.move_type in valid_scan_types:
                             if info.get('file_type') == 'video':
@@ -1493,7 +1441,10 @@ class Task:
                 
                 except Exception as e:
                     logger.error(f"'{info.get('pure_code', '알 수 없음')}' 파일 처리 중 예외 발생: {e}")
-                    logger.error(traceback.format_exc())
+                    logger.debug(traceback.format_exc())
+                finally:
+                    if bundle is not None:
+                        bundle.close()
 
         logger.info("fp_av_jav_censored: 모든 작업이 완료되었습니다.")
         progress(current=item_count, item='', force=True)
@@ -1511,11 +1462,18 @@ class Task:
 
         entity = model_class(config.get('이름'), str(file.parent), file.name)
 
+        if not file.exists():
+            return entity.set_move_type('source_missing')
         if move_type is None or target_dir is None:
             logger.warning(f"'{file.name}'의 최종 이동 경로를 결정할 수 없어 건너뜁니다.")
             return entity.set_move_type(None)
 
         newfile = target_dir.joinpath(newfilename)
+
+        state = UtilFunc.destination_state(file, newfile, config)
+        if state in ('same', 'conflict'):
+            logger.warning('파일 이동 보류 (%s): %s', state, file.name)
+            return entity.set_move_type('same_file_skipped' if state == 'same' else 'destination_conflict')
 
         # Dry Run 모드일 경우, 로그만 남기고 조기 리턴
         if is_dry_run:
@@ -1524,7 +1482,7 @@ class Task:
 
             if move_type == "no_meta" and not config.get('메타매칭실패시이동폴더', ''):
                 log_msg += f"         결과: '메타매칭실패시이동폴더'가 비어있어 건너뛸 예정"
-            elif move_type == "failed_video" and not config.get('처리실패이동폴더', ''):
+            elif move_type == "failed_video" and not (config.get('처리실패이동폴더', '') or config.get('미디어정보실패시이동경로')):
                 log_msg += f"         결과: '처리실패이동폴더'가 비어있어 건너뛸 예정"
             elif UtilFunc.is_duplicate(file, newfile, config):
                 remove_path_str = config.get('중복파일이동폴더', '')
@@ -1536,17 +1494,25 @@ class Task:
                 log_msg += f"         결과: 정상적으로 이동될 예정"
 
             logger.warning(log_msg)
+            subtitle_video = newfile
+            if UtilFunc.is_duplicate(file, newfile, config):
+                quarantine = str(config.get('중복파일이동폴더') or '').strip()
+                subtitle_video = UtilFunc.unique_destination(Path(quarantine) / newfilename) if quarantine else None
+            for sub, name, collision in Task.companion_subtitle_names(config, info, subtitle_video or newfile):
+                logger.warning('[Dry Run] 동반자막: %s -> %s%s', sub['original_file'].name,
+                               str(subtitle_video.parent / name) if subtitle_video else '원본 보존',
+                               ' (이름 충돌 시 해당 자막만 격리/보존)' if collision else '')
             return None
 
         # 미디어 분석 실패(failed_video) 처리
         if move_type == "failed_video":
             failed_video_path_str = config.get('처리실패이동폴더', '').strip()
-            if not failed_video_path_str:
+            if not failed_video_path_str and not config.get('미디어정보실패시이동경로'):
                 logger.info(f"미디어 분석 실패: '처리실패이동폴더'가 비어있어 이동을 건너뜁니다: {file.name}")
                 return entity.set_move_type("failed_video_skipped")
 
             target_dir.mkdir(parents=True, exist_ok=True)
-            shutil.move(file, newfile)
+            UtilFunc.move(file, newfile)
             logger.info(f"미디어 분석 실패 파일을 이동했습니다: {newfile}")
 
             return entity.set_target(newfile).set_move_type(move_type)
@@ -1554,10 +1520,9 @@ class Task:
         if move_type in ["no_meta", "meta_fail"]:
             target_dir.mkdir(parents=True, exist_ok=True)
             if newfile.exists():
-                file.unlink()
-                return entity.set_move_type("no_meta_deleted_due_to_duplication")
+                return entity.set_move_type("duplicate_skipped")
             else:
-                shutil.move(file, newfile)
+                UtilFunc.move(file, newfile)
                 logger.info(f"메타 매칭 실패 파일을 이동했습니다: {newfile}")
                 return entity.set_target(newfile).set_move_type(move_type)
 
@@ -1576,13 +1541,8 @@ class Task:
                 remove_path = Path(remove_path_str)
                 remove_path.mkdir(parents=True, exist_ok=True)
 
-                final_dup_path = remove_path.joinpath(newfilename)
-                if final_dup_path.exists():
-                    timestamp = int(datetime.now().timestamp())
-                    unique_filename = f"[{timestamp}] {newfilename}"
-                    final_dup_path = remove_path.joinpath(unique_filename)
-
-                shutil.move(file, final_dup_path)
+                final_dup_path = UtilFunc.move_unique(file, remove_path / newfilename,
+                                                     timestamp=int(datetime.now().timestamp()))
                 logger.info(f"중복 파일을 다음 경로로 이동했습니다: {final_dup_path}")
 
                 return entity.set_target(final_dup_path).set_move_type(move_type + "_already_exist")
@@ -1592,7 +1552,7 @@ class Task:
             try:
                 # 파일 이동
                 target_dir.mkdir(parents=True, exist_ok=True) 
-                shutil.move(file, newfile)
+                UtilFunc.move(file, newfile)
                 logger.info(f"파일 이동 성공: -> {newfile}")
 
                 # 방송 처리 (이동 성공 후)
@@ -1615,7 +1575,10 @@ class Task:
                     logger.debug(f"방송(Discord) 전송 데이터: {bot}")
                     
                     hook = base64.b64decode(b'aHR0cHM6Ly9kaXNjb3JkLmNvbS9hcGkvd2ViaG9va3MvMTM5OTkxMDg4MDE4NzEyNTgxMS84SFY0bk93cGpXdHhIdk5TUHNnTGhRbDhrR3lGOXk4THFQQTdQVTBZSXVvcFBNN21PWHhkSVJSNkVmcmIxV21UdFhENw==').decode('utf-8')
-                    SupportDiscord.send_discord_bot_message(json.dumps(bot), hook)
+                    try:
+                        SupportDiscord.send_discord_bot_message(json.dumps(bot), hook)
+                    except Exception:
+                        logger.warning('파일 이동은 완료됐으나 방송 전송에 실패했습니다.')
 
                 return entity.set_target(newfile).set_move_type(move_type)
 
@@ -1938,10 +1901,262 @@ class Task:
 
 
     @staticmethod
+    def readonly_metadata(config, info, category):
+        """Dry-run uses only already-initialized DB reads; no provider/info calls."""
+        try:
+            from metadata.mod_meta_db import ModuleMetaDb, MetaItem
+            from sqlalchemy.orm import sessionmaker
+            from sqlalchemy import or_
+            domain = {'JAV_CEN': 'jav_cen', 'JAV_UNCEN': 'jav_uncen', 'WESTERN': 'western'}[category]
+            registry = ModuleMetaDb._sessions.get('postgres' if ModuleMetaDb._is_postgres else domain)
+            if registry is None:
+                return None
+            session = sessionmaker(bind=registry.get_bind())()
+            try:
+                code = info.get('pure_code') or ''
+                identity = (MetaItem.code == code) if category == 'WESTERN' else or_(
+                    MetaItem.code == code, MetaItem.ui_code == code.upper())
+                item = session.query(MetaItem).filter(MetaItem.category == category, identity).first()
+                if item:
+                    return apply_shared_preview_policy(config, ModuleMetaDb.to_entity_dict(item), category)
+            finally:
+                session.close()
+        except Exception:
+            logger.warning('[Dry Run] 기존 메타 DB 읽기가 불가하여 파일명 기준 계획만 표시합니다.')
+        return None
+
+    @staticmethod
+    def record_media_completion(info, receipt):
+        if not receipt or receipt.get('path') != str(info.get('original_file')):
+            return
+        info['_media_completion'] = dict(receipt)
+        if receipt.get('state') in ('finished', 'finished_with_warnings'):
+            info['_media_completed_path'] = receipt['path']
+        if receipt.get('state') != 'finished':
+            logger.warning('미디어 보완 결과: %s (%s)', receipt.get('state'), receipt.get('error_code') or receipt.get('warnings') or receipt.get('failures') or '')
+
+    @staticmethod
+    def companion_subtitle_names(config, info, video_target):
+        """Preserve explicit language tags; avoid collapsing bare and .ko sources."""
+        subtitles = info.get('companion_subs_list') or []
+        def language(sub):
+            if '_companion_language' in sub:
+                return sub['_companion_language']
+            source = sub['original_file']
+            video_stem = info['original_file'].stem
+            tail = source.stem[len(video_stem):] if source.stem.startswith(video_stem) else ''
+            return tail[1:] if re.fullmatch(r'\.[a-zA-Z]{2,3}', tail) else ''
+        explicit = {(str(video_target.stem) + '.' + language(sub) + sub['original_file'].suffix).casefold()
+                    for sub in subtitles if language(sub)}
+        occupied = set()
+        result = []
+        for sub in subtitles:
+            tag = language(sub)
+            suffix = ('.' + tag) if tag else ''
+            if not tag and sub.get('is_korean', True) and config.get('동반자막언어코드추가', True):
+                korean = video_target.stem + '.ko' + sub['original_file'].suffix
+                if korean.casefold() not in explicit:
+                    suffix = '.ko'
+            name = video_target.stem + suffix + sub['original_file'].suffix
+            collision = name.casefold() in occupied
+            occupied.add(name.casefold())
+            result.append((sub, name, collision))
+        return result
+
+    @staticmethod
+    def finish_companion_subtitles(config, info, entity, model_class, bundle=None):
+        """Follow the confirmed video outcome; a subtitle error never undoes video."""
+        if config.get('드라이런', False) or not entity or not entity.target_path:
+            return
+        if entity.move_type in ('same_file_skipped', 'destination_conflict', 'duplicate_skipped', 'move_fail',
+                                'source_missing', 'already_processed_by_other'):
+            return
+        video = Path(entity.target_path)
+        if info['original_file'].exists() or not video.is_file():
+            return
+        confirmed = bundle.confirmed_sources if bundle else {}
+        folder_move = info.get('_companion_folder_move')
+        for sub, name, collision in Task.companion_subtitle_names(config, info, video):
+            source = sub['original_file']
+            failure = bundle.failures.get(sub.get('_subtitle_staged_name')) if bundle else None
+            if failure:
+                sub['_subtitle_status'] = failure
+            target = confirmed.get(str(source))
+            moved_type = 'companion_kor_sub'
+            try:
+                if folder_move:
+                    target = Path(folder_move[1]) / source.relative_to(folder_move[0])
+                    if not target.is_file() or source.exists():
+                        raise OSError('폴더 이동된 자막을 확인할 수 없습니다.')
+                    sub['_subtitle_status'] = 'folder_moved'
+                elif sub.get('_subtitle_pairing') == 'ambiguous':
+                    sub['_subtitle_status'] = 'held'
+                    logger.warning('동일 우선순위의 영상이 여러 개여서 자막 원본을 보존합니다: %s', source.name)
+                    continue
+                elif target:
+                    sub['_subtitle_status'] = 'cleanup_pending' if source.exists() else 'moved'
+                    if source.exists():
+                        moved_type = 'companion_subtitle_cleanup_pending'
+                elif not source.is_file():
+                    sub['_subtitle_status'] = 'source_missing'
+                    continue
+                else:
+                    duplicate = str(entity.move_type or '').endswith('_already_exist')
+                    conflict = collision or sub.get('_subtitle_status') == 'collision'
+                    if not duplicate and sub.get('_subtitle_status') == 'publish_failed':
+                        logger.warning('영상 이동 완료, 자막 원본은 재시도를 위해 보존합니다: %s', source.name)
+                        continue
+                    if duplicate:
+                        destination = video.parent / name
+                        moved_type = entity.move_type
+                    elif conflict:
+                        quarantine = str(config.get('중복파일이동폴더') or '').strip()
+                        if not quarantine:
+                            sub['_subtitle_status'] = 'collision'
+                            logger.warning('자막 이름 충돌, 중복 폴더 미지정으로 해당 원본만 보존합니다: %s', source.name)
+                            continue
+                        destination = Path(quarantine) / name
+                        moved_type = 'companion_subtitle_collision'
+                    else:
+                        destination = video.parent / name
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    # Unique names in quarantine retain the confirmed video's
+                    # basename; they do not invent a separate video timestamp.
+                    if duplicate or conflict:
+                        target = UtilFunc.move_unique(source, destination, group_stem=video.stem)
+                    else:
+                        try:
+                            target = UtilFunc.move(source, destination)
+                        except FileExistsError:
+                            sub['_subtitle_status'] = 'collision'
+                            logger.warning('자막 목적지 경합, 원본 보존: %s', source.name)
+                            continue
+                    sub['_subtitle_status'] = 'moved'
+                sub['_prepared_subtitle_target'] = str(target)
+                sub.update(target_dir=Path(target).parent, newfilename=Path(target).name, move_type=moved_type)
+                record = model_class(config.get('이름'), str(source.parent), source.name)
+                record.set_target(Path(target)).set_move_type(moved_type).save()
+            except Exception:
+                sub['_subtitle_status'] = 'held'
+                logger.warning('영상 결과는 유지하고 자막 처리/이력만 보류합니다: %s', source.name)
+
+    @staticmethod
+    def prepare_source_bundle(config, info, metadata, module_name):
+        from .tool import SidecarBundle
+        bundle = SidecarBundle(info['target_dir'], config.get('부가파일덮어쓰기', False))
+        try:
+            info['_local_json_prepared'] = False
+            source = info['original_file']
+            stem = Path(info.get('newfilename', source.name)).stem
+            part = info.get('western_part_tag') if module_name == 'western' else info.get('parsed_part_type')
+            if info.get('is_part_of_set') and part and stem.endswith(part):
+                stem = stem[:-len(part)]
+            info['_sidecar_stem'] = stem
+            local_json = source.with_suffix('.json')
+            if info.get('local_meta_json') and local_json.is_file():
+                data = copy.deepcopy(info['local_meta_json'])
+                def merge(target, incoming):
+                    for key, value in incoming.items():
+                        if isinstance(value, dict) and isinstance(target.get(key), dict):
+                            merge(target[key], value)
+                        else:
+                            target[key] = copy.deepcopy(value)
+                merge(data, metadata or {})
+                data = apply_shared_preview_policy(config, data, 'WESTERN' if module_name == 'western' else 'JAV_UNCEN' if module_name == 'jav_uncensored' else 'JAV_CEN')
+                def clean(value):
+                    if isinstance(value, dict):
+                        return {key: clean(item) for key, item in value.items() if key != 'source_video_path'}
+                    if isinstance(value, list):
+                        return [clean(item) for item in value]
+                    return value
+                name = stem if module_name == 'western' else str(data.get('originaltitle') or data.get('sorttitle') or data.get('code') or source.stem).lower()
+                bundle.write_json(clean(data), name + '.json', local_json)
+                info['_local_json_prepared'] = True
+            for sub, name, collision in Task.companion_subtitle_names(config, info, info['target_dir'] / info.get('newfilename', source.name)):
+                sub.pop('_prepared_subtitle_target', None)
+                if sub.get('_subtitle_pairing') == 'ambiguous':
+                    sub['_subtitle_status'] = 'held'
+                    continue
+                sub['_subtitle_status'] = 'collision' if collision else 'prepared'
+                sub['_subtitle_staged_name'] = name
+                if collision:
+                    logger.warning('자막 이름 충돌, 영상 성공 후 해당 자막만 격리/보존합니다: %s', sub['original_file'].name)
+                    continue
+                try:
+                    bundle.copy_source(sub['original_file'], name, optional=True)
+                except FileExistsError:
+                    sub['_subtitle_status'] = 'collision'
+                except OSError:
+                    sub['_subtitle_status'] = 'publish_failed'
+                    logger.warning('자막 준비 실패, 원본은 보존하고 영상 처리를 계속합니다: %s', sub['original_file'].name)
+            return bundle
+        except BaseException:
+            bundle.close()
+            raise
+
+    @staticmethod
+    def complete_metadata_before_move(config, info, module_name):
+        """Finish and persist media before a move can trigger an external scan."""
+        metadata = info.get('meta_info')
+        if config.get('드라이런', False) or info.get('file_type') != 'video' or not metadata:
+            return
+        source_path = str(info['original_file'])
+        if info.get('_media_completed_path') == source_path:
+            logger.debug('[MetaDB] 메타 수집 단계에서 미디어 보완 완료, 중복 처리 생략: %s', metadata.get('code'))
+            return
+        receipt = info.get('_media_completion') or {}
+        if receipt.get('path') == source_path and receipt.get('state') in ('blocked', 'policy_skipped', 'finished_with_warnings', 'finished'):
+            logger.warning('이미 처리/보류된 같은 미디어 요청을 재발행하지 않습니다: %s', receipt.get('state'))
+            return
+        code = metadata.get('code')
+        if not code:
+            logger.warning('[MetaDB] 미디어 보완 생략: 메타데이터 고유 코드 없음 (%s)', source_path)
+            return
+        try:
+            module = Task.get_meta_module(module_name)
+            if module is None:
+                return
+            from metadata.mod_meta_db import ModuleMetaDb
+            logger.debug('[MetaDB] 이동 전 미디어 보완 시작: %s (%s)', code, source_path)
+            result = ModuleMetaDb.complete_item_media(code, module.category, source_path, metadata=metadata)
+            from metadata.util_metadata import MetaUtil
+            receipt = {}
+            MetaUtil.note_media_completion({'_media_completion': receipt}, result, source_path)
+            Task.record_media_completion(info, receipt)
+            completed = result.get('data') or {}
+            if completed:
+                extra = metadata.setdefault('extra_info', {})
+                extra.pop('source_video_path', None)
+                for key in ('trailer_video', 'preview_clip', 'media_errors'):
+                    if key in completed.get('extra_info', {}):
+                        extra[key] = completed['extra_info'][key]
+                    else:
+                        extra.pop(key, None)
+                metadata['extras'] = completed.get('extras') or []
+                if 'original' in completed:
+                    metadata['original'] = completed['original']
+                filtered = apply_shared_preview_policy(config, metadata, module.category)
+                if filtered is not metadata:
+                    metadata.clear()
+                    metadata.update(filtered)
+            if result.get('ret') == 'success':
+                logger.debug('[MetaDB] 이동 전 미디어 보완 완료: %s', code)
+        except Exception:
+            logger.exception('[MetaDB] 미디어 보완 오류, 파일처리 계속: %s', code)
+
+    @staticmethod
+    def complete_moved_metadata(config, info, entity, module_name):
+        """Keep source movie locations out of metadata after the move."""
+        metadata = info.get('meta_info')
+        if config.get('드라이런', False) or info.get('file_type') != 'video' or not metadata or not entity.target_path:
+            return
+        metadata.setdefault('extra_info', {}).pop('source_video_path', None)
+
+    @staticmethod
     def get_meta_module(module_name):
         """[공용] 지정된 이름의 메타데이터 모듈을 로드하고 캐싱합니다."""
         try:
-            if module_name not in Task.metadata_modules:
+            if Task.metadata_modules.get(module_name) is None:
                 instance = F.PluginManager.get_plugin_instance("metadata")
                 if instance:
                     Task.metadata_modules[module_name] = instance.get_module(module_name)

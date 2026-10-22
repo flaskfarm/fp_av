@@ -1,162 +1,29 @@
-import uuid
-from .util_runtime import cooperate
-from .setup import *
-from pathlib import Path
-ModelSetting = P.ModelSetting
-from .tool import ToolExpandFileProcess, UtilFunc
-from .model_jav_censored import ModelJavCensoredItem
-from support import SupportYaml, SupportUtil
+import json
 import os
+import uuid
 
+import requests
+
+from .util_runtime import cooperate
+from .setup import F, logger
+from support import SupportYaml
 
 
 class Task:
-    metadata_module = None
-
-    config = {}
-
-    def load():
-        try:
-            Task.config= SupportYaml.read_yaml('/data/db/fp_av_make_yaml.yaml')
-            print(Task.config)
-        except Exception as e:
-            logger.error(f"YAML 파일 처리 중 오류 발생: {str(e)}")
-
-    @F.celery.task
-    def start1(*args):
-        Task.load()
-        logger.info("Jav Censored Task 시작")
-        logger.info(d(args))
-        Task.meta_module = Task.get_meta_module()
-
-        if os.path.exists(Task.Task.config['finish_folder_path']):
-            logger.info(f"처리완료 폴더 파일이 존재: {Task.config['finish_folder_path']}")
-            with open(Task.config['finish_folder_path'], "r", encoding="utf-8") as f:
-                for line in f:
-                    tmps = line.split('|')
-                    print(line)
-                    if tmps:
-                        if  tmps[0] not in Task.config['finish_folder']:
-                            Task.config['finish_folder'].append(tmps[0])
-                            Task.config['code_list'].append(tmps[1])
-                        else:
-                            logger.error(f"중복된 폴더: {tmps[0]}")
-                            logger.error(f"중복된 폴더: {tmps[0]}")
-                            logger.error(f"중복된 폴더: {tmps[0]}")
-                            logger.error(f"중복된 폴더: {tmps[0]}")
-                            return
-                #Task.config['finish_folder'] = set(line.strip() for line in f)
-            logger.info(f"처리완료 폴더: {len(Task.config['finish_folder'])}개")
-        else:
-            Task.config['finish_folder'] = []
-        #Task.config['finish_folder'] = set(Task.config['finish_folder'])
-        #Task.config['code_list'] = set(Task.config['code_list'])
-        logger.info(f"처리완료 폴더: {len(Task.config['finish_folder'])}개")
-
-        for alphabet in os.listdir(Task.config["root"]):
-            cooperate()
-            path_alphabet = os.path.join(Task.config["root"], alphabet)
-            for label in os.listdir(path_alphabet):
-                cooperate()
-                path_label = os.path.join(path_alphabet, label)
-                for code in os.listdir(path_label):
-                    cooperate()
-                    try:
-                        path_code = os.path.join(path_label, code)
-                        #logger.debug(path_code)
-                        if path_code in Task.config['finish_folder']:
-                            continue
-                        #for filename in ['info.json', 'movie.yaml', 'movie.nfo']:
-                        #    tmp = os.path.join(path_code, filename)
-                        #    if os.path.exists(tmp):
-                        #        os.remove(tmp)
-                        data = {'path_code': path_code}    
-                        Task.process_code(data)
-                    except Exception as e:
-                        logger.error(f"Exception:{str(e)}")
-                        logger.error(traceback.format_exc())
-                    #return
-
-    def process_code(data):
-        #logger.error("처리할 코드: %s", data['path_code'])
-        #if data['path_code'] in Task.config['finish_folder']:
-        #    #logger.error("이미 처리한 폴더: %s", data['path_code'])
-        #    return
-
-        data['code'] = os.path.split(data['path_code'])[-1]
-        #data['code'] = re.sub(r"[\[\{\(].*?[\]\}\)]", "", data['code']).strip()
-        data['code'] = re.sub(r"\[.*?\]", "", data['code']).strip()
-        data['code'] = re.sub(r"\(.*?\)", "", data['code']).strip()
-        data['code'] = re.sub(r"\{.*?\}", "", data['code']).strip()
-        logger.error(f"검색: {data['code']}")
-        
-        """
-        finishcheck = True
-        filecount = len(os.listdir(data['path_code']))
-        if filecount != len(Task.config['check_file']) + 2:
-            finishcheck = False
-        else:
-            for file in Task.config['check_file']:
-                if os.path.exists(os.path.join(data['path_code'], file)) == False:
-                    finishcheck = False
-                    break
-        if finishcheck:
-            with open(Task.config['finish_folder_path'], "a", encoding="utf-8") as f:
-                f.writelines(f"{data['path_code']}|{data['code']}|{filecount}\n")
-                return  
-        """
-        check = Task.config['check_file']
-
-        # 메타 검색
-        #for site in ["dmm", "mgstage", "jav321"]:
-        site_list = Task.config.get('site_list', ["dmm", "mgstage"])
-        for site in site_list:
-            #tmp = search_name
-            #if site == "javdb":
-            #    tmp = search_name.replace(" ", "-").upper()
-            #data = meta_module.search2(tmp, site, manual=False)
-            cooperate()
-            logger.info(f"메타 검색({site}): {data['code']}")
-            data['search'] = Task.meta_module.search2(data['code'], site['site'], manual=False)
-            if data['search'] == None:
-                logger.error(f"검색결과({site}): NONE")
-                continue
-            if len(data['search']) > 0 and data['search'][0]["score"] >= site['score']:
-                data['info'] = Task.meta_module.info(data['search'][0]["code"])
-                if data['info'] is not None:
-                    if data['info'].get('extras') is None:
-                        data['info']['extras'] = []
-                    logger.info(f"메타 정보({site}): {data['info']['code']} {len(data['info']['extras'])}")
-                    if len(data['info']['extras']) == 0:
-                        check = Task.config['check_file'][:-1]
-                    Task.make_files(data['info'], data['path_code'])
-                    break
-        
-        
-        finishcheck = True
-        filecount = len(os.listdir(data['path_code']))
-        if filecount != len(check) + 2:
-            finishcheck = False
-        else:
-            for file in check:
-                if os.path.exists(os.path.join(data['path_code'], file)) == False:
-                    finishcheck = False
-                    break
-        if finishcheck:
-            with open(Task.config['finish_folder_path'], "a", encoding="utf-8") as f:
-                f.writelines(f"{data['path_code']}|{data['code']}|{filecount}\n")
-                return
-        else:
-            with open(Task.config['tmp_folder_path'], "a", encoding="utf-8") as f:
-                f.writelines(f"{data['path_code']}|{data['code']}|{filecount}\n")
-                return
-        return
-
-
-    def make_files(info, folder_path, make_yaml=True, make_nfo=True, make_json=False, make_image=True, make_trailer=False, make_overwrite=False, include_media_path=False, is_code_folder=None, module_name='jav', original_filename=None):
+    def make_files(info, folder_path, make_yaml=True, make_nfo=True, make_json=False, make_image=True, make_trailer=False, make_overwrite=False, include_media_path=False, is_code_folder=None, module_name='jav', original_filename=None, existing_folder=None, report=None, storage_result=None):
         
         if not any([make_yaml, make_nfo, make_json, make_image, make_trailer]):
-            return
+            return True
+
+        metadata_files_ok = True
+        report = report if report is not None else {}
+        report.setdefault('warnings', [])
+        report.setdefault('failures', [])
+        if storage_result and (storage_result.get('commit_state') == 'unknown' or storage_result.get('state') == 'blocked'
+                or storage_result.get('error_code') in ('storage_lookup_failed','storage_asset_incomplete','storage_conflict','commit_outcome_unknown')):
+            report['failures'].append('storage_state_blocked')
+            logger.warning('저장소 결과 확인이 필요하여 부가파일 생성을 보류합니다.')
+            return False
 
         # 기본 식별자(Identifier) 결정
         if module_name == 'western' and original_filename:
@@ -168,7 +35,7 @@ class Task:
 
         # 전용 폴더(is_code_folder) 여부
         if is_code_folder is None:
-            current_folder_name = os.path.basename(folder_path).lower()
+            current_folder_name = os.path.basename(existing_folder or folder_path).lower()
             if module_name == 'western':
                 title_for_check = (info.get('title') or identifier).lower()
                 is_code_folder = (current_folder_name == identifier.lower()) or (current_folder_name == title_for_check)
@@ -196,6 +63,36 @@ class Task:
         filepath_fanart = os.path.join(folder_path, f'{img_prefix}fanart.jpg')
         filepath_trailer = os.path.join(folder_path, trailer_name)
 
+        def read_path(path):
+            if os.path.lexists(path) or not existing_folder:
+                return path
+            return os.path.join(existing_folder, os.path.basename(path))
+
+        def existing(path):
+            return os.path.lexists(read_path(path))
+
+        def ready(path):
+            path = read_path(path)
+            if not os.path.isfile(path) or os.path.getsize(path) <= 0:
+                return False
+            if str(path).lower().endswith(('.jpg', '.jpeg', '.png')):
+                from PIL import Image
+                try:
+                    with Image.open(path) as image:
+                        image.verify()
+                except Exception:
+                    return False
+            return True
+
+        def download(url, path):
+            if make_overwrite or not existing(path):
+                success = Task.file_save(url, path)
+            else:
+                success = ready(path)
+            if not success or not ready(path):
+                report['warnings'].append(os.path.basename(path) + ':download_failed')
+                logger.warning('선택 미디어 저장 실패: %s', os.path.basename(path))
+
         # 공용 데이터 추출 함수 (리스트/단일객체 모두 대응)
         def get_as_list(data, key):
             v = data.get(key, [])
@@ -204,6 +101,8 @@ class Task:
 
         # 데이터 가공 및 정제
         info_for_files = info.copy()
+        info_for_files['extra_info'] = dict(info_for_files.get('extra_info') or {})
+        info_for_files['extra_info'].pop('source_video_path', None)
 
         # [공용 변수 준비] 
         # 정보 포함 옵션이 켜져 있을 때만 데이터를 추출하고, 꺼져 있으면 빈 값을 유지함
@@ -211,13 +110,35 @@ class Task:
         arts = []
         extras_list = []
 
+        # 이미지/트레일러 물리 파일 저장
+        if make_image:
+            poster_url = next((t['value'] for t in get_as_list(info, 'thumb') if isinstance(t, dict) and t.get('aspect') == 'poster'), None)
+
+            landscape_url = next((t['value'] for t in get_as_list(info, 'thumb') if isinstance(t, dict) and t.get('aspect') == 'landscape'), None)
+            if not landscape_url:
+                landscapes = get_as_list(info, 'fanart')
+                if landscapes:
+                    landscape_url = landscapes[0] if isinstance(landscapes[0], str) else landscapes[0].get('value')
+
+            trailer_url = next((e['content_url'] for e in get_as_list(info, 'extras') if isinstance(e, dict) and e.get('content_type') == 'trailer'), None)
+
+            if poster_url:
+                download(poster_url, filepath_poster)
+            if landscape_url:
+                download(landscape_url, filepath_fanart)
+
+        if make_trailer:
+            trailer_url = next((e.get('content_url') for e in get_as_list(info, 'extras') if isinstance(e, dict) and e.get('content_type') == 'trailer'), None)
+            if trailer_url:
+                download(trailer_url, filepath_trailer)
+
         if include_media_path:
             # 포스터 및 배경 이미지 추출
             all_thumbs = get_as_list(info_for_files, 'thumb')
             
             # 이미지 파일 생성 옵션이 켜져있거나 이미 로컬에 존재하면 제외 처리
-            skip_poster_url = make_image or os.path.exists(filepath_poster)
-            skip_fanart_url = make_image or os.path.exists(filepath_fanart)
+            skip_poster_url = ready(filepath_poster)
+            skip_fanart_url = ready(filepath_fanart)
             
             # if skip_poster_url or skip_fanart_url:
             #     logger.debug("로컬 이미지가 우선하므로 메타파일(NFO/YAML) 기록에서 일부/전체 이미지 URL을 제외합니다.")
@@ -247,7 +168,7 @@ class Task:
             for ext in raw_extras:
                 if isinstance(ext, dict) and ext.get('content_type') == 'trailer':
                     # 트레일러 파일 생성 옵션이 켜져 있거나, 이미 로컬 트레일러 파일이 존재한다면 메타 URL에서 제외
-                    if make_trailer or os.path.exists(filepath_trailer):
+                    if ready(filepath_trailer):
                         # logger.debug(f"로컬 트레일러가 우선하므로 메타파일(NFO/YAML) 기록에서 트레일러 URL을 제외합니다.")
                         continue
                 extras_list.append(ext)
@@ -257,52 +178,23 @@ class Task:
             info_for_files.pop('fanart', None)
             info_for_files.pop('extras', None)
 
-        # 이미지/트레일러 물리 파일 저장
-        if make_image:
-            poster_url = next((t['value'] for t in get_as_list(info, 'thumb') if isinstance(t, dict) and t.get('aspect') == 'poster'), None)
-            
-            landscape_url = next((t['value'] for t in get_as_list(info, 'thumb') if isinstance(t, dict) and t.get('aspect') == 'landscape'), None)
-            if not landscape_url:
-                landscapes = get_as_list(info, 'fanart')
-                if landscapes:
-                    landscape_url = landscapes[0] if isinstance(landscapes[0], str) else landscapes[0].get('value')
-            
-            trailer_url = next((e['content_url'] for e in get_as_list(info, 'extras') if isinstance(e, dict) and e.get('content_type') == 'trailer'), None)
-
-            if poster_url:
-                if make_overwrite or not os.path.exists(filepath_poster):
-                    Task.file_save(poster_url, filepath_poster)
-                else:
-                    logger.debug(f"이미 존재함 (건너뜀): {os.path.basename(filepath_poster)}")
-            
-            if landscape_url:
-                if make_overwrite or not os.path.exists(filepath_fanart):
-                    Task.file_save(landscape_url, filepath_fanart)
-                else:
-                    logger.debug(f"이미 존재함 (건너뜀): {os.path.basename(filepath_fanart)}")
-            
-        # 트레일러 물리 파일 저장
-        if make_trailer:
-            trailer_url = next((e['content_url'] for e in get_as_list(info, 'extras') if isinstance(e, dict) and e.get('content_type') == 'trailer'), None)
-
-            if trailer_url and (make_overwrite or not os.path.exists(filepath_trailer)):
-                Task.file_save(trailer_url, filepath_trailer)
-
         # --- JSON 파일 생성 ---
         if make_json:
-            if make_overwrite or not os.path.exists(filepath_json):
+            if make_overwrite or not existing(filepath_json):
                 try:
+                    serialized = json.dumps(info_for_files, ensure_ascii=False, indent=4)
                     with open(filepath_json, 'w', encoding='utf-8') as f:
-                        json.dump(info_for_files, f, ensure_ascii=False, indent=4)
+                        f.write(serialized)
                     logger.debug(f"JSON 생성 완료: {filepath_json}")
                 except Exception as e:
                     logger.error(f"JSON 생성 중 오류 발생: {e}")
+                    metadata_files_ok = False
             else:
                 logger.debug(f"이미 존재함 (건너뜀): {os.path.basename(filepath_json)}")
 
         # --- YAML 파일 생성 ---
         if make_yaml:
-            if make_overwrite or not os.path.exists(filepath_yaml):
+            if make_overwrite or not existing(filepath_yaml):
                 yaml_data = {
                     'primary': True,
                     'code': info_for_files.get('code', ''),
@@ -371,13 +263,14 @@ class Task:
                     logger.debug(f"YAML 생성 완료: {filepath_yaml}")
                 except Exception as e:
                     logger.error(f"YAML 생성 중 오류 발생: {e}")
+                    metadata_files_ok = False
 
         # --- NFO 파일 생성 ---
         if make_nfo:
             # 0바이트 파일이 이미 생성되어 있는 경우도 재작성 대상에 포함
             is_nfo_empty = os.path.exists(filepath_nfo) and os.path.getsize(filepath_nfo) == 0
 
-            if make_overwrite or not os.path.exists(filepath_nfo) or is_nfo_empty:
+            if make_overwrite or not existing(filepath_nfo) or is_nfo_empty:
                 nfo_data = info_for_files.copy()
                 nfo_data['thumb'] = [{'value': p, 'aspect': 'poster'} for p in posters]
                 nfo_data['fanart'] = arts
@@ -414,6 +307,7 @@ class Task:
                     logger.debug(f"NFO 생성 완료: {filepath_nfo}")
                 except Exception as e:
                     logger.error(f"NFO 생성 중 오류 발생: {e}")
+                    metadata_files_ok = False
                     # 오류 발생 시 생성된 0바이트 파일 정리 (재시도 방해 방지)
                     if os.path.exists(filepath_nfo) and os.path.getsize(filepath_nfo) == 0:
                         try:
@@ -422,6 +316,16 @@ class Task:
                             pass
             else:
                 logger.debug(f"이미 존재함 (건너뜀): {os.path.basename(filepath_nfo)}")
+
+
+        for enabled, filepath in ((make_json, filepath_json), (make_yaml, filepath_yaml), (make_nfo, filepath_nfo)):
+            if enabled and not ready(filepath):
+                logger.error(f"부가 메타파일 저장 결과를 확인할 수 없습니다: {filepath}")
+                metadata_files_ok = False
+        report['success'] = metadata_files_ok
+        if not metadata_files_ok:
+            report['failures'].append('required_metadata_failed')
+        return metadata_files_ok
 
 
     def file_save(url, filepath, proxy_url=None):
@@ -448,6 +352,12 @@ class Task:
                         if chunk:
                             f.write(chunk)
             
+            if not os.path.isfile(partial) or os.path.getsize(partial) == 0:
+                raise ValueError('Empty downloaded media')
+            if str(filepath).lower().endswith(('.jpg', '.jpeg', '.png')):
+                from PIL import Image
+                with Image.open(partial) as image:
+                    image.verify()
             os.replace(partial, filepath)
             logger.debug(f"파일 다운로드 성공: {filename}")
             return True
@@ -464,45 +374,3 @@ class Task:
                     os.unlink(partial)
             except OSError:
                 pass
-
-
-    def get_meta_module():
-        try:
-            if Task.metadata_module is None:
-                Task.metadata_module = F.PluginManager.get_plugin_instance("metadata").get_module("jav_censored")
-            return Task.metadata_module
-        except Exception as exception:
-            logger.debug("Exception:%s", exception)
-            logger.debug(traceback.format_exc())
-
-
-
-
-
-
-
-
-
-
-    @F.celery.task
-    def start(*args):
-        Task.load()
-        logger.info("Jav Censored Task 시작")
-        logger.info(d(args))
-        Task.meta_module = Task.get_meta_module()
-
-
-
-
-        
-        for tmp in reversed(Task.config['folder_list']):
-            cooperate()
-            tmp = tmp.replace("/gdrive/Shareddrives/VIDEO5 - AV/MP/GDS", "/mnt/AV_MP/GDS")
-            data = {'path_code': tmp}    
-            print(f"Processing11: {tmp}")
-            try:
-                Task.process_code(data)
-            except Exception as exception:
-                logger.debug("Exception:%s", exception)
-                logger.debug(traceback.format_exc())
-
