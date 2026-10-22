@@ -45,7 +45,7 @@ class JobStore:
     def write(db, family, status):
         db.execute('INSERT OR REPLACE INTO jobs VALUES (?,?)', (family, json.dumps(status, ensure_ascii=False)))
 
-    def reserve(self, family, source, mode, task_id=None):
+    def reserve(self, family, source, mode, task_id=None, dry_run=False):
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             old = self.read(db, family)
@@ -55,6 +55,7 @@ class JobStore:
             status = dict(family=family, run_id=uuid.uuid4().hex, task_id=task_id,
                           source=source, mode=mode, state='queued', stage='실행 대기',
                           item='', job_name='', current=0, total=0, stop_requested=False,
+                          dry_run=dry_run, list_revision=0,
                           started_at=now, updated_at=now, finished_at=None)
             self.write(db, family, status)
             db.execute('DELETE FROM logs WHERE family=?', (family,))
@@ -96,6 +97,15 @@ class JobStore:
                 status.update(stage='중단됨', finished_at=time.time())
             self.write(db, family, status)
             return True
+
+    def record_saved(self, family, run_id):
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            status = self.read(db, family)
+            if status.get('run_id') != run_id or status['state'] not in _ACTIVE:
+                return
+            status.update(list_revision=status.get('list_revision', 0) + 1, updated_at=time.time())
+            self.write(db, family, status)
 
     def reset(self, family, run_id=None):
         """Clear only this idle/finished panel, without erasing a newer run."""
@@ -146,6 +156,7 @@ class Monitor(logging.Handler):
     def __init__(self, backend, status):
         super().__init__()
         self.backend, self.status = backend, status
+        self.status.setdefault('dry_run', False)
         self.pending = []
         self.last_check = self.last_flush = 0
         self.setFormatter(logging.Formatter('[%(asctime)s] %(levelname)s %(message)s', datefmt='%H:%M:%S'))
@@ -175,7 +186,7 @@ class Monitor(logging.Handler):
             raise JobCancelled()
         # Never overwrite a stop request with the worker's local copy.
         result = self.backend.update(self.status['family'], self.status['run_id'],
-                                     **{k: self.status[k] for k in ('stage', 'item', 'current', 'total', 'job_name')})
+                                     **{k: self.status[k] for k in ('stage', 'item', 'current', 'total', 'job_name', 'dry_run')})
         if result is None:
             raise JobCancelled()
 
@@ -186,11 +197,27 @@ def checkpoint():
         monitor.checkpoint()
 
 
-def progress(stage=None, current=None, total=None, item=None, job_name=None, force=False):
+def progress(stage=None, current=None, total=None, item=None, job_name=None, force=False, dry_run=None):
     monitor = _current.get()
     if monitor:
         monitor.checkpoint(force=force, **{k: v for k, v in
-                           dict(stage=stage, current=current, total=total, item=item, job_name=job_name).items() if v is not None})
+                           dict(stage=stage, current=current, total=total, item=item, job_name=job_name, dry_run=dry_run).items() if v is not None})
+
+
+def record_saved(saved, dry_run=False):
+    """Notify only after ModelBase.save returned its committed entity."""
+    monitor = _current.get()
+    if monitor is None or dry_run or saved is None or not saved.target_path:
+        return
+    move_type = str(saved.move_type or '')
+    if (not move_type or move_type.endswith(('_skipped', '_already_there')) or
+            move_type in ('destination_conflict', 'move_fail', 'source_missing', 'already_processed_by_other')):
+        return
+    try:
+        monitor.backend.record_saved(monitor.status['family'], monitor.status['run_id'])
+    except Exception:
+        from .setup import logger
+        logger.warning('이동 기록 저장 후 목록 갱신 알림 실패', exc_info=True)
 
 
 def monitored_task(family):
@@ -208,7 +235,8 @@ def monitored_task(family):
                 if status.get('run_id') != run_id or status['state'] not in _ACTIVE:
                     return
             else:
-                status = backend.reserve(channel, channel, mode, getattr(task.request, 'id', None))
+                status = backend.reserve(channel, channel, mode, getattr(task.request, 'id', None),
+                                         dry_run=mode == 'dry_run' or (mode in ('one_path', 'yaml') and kwargs.get('dry_run') is True))
                 if status is None:
                     logger.warning('이미 실행 중인 %s 작업이 있어 중복 실행을 건너뜁니다.', channel)
                     return
@@ -293,6 +321,10 @@ class JobPanelMixin:
             return jsonify(ret='success' if stopped else 'warning',
                            msg='중단을 요청했습니다.' if stopped else '작업이 종료되었거나 변경되었습니다.')
         mode = 'yaml' if self.name.endswith('_yaml') else 'default'
+        dry_value = str(arg2 or '').strip().lower()
+        if dry_value not in ('', 'true', 'false'):
+            return jsonify(ret='warning', msg='드라이런 값은 true 또는 false로 지정하세요.')
+        dry_run = dry_value == 'true'
         path = str(arg1 or '').strip()
         if mode == 'yaml':
             path = path or P.ModelSetting.get(f'{self.name}_filepath')
@@ -302,15 +334,20 @@ class JobPanelMixin:
             if not Path(path).is_dir():
                 return jsonify(ret='warning', msg='처리할 폴더가 존재하지 않습니다.')
             mode = 'one_path'
+        elif dry_run:
+            mode = 'dry_run'
         task_id = uuid.uuid4().hex
-        status = backend.reserve(self.name, self.name, mode, task_id)
+        status = backend.reserve(self.name, self.name, mode, task_id, dry_run=dry_run)
         if status is None:
             return jsonify(ret='warning', msg='이미 이 작업이 실행 중입니다.')
         try:
             from importlib import import_module
             task = import_module(f'.task_{family}', __package__).TaskBase.start
             args = (mode, path) if path else (mode,)
-            task.apply_async(args=args, kwargs={'monitor_token': status['run_id']}, task_id=task_id)
+            options = {'monitor_token': status['run_id']}
+            if (mode == 'one_path' and dry_run) or (mode == 'yaml' and dry_value):
+                options['dry_run'] = dry_run
+            task.apply_async(args=args, kwargs=options, task_id=task_id)
         except Exception as exc:
             backend.append(self.name, status['run_id'], ['작업 실행 요청 실패: ' + str(exc)[:8000]])
             backend.update(self.name, status['run_id'], state='failed', stage='실행 요청 실패', finished_at=time.time())

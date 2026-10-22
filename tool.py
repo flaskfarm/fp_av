@@ -27,7 +27,7 @@ class SafeFormatter(string.Formatter):
 
 
 class SidecarBundle:
-    """Prepare local companions without consuming sources before video publish."""
+    """Stage newly generated sidecars; never copy existing source files."""
     def __init__(self, target, overwrite=False):
         import tempfile
         self.target = Path(target)
@@ -38,79 +38,40 @@ class SidecarBundle:
         self.backups = []
         self.sources = []
         self.reserved = set()
-        self.optional_names = set()
         self.ready = {}
-        self.confirmed_sources = {}
-        self.failures = {}
         self.committed = False
         self.cleanup_pending = False
 
-    def _reserve_name(self, name, source):
-        if (Path(name).name != name or name.casefold() in self.reserved or os.path.lexists(self.folder / name)
-                or any(entry[0].absolute() == Path(source).absolute() for entry in self.sources)):
+    def _reserve_name(self, name):
+        if (Path(name).name != name or name.casefold() in self.reserved
+                or os.path.lexists(self.folder / name)):
             raise FileExistsError('준비 경로가 이미 예약되어 있습니다: ' + name)
         self.reserved.add(name.casefold())
-
-    def copy_source(self, source, name, optional=False):
-        before = Path(source).stat()
-        self._reserve_name(name, source)
-        staged = self.folder / name
-        created = False
-        try:
-            with open(source, 'rb') as reader, open(staged, 'xb') as writer:
-                created = True
-                shutil.copyfileobj(reader, writer)
-            shutil.copystat(source, staged)
-            after = Path(source).stat()
-            proof = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-            if proof != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
-                raise OSError('동반파일이 준비 중 변경되었습니다.')
-        except BaseException:
-            if created:
-                staged.unlink()
-            raise
-        self.sources.append((Path(source), proof, name))
-        if optional:
-            self.optional_names.add(name)
-        return staged
 
     def write_json(self, data, name, source):
         stat = Path(source).stat()
         proof = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
-        self._reserve_name(name, source)
+        self._reserve_name(name)
         with open(self.folder / name, 'x', encoding='utf-8') as fp:
             json.dump(data, fp, ensure_ascii=False, indent=4)
         self.sources.append((Path(source), proof, name))
 
     def publish(self):
-        files = list(self.folder.iterdir())
-        for staged in files:
+        for staged in list(self.folder.iterdir()):
             cooperate()
             if not staged.is_file():
                 continue
             target = self.target / staged.name
-            if staged.name in self.optional_names:
-                try:
-                    UtilFunc.move(staged, target)
-                    stat = target.stat()
-                    proof = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
-                    self.published.append((target, proof))
-                    self.ready[staged.name] = proof
-                except OSError as exc:
-                    self.failures[staged.name] = 'collision' if isinstance(exc, FileExistsError) else 'publish_failed'
-                    logger.warning('자막만 보류하고 영상 처리를 계속합니다: %s (%s)', staged.name, self.failures[staged.name])
-                continue
             if os.path.lexists(target):
                 if not self.overwrite:
-                    # Equal companion bytes can be reused; distinct existing
-                    # metadata/subtitles are never silently replaced.
+                    # The configured policy is to reuse existing metadata/media.
                     import filecmp
                     if filecmp.cmp(staged, target, shallow=False):
                         stat = target.stat()
                         self.ready[staged.name] = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
-                        staged.unlink()
-                        continue
-                    raise FileExistsError('기존 동반파일과 충돌합니다: ' + target.name)
+                    staged.unlink()
+                    logger.info('기존 부가파일 재사용 (덮어쓰기 비활성화): %s', target)
+                    continue
                 backup = self.folder / ('.backup_' + staged.name)
                 UtilFunc.move(target, backup)
                 self.backups.append((target, backup))
@@ -120,26 +81,23 @@ class SidecarBundle:
             self.ready[staged.name] = self.published[-1][1]
 
     def commit(self):
-        # Video already moved. A later notification/DB-log failure must not
-        # remove prepared metadata from the successfully published video.
         self.committed = True
         for source, proof, name in self.sources:
+            if name not in self.ready:
+                continue
             try:
                 target = self.target / name
-                if name not in self.ready:
-                    continue
                 current = target.stat()
                 if self.ready[name] != (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns):
-                    raise OSError('준비 파일의 소유 상태가 변경되었습니다.')
-                self.confirmed_sources[str(source)] = target
+                    raise OSError('저장된 부가파일이 변경되었습니다.')
                 if source.exists() and source.resolve() != target.resolve():
                     stat = source.stat()
                     if proof != (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns):
-                        raise OSError('원본 동반파일의 내용이 변경되었습니다.')
+                        raise OSError('원본 JSON이 변경되었습니다.')
                     source.unlink()
             except OSError:
                 self.cleanup_pending = True
-                logger.warning('영상 이동은 완료됐으나 원본 동반파일 정리가 보류됐습니다: %s', source.name)
+                logger.warning('영상 이동 완료 후 원본 JSON 정리를 보류합니다: %s', source.name)
 
     def close(self):
         preserve = self.cleanup_pending
@@ -149,20 +107,19 @@ class SidecarBundle:
                     if target.exists():
                         stat = target.stat()
                         if (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns) != owned:
-                            raise FileExistsError('준비 파일의 소유 상태가 변경되었습니다.')
+                            raise FileExistsError('생성된 부가파일이 다른 작업에 의해 변경되었습니다.')
                         target.unlink()
                 except OSError:
                     preserve = True
-                    logger.warning('동반파일 정리를 보류합니다: %s', target.name)
+                    logger.warning('부가파일 정리를 보류합니다: %s', target.name)
             for target, backup in reversed(self.backups):
                 try:
                     UtilFunc.move(backup, target)
                 except OSError:
                     preserve = True
-                    logger.warning('기존 동반파일 백업 복원을 보류합니다: %s', target.name)
+                    logger.warning('기존 부가파일 복원을 보류합니다: %s', target.name)
         if not preserve:
             shutil.rmtree(self.folder)
-
 
 class ToolExpandFileProcess:
     ##########################
@@ -1128,6 +1085,15 @@ class UtilFunc:
 
 
     @staticmethod
+    def display_relative_path(path, download_roots):
+        """Display a source path relative to its configured download folder."""
+        path = Path(path)
+        roots = [Path(root) for root in download_roots if path.is_relative_to(root)]
+        if not roots:
+            return path.name
+        return path.relative_to(max(roots, key=lambda root: len(root.parts))).as_posix()
+
+    @staticmethod
     def destination_state(src, dst, config=None):
         src, dst = Path(src), Path(dst)
         if src.resolve() == dst.resolve() or (src.exists() and dst.exists() and os.path.samefile(src, dst)):
@@ -1166,69 +1132,16 @@ class UtilFunc:
 
     @staticmethod
     def move(src: Path, trg: Path):
+        """Rename an existing file or directory; never turn a move into a copy."""
         src, trg = Path(src), Path(trg)
         if UtilFunc.destination_state(src, trg) == 'same':
             return trg
-        if src.is_symlink():
-            os.symlink(os.readlink(src), trg, target_is_directory=src.is_dir())
-            src.unlink()
-            return trg
-        if src.is_dir():
-            if trg.resolve().is_relative_to(src.resolve()):
-                raise ValueError('원본 폴더 내부로 이동할 수 없습니다.')
-            if trg.exists():
-                raise FileExistsError(str(trg))
-            try:
-                # rename() can replace a directory created after the check.
-                # Linux's no-replace variant keeps that competing destination.
-                import ctypes
-                import errno
-                rename = getattr(ctypes.CDLL(None, use_errno=True), 'renameat2', None)
-                if rename is None:
-                    raise OSError(errno.ENOSYS, 'renameat2 unavailable')
-                if rename(-100, os.fsencode(src), -100, os.fsencode(trg), 1) != 0:
-                    raise OSError(ctypes.get_errno(), 'directory publish failed', str(trg))
-            except OSError as exc:
-                import errno
-                if exc.errno not in (errno.EXDEV, errno.ENOSYS, errno.EINVAL, errno.EOPNOTSUPP):
-                    raise
-                def copy_file(source, target):
-                    with open(source, 'rb') as reader, open(target, 'xb') as writer:
-                        while True:
-                            cooperate()
-                            chunk = reader.read(1024 * 1024)
-                            if not chunk:
-                                break
-                            writer.write(chunk)
-                    shutil.copystat(source, target)
-                shutil.copytree(src, trg, symlinks=True, copy_function=copy_file)
-                shutil.rmtree(src)
-            return trg
-        # link is an atomic no-clobber publish on the same filesystem. Never
-        # let shutil.move silently replace another video or quarantine file.
-        try:
-            os.link(src, trg)
-        except OSError as exc:
-            import errno
-            if exc.errno not in (errno.EXDEV, errno.EPERM, errno.EOPNOTSUPP):
-                raise
-            created = None
-            try:
-                with open(src, 'rb') as source, open(trg, 'xb') as target:
-                    created = os.fstat(target.fileno())
-                    while True:
-                        chunk = source.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        cooperate()
-                        target.write(chunk)
-                shutil.copystat(src, trg)
-            except BaseException:
-                if created is not None and trg.exists():
-                    current = trg.stat()
-                    if (current.st_dev, current.st_ino) == (created.st_dev, created.st_ino):
-                        trg.unlink()
-                raise
-        src.unlink()
+        if src.is_dir() and trg.resolve().is_relative_to(src.resolve()):
+            raise ValueError('원본 폴더 내부로 이동할 수 없습니다.')
+        if os.path.lexists(trg):
+            raise FileExistsError(str(trg))
+        # The filesystem (including mergerfs) decides how to rename the entry.
+        # EXDEV and other rename errors are reported; no copy/delete fallback.
+        os.rename(src, trg)
         logger.debug("Moved: %s -> %s", src.name, trg)
         return trg

@@ -1,4 +1,4 @@
-from .util_jobs import monitored_task, progress
+from .util_jobs import monitored_task, progress, record_saved
 from .util_shared_library import apply_shared_preview_policy, is_shared_library, shared_actor_image_order
 from .util_runtime import cooperate, processing_job, metadata_delay
 from .setup import *
@@ -22,7 +22,7 @@ from .task_make_yaml import Task as TaskMakeYaml
 class TaskBase:
     @F.celery.task(bind=True, acks_late=False)
     @monitored_task('western')
-    def start(self, *args):
+    def start(self, *args, dry_run=None):
         logger.info(f"Task 수신 인자: {args}")
         job_type = args[0]
 
@@ -122,7 +122,7 @@ class TaskBase:
             # 기타
             "파일당딜레이": ModelSetting.get_int("western_delay_per_file"),
             "PLEXMATE스캔": ModelSetting.get_bool("western_scan_with_plex_mate"),
-            "드라이런": ModelSetting.get_bool("western_dry_run"),
+            "드라이런": job_type == 'dry_run' or (job_type == 'one_path' and dry_run is True),
         }
 
         # 확장 설정 (YAML 로드)
@@ -184,6 +184,8 @@ class TaskBase:
                         else:
                             final_config['커스텀경로활성화'] = False 
 
+                    if dry_run is not None:
+                        final_config['드라이런'] = dry_run is True
                     if final_config.get('드라이런', False):
                         logger.warning(f"'{final_config.get('이름', 'YAML Job')}' 작업: Dry Run 모드가 활성화되었습니다.")
 
@@ -205,7 +207,7 @@ class Task:
     @staticmethod
     @processing_job
     def start(config):
-        progress(job_name=config.get('이름', ''), force=True)
+        progress(job_name=config.get('이름', ''), dry_run=bool(config.get('드라이런', False)), force=True)
         task_context = {
             'module_name': 'western',
             'parse_mode': 'western',
@@ -324,7 +326,7 @@ class Task:
                         
                         entity = task_context['db_model'](config.get('이름'), str(file.parent), file.name)
                         entity.set_target(newfile).set_move_type('etc_file')
-                        entity.save()
+                        record_saved(entity.save(), config.get('드라이런', False))
                         
                     except Exception as e:
                         logger.error(f"기타 파일 이동 중 오류 ({file.name}): {e}")
@@ -992,9 +994,19 @@ class Task:
             return entity.set_move_type(None)
 
         state = UtilFunc.destination_state(file, target_dir.joinpath(newfilename), config)
-        if state in ('same', 'conflict'):
-            logger.warning('파일 이동 보류 (%s): %s', state, file.name)
-            return entity.set_move_type('same_file_skipped' if state == 'same' else 'destination_conflict')
+        if state == 'same':
+            logger.warning('이미 동일한 파일 경로입니다 (이동 생략): %s', file.name)
+            return entity.set_move_type('same_file_skipped')
+        if state == 'conflict' and not str(config.get('중복파일이동폴더') or '').strip():
+            logger.warning('목적지 이름 충돌, 중복 폴더 미지정으로 원본 보존: %s', file.name)
+            return entity.set_move_type('destination_conflict')
+        if state in ('duplicate', 'conflict'):
+            # A single failed video follows the same duplicate-folder rule.
+            # An entire failed folder remains a folder move, never a file copy.
+            if move_type == 'failed_video' or (
+                    move_type in ('meta_fail', 'no_meta') and
+                    not Task._get_subfolder_to_move(file, config.get('다운로드폴더', []))):
+                return CensoredTask.__file_move_logic(config, info, model_class)
 
         if move_type == "failed_video":
             failed_video_path_str = config.get('처리실패이동폴더', '').strip()
@@ -1129,10 +1141,11 @@ class Task:
             group_infos = list(group_infos_iter)
             
             first_info = next((i for i in group_infos if i.get('file_type') == 'video'), group_infos[0])
-            progress(item=first_info['original_file'].name, force=True)
+            first_path = UtilFunc.display_relative_path(first_info['original_file'], config.get('다운로드폴더', []))
+            progress(item=first_path, force=True)
             
             group_log_prefix = f"[{item_count+1:03d}/{len(execution_plan):03d}]"
-            logger.info(f"{group_log_prefix} 메타 검색 및 경로 계산: {first_info.get('newfilename', first_info['original_file'].name)}")
+            logger.info(f"{group_log_prefix} 메타 검색 및 경로 계산: {first_path}")
 
             target_dir_for_group, _, meta_info_for_group = Task._get_final_target_path(config, first_info, task_context, do_meta_search=True)
 
@@ -1150,11 +1163,12 @@ class Task:
                 cooperate()
                 bundle = None
                 try:
-                    progress(current=item_count, item=info['original_file'].name)
+                    source_path = UtilFunc.display_relative_path(info['original_file'], config.get('다운로드폴더', []))
+                    progress(current=item_count, item=source_path)
                     item_count += 1
                     log_prefix = f"[{item_count:03d}/{total_items_in_plan:03d}]"
                     
-                    logger.debug(f"{log_prefix} 개별 파일 처리 시작: {info.get('newfilename', info['original_file'].name)}")
+                    logger.debug(f"{log_prefix} 개별 파일 처리 시작: {source_path}")
                     
                     target_dir, move_type, meta_info = None, None, meta_info_for_group
 
@@ -1228,24 +1242,24 @@ class Task:
                     if not info['original_file'].exists() and not (move_type in ('no_meta', 'meta_fail') and task_context.get('moved_folders')):
                         logger.warning('영상 원본이 없어 동반자막도 보존합니다: %s', info['original_file'].name)
                         continue
-                    if (info['original_file'].resolve() == destination.resolve() or
-                            (destination.exists() and not UtilFunc.is_duplicate(info['original_file'], destination, config))):
-                        logger.warning('목적지 동일 파일/이름 충돌로 원본을 보존합니다: %s', destination.name)
+                    if info['original_file'].resolve() == destination.resolve():
+                        logger.warning('이미 동일한 파일 경로입니다 (이동 생략): %s', destination)
                         continue
 
                     duplicate_video = (move_type in valid_scan_types and info.get('file_type') == 'video' and
                                        info['original_file'].exists() and
-                                       UtilFunc.is_duplicate(info['original_file'], destination, config))
+                                       (destination.exists() or
+                                        UtilFunc.is_duplicate(info['original_file'], destination, config)))
                     if move_type in valid_scan_types and not duplicate_video:
                         CensoredTask.complete_metadata_before_move(config, info, 'western')
 
                     is_meta_fail = (move_type in ['no_meta', 'meta_fail'])
                     is_subfolder_fail = is_meta_fail and bool(Task._get_subfolder_to_move(info['original_file'], config.get('다운로드폴더', [])))
 
-                    # Prepare copies, publish sidecars, then move the video last.
+                    # Stage newly generated sidecars; move existing subtitles only after video success.
                     if (not config.get('드라이런', False) and info.get('file_type') == 'video'
                             and move_type in valid_scan_types
-                            and not UtilFunc.is_duplicate(info['original_file'], destination, config)):
+                            and not duplicate_video):
                         bundle = CensoredTask.prepare_source_bundle(config, info, meta_info_for_group, 'western')
                         if info['should_create_meta'] and meta_info_for_group:
                             printable_meta_info = copy.deepcopy(meta_info_for_group)
@@ -1273,12 +1287,12 @@ class Task:
                         bundle.commit()
                         processed_dirs_for_group.add(current_target_dir_str)
                     if info.get('file_type') == 'video':
-                        CensoredTask.finish_companion_subtitles(config, info, entity, db_model, bundle)
+                        CensoredTask.finish_companion_subtitles(config, info, entity, db_model)
                     
                     if entity or config.get('드라이런', False):
                         if entity: 
                             if entity.target_path:
-                                entity.save()
+                                record_saved(entity.save(), config.get('드라이런', False))
                                 
                                 if info.get('file_type') == 'video':
                                     txt_file = info['original_file'].with_suffix('.txt')

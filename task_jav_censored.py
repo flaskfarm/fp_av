@@ -1,4 +1,4 @@
-from .util_jobs import monitored_task, progress
+from .util_jobs import monitored_task, progress, record_saved
 from .util_shared_library import apply_shared_preview_policy, is_shared_library, shared_actor_image_order
 from .util_runtime import cooperate, processing_job, metadata_delay
 from .setup import *
@@ -26,7 +26,7 @@ from .task_make_yaml import Task as TaskMakeYaml
 class TaskBase:
     @F.celery.task(bind=True, acks_late=False)
     @monitored_task('jav_censored')
-    def start(self, *args):
+    def start(self, *args, dry_run=None):
         logger.info(f"Task 수신 인자: {args}")
         job_type = args[0]
 
@@ -95,7 +95,7 @@ class TaskBase:
             # etc
             "파일당딜레이": ModelSetting.get_int("jav_censored_delay_per_file"),
             "PLEXMATE스캔": ModelSetting.get_bool("jav_censored_scan_with_plex_mate"),
-            "드라이런": ModelSetting.get_bool("jav_censored_dry_run"),
+            "드라이런": job_type == 'dry_run' or (job_type == 'one_path' and dry_run is True),
 
             # UI/DB 동반자막 설정 로드
             "동반자막처리활성화": ModelSetting.get_bool("jav_censored_companion_enable"),
@@ -175,6 +175,8 @@ class TaskBase:
                         else:
                             final_config['커스텀경로활성화'] = False 
 
+                    if dry_run is not None:
+                        final_config['드라이런'] = dry_run is True
                     if final_config.get('드라이런', False):
                         logger.warning(f"'{final_config.get('이름', 'YAML Job')}' 작업: Dry Run 모드가 활성화되었습니다.")
 
@@ -198,7 +200,7 @@ class Task:
     @staticmethod
     @processing_job
     def start(config):
-        progress(job_name=config.get('이름', ''), force=True)
+        progress(job_name=config.get('이름', ''), dry_run=bool(config.get('드라이런', False)), force=True)
         task_context = {
             'module_name': 'jav_censored',
             'parse_mode': 'censored',
@@ -287,7 +289,7 @@ class Task:
                         
                         entity = task_context['db_model'](config.get('이름'), str(file.parent), file.name)
                         entity.set_target(newfile).set_move_type('etc_file')
-                        entity.save()
+                        record_saved(entity.save(), config.get('드라이런', False))
                         
                     except Exception as e:
                         logger.error(f"기타 파일 이동 중 오류 ({file.name}): {e}")
@@ -1287,7 +1289,7 @@ class Task:
             logger.debug(f"'{pure_code}' 그룹 처리 시작 ({len(group_infos)}개 파일)")
 
             first_info = next((i for i in group_infos if i.get('file_type') == 'video'), group_infos[0])
-            progress(item=first_info['original_file'].name, force=True)
+            progress(item=UtilFunc.display_relative_path(first_info['original_file'], config.get('다운로드폴더', [])), force=True)
             
             # 경로 계산 1회 수행 및 재사용
             target_dir_for_group, _, meta_info_for_group = Task._get_final_target_path(config, first_info, task_context, do_meta_search=True)
@@ -1321,10 +1323,11 @@ class Task:
                 cooperate()
                 bundle = None
                 try:
-                    progress(current=item_count, item=info['original_file'].name)
+                    source_path = UtilFunc.display_relative_path(info['original_file'], config.get('다운로드폴더', []))
+                    progress(current=item_count, item=source_path)
                     item_count += 1
                     log_prefix = f"[{item_count:03d}/{total_items_in_plan:03d}]"
-                    logger.info(f"{log_prefix} 처리 시작: {info['original_file'].name}")
+                    logger.info(f"{log_prefix} 처리 시작: {source_path}")
                     
                     target_dir, move_type, meta_info = None, None, meta_info_for_group
                     
@@ -1371,21 +1374,21 @@ class Task:
                     if not info['original_file'].exists():
                         logger.warning('영상 원본이 없어 동반자막도 보존합니다: %s', info['original_file'].name)
                         continue
-                    if (info['original_file'].resolve() == destination.resolve() or
-                            (destination.exists() and not UtilFunc.is_duplicate(info['original_file'], destination, config))):
-                        logger.warning('목적지 동일 파일/이름 충돌로 원본을 보존합니다: %s', destination.name)
+                    if info['original_file'].resolve() == destination.resolve():
+                        logger.warning('이미 동일한 파일 경로입니다 (이동 생략): %s', destination)
                         continue
 
                     duplicate_video = (move_type in valid_scan_types and info.get('file_type') == 'video' and
                                        info['original_file'].exists() and
-                                       UtilFunc.is_duplicate(info['original_file'], destination, config))
+                                       (destination.exists() or
+                                        UtilFunc.is_duplicate(info['original_file'], destination, config)))
                     if move_type in valid_scan_types and not duplicate_video:
                         Task.complete_metadata_before_move(config, info, 'jav_censored')
 
-                    # Prepare copies, publish sidecars, then move the video last.
+                    # Stage newly generated sidecars; move existing subtitles only after video success.
                     if (not config.get('드라이런', False) and info.get('file_type') == 'video'
                             and move_type in valid_scan_types
-                            and not UtilFunc.is_duplicate(info['original_file'], destination, config)):
+                            and not duplicate_video):
                         bundle = Task.prepare_source_bundle(config, info, meta_info_for_group, 'jav_censored')
                         if info['should_create_meta'] and meta_info_for_group:
                             printable_meta_info = copy.deepcopy(meta_info_for_group)
@@ -1413,12 +1416,12 @@ class Task:
                         bundle.commit()
                         processed_dirs_for_group.add(current_target_dir_str)
                     if info.get('file_type') == 'video':
-                        Task.finish_companion_subtitles(config, info, entity, db_model, bundle)
+                        Task.finish_companion_subtitles(config, info, entity, db_model)
                     
                     if entity or config.get('드라이런', False):
                         if entity: 
                             if entity.target_path:
-                                entity.save()
+                                record_saved(entity.save(), config.get('드라이런', False))
                                 if info.get('file_type') == 'video':
                                     txt_file = info['original_file'].with_suffix('.txt')
                                     if txt_file.exists() and info.get('manual_url') and not config.get('드라이런', False):
@@ -1471,9 +1474,12 @@ class Task:
         newfile = target_dir.joinpath(newfilename)
 
         state = UtilFunc.destination_state(file, newfile, config)
-        if state in ('same', 'conflict'):
-            logger.warning('파일 이동 보류 (%s): %s', state, file.name)
-            return entity.set_move_type('same_file_skipped' if state == 'same' else 'destination_conflict')
+        if state == 'same':
+            logger.warning('이미 동일한 파일 경로입니다 (이동 생략): %s', file.name)
+            return entity.set_move_type('same_file_skipped')
+        if state == 'conflict' and not str(config.get('중복파일이동폴더') or '').strip():
+            logger.warning('목적지 이름 충돌, 중복 폴더 미지정으로 원본 보존: %s', newfile)
+            return entity.set_move_type('destination_conflict')
 
         # Dry Run 모드일 경우, 로그만 남기고 조기 리턴
         if is_dry_run:
@@ -1484,7 +1490,7 @@ class Task:
                 log_msg += f"         결과: '메타매칭실패시이동폴더'가 비어있어 건너뛸 예정"
             elif move_type == "failed_video" and not (config.get('처리실패이동폴더', '') or config.get('미디어정보실패시이동경로')):
                 log_msg += f"         결과: '처리실패이동폴더'가 비어있어 건너뛸 예정"
-            elif UtilFunc.is_duplicate(file, newfile, config):
+            elif state in ('duplicate', 'conflict') or UtilFunc.is_duplicate(file, newfile, config):
                 remove_path_str = config.get('중복파일이동폴더', '')
                 if not remove_path_str:
                     log_msg += f"         결과: 중복 파일, '중복파일이동폴더'가 비어있어 건너뛸 예정"
@@ -1495,7 +1501,7 @@ class Task:
 
             logger.warning(log_msg)
             subtitle_video = newfile
-            if UtilFunc.is_duplicate(file, newfile, config):
+            if state in ('duplicate', 'conflict') or UtilFunc.is_duplicate(file, newfile, config):
                 quarantine = str(config.get('중복파일이동폴더') or '').strip()
                 subtitle_video = UtilFunc.unique_destination(Path(quarantine) / newfilename) if quarantine else None
             for sub, name, collision in Task.companion_subtitle_names(config, info, subtitle_video or newfile):
@@ -1504,48 +1510,36 @@ class Task:
                                ' (이름 충돌 시 해당 자막만 격리/보존)' if collision else '')
             return None
 
-        # 미디어 분석 실패(failed_video) 처리
-        if move_type == "failed_video":
-            failed_video_path_str = config.get('처리실패이동폴더', '').strip()
-            if not failed_video_path_str and not config.get('미디어정보실패시이동경로'):
-                logger.info(f"미디어 분석 실패: '처리실패이동폴더'가 비어있어 이동을 건너뜁니다: {file.name}")
-                return entity.set_move_type("failed_video_skipped")
+        if move_type == 'failed_video' and not (config.get('처리실패이동폴더') or config.get('미디어정보실패시이동경로')):
+            logger.info('미디어 분석 실패 폴더가 없어 이동을 건너뜁니다: %s', file.name)
+            return entity.set_move_type('failed_video_skipped')
 
+        # Existing videos with the target name follow the configured duplicate policy.
+        # Do not reinterpret a name collision as permission to overwrite the target.
+        if state in ('duplicate', 'conflict') or UtilFunc.is_duplicate(file, newfile, config):
+            remove_path_str = str(config.get('중복파일이동폴더') or '').strip()
+            if not remove_path_str:
+                logger.info('중복 또는 목적지 충돌: 중복 폴더 미지정으로 원본 보존: %s', file.name)
+                return entity.set_move_type('duplicate_skipped')
+            remove_path = Path(remove_path_str)
+            remove_path.mkdir(parents=True, exist_ok=True)
+            final_dup_path = UtilFunc.move_unique(file, remove_path / newfilename,
+                                                 timestamp=int(datetime.now().timestamp()))
+            logger.info('중복 또는 목적지 충돌 파일 이동: %s', final_dup_path)
+            return entity.set_target(final_dup_path).set_move_type(move_type + '_already_exist')
+
+        # 미디어 분석 실패(failed_video) 처리
+        if move_type == 'failed_video':
             target_dir.mkdir(parents=True, exist_ok=True)
             UtilFunc.move(file, newfile)
-            logger.info(f"미디어 분석 실패 파일을 이동했습니다: {newfile}")
-
+            logger.info('미디어 분석 실패 파일을 이동했습니다: %s', newfile)
             return entity.set_target(newfile).set_move_type(move_type)
 
-        if move_type in ["no_meta", "meta_fail"]:
+        if move_type in ['no_meta', 'meta_fail']:
             target_dir.mkdir(parents=True, exist_ok=True)
-            if newfile.exists():
-                return entity.set_move_type("duplicate_skipped")
-            else:
-                UtilFunc.move(file, newfile)
-                logger.info(f"메타 매칭 실패 파일을 이동했습니다: {newfile}")
-                return entity.set_target(newfile).set_move_type(move_type)
-
-        # 타겟 경로 내 중복 처리
-        if UtilFunc.is_duplicate(file, newfile, config):
-            logger.info(f"타겟 경로에 동일 파일이 존재합니다: {newfile}")
-            remove_path_str = config.get('중복파일이동폴더', '').strip()
-
-            if not file.exists():
-                return entity.set_move_type("already_processed_by_other")
-
-            if not remove_path_str:
-                logger.info(f"중복 파일: '중복파일이동폴더'가 비어있어 이동/삭제를 건너뜁니다: {file.name}")
-                return entity.set_move_type("duplicate_skipped")
-            else:
-                remove_path = Path(remove_path_str)
-                remove_path.mkdir(parents=True, exist_ok=True)
-
-                final_dup_path = UtilFunc.move_unique(file, remove_path / newfilename,
-                                                     timestamp=int(datetime.now().timestamp()))
-                logger.info(f"중복 파일을 다음 경로로 이동했습니다: {final_dup_path}")
-
-                return entity.set_target(final_dup_path).set_move_type(move_type + "_already_exist")
+            UtilFunc.move(file, newfile)
+            logger.info('메타 매칭 실패 파일을 이동했습니다: %s', newfile)
+            return entity.set_target(newfile).set_move_type(move_type)
 
         # 3. 최종 라이브러리로 이동
         if file.exists():
@@ -1964,8 +1958,8 @@ class Task:
         return result
 
     @staticmethod
-    def finish_companion_subtitles(config, info, entity, model_class, bundle=None):
-        """Follow the confirmed video outcome; a subtitle error never undoes video."""
+    def finish_companion_subtitles(config, info, entity, model_class):
+        """Move existing subtitles only after the video has moved successfully."""
         if config.get('드라이런', False) or not entity or not entity.target_path:
             return
         if entity.move_type in ('same_file_skipped', 'destination_conflict', 'duplicate_skipped', 'move_fail',
@@ -1974,14 +1968,9 @@ class Task:
         video = Path(entity.target_path)
         if info['original_file'].exists() or not video.is_file():
             return
-        confirmed = bundle.confirmed_sources if bundle else {}
         folder_move = info.get('_companion_folder_move')
         for sub, name, collision in Task.companion_subtitle_names(config, info, video):
             source = sub['original_file']
-            failure = bundle.failures.get(sub.get('_subtitle_staged_name')) if bundle else None
-            if failure:
-                sub['_subtitle_status'] = failure
-            target = confirmed.get(str(source))
             moved_type = 'companion_kor_sub'
             try:
                 if folder_move:
@@ -1993,52 +1982,47 @@ class Task:
                     sub['_subtitle_status'] = 'held'
                     logger.warning('동일 우선순위의 영상이 여러 개여서 자막 원본을 보존합니다: %s', source.name)
                     continue
-                elif target:
-                    sub['_subtitle_status'] = 'cleanup_pending' if source.exists() else 'moved'
-                    if source.exists():
-                        moved_type = 'companion_subtitle_cleanup_pending'
                 elif not source.is_file():
                     sub['_subtitle_status'] = 'source_missing'
                     continue
                 else:
                     duplicate = str(entity.move_type or '').endswith('_already_exist')
-                    conflict = collision or sub.get('_subtitle_status') == 'collision'
-                    if not duplicate and sub.get('_subtitle_status') == 'publish_failed':
-                        logger.warning('영상 이동 완료, 자막 원본은 재시도를 위해 보존합니다: %s', source.name)
-                        continue
+                    destination = video.parent / name
+                    conflict = collision or (not duplicate and os.path.lexists(destination))
                     if duplicate:
-                        destination = video.parent / name
                         moved_type = entity.move_type
                     elif conflict:
                         quarantine = str(config.get('중복파일이동폴더') or '').strip()
                         if not quarantine:
                             sub['_subtitle_status'] = 'collision'
-                            logger.warning('자막 이름 충돌, 중복 폴더 미지정으로 해당 원본만 보존합니다: %s', source.name)
+                            logger.warning('자막 이름 충돌, 중복 폴더 미지정으로 원본 보존: %s', source.name)
                             continue
                         destination = Path(quarantine) / name
                         moved_type = 'companion_subtitle_collision'
-                    else:
-                        destination = video.parent / name
                     destination.parent.mkdir(parents=True, exist_ok=True)
-                    # Unique names in quarantine retain the confirmed video's
-                    # basename; they do not invent a separate video timestamp.
                     if duplicate or conflict:
                         target = UtilFunc.move_unique(source, destination, group_stem=video.stem)
                     else:
                         try:
                             target = UtilFunc.move(source, destination)
                         except FileExistsError:
-                            sub['_subtitle_status'] = 'collision'
-                            logger.warning('자막 목적지 경합, 원본 보존: %s', source.name)
-                            continue
+                            quarantine = str(config.get('중복파일이동폴더') or '').strip()
+                            if not quarantine:
+                                sub['_subtitle_status'] = 'collision'
+                                logger.warning('자막 목적지 경합, 원본 보존: %s', source.name)
+                                continue
+                            destination = Path(quarantine) / name
+                            destination.parent.mkdir(parents=True, exist_ok=True)
+                            target = UtilFunc.move_unique(source, destination, group_stem=video.stem)
+                            moved_type = 'companion_subtitle_collision'
                     sub['_subtitle_status'] = 'moved'
                 sub['_prepared_subtitle_target'] = str(target)
                 sub.update(target_dir=Path(target).parent, newfilename=Path(target).name, move_type=moved_type)
                 record = model_class(config.get('이름'), str(source.parent), source.name)
-                record.set_target(Path(target)).set_move_type(moved_type).save()
-            except Exception:
+                record_saved(record.set_target(Path(target)).set_move_type(moved_type).save())
+            except Exception as exc:
                 sub['_subtitle_status'] = 'held'
-                logger.warning('영상 결과는 유지하고 자막 처리/이력만 보류합니다: %s', source.name)
+                logger.warning('영상 결과는 유지하고 자막 이동을 보류합니다: %s (%s)', source.name, exc)
 
     @staticmethod
     def prepare_source_bundle(config, info, metadata, module_name):
@@ -2072,23 +2056,6 @@ class Task:
                 name = stem if module_name == 'western' else str(data.get('originaltitle') or data.get('sorttitle') or data.get('code') or source.stem).lower()
                 bundle.write_json(clean(data), name + '.json', local_json)
                 info['_local_json_prepared'] = True
-            for sub, name, collision in Task.companion_subtitle_names(config, info, info['target_dir'] / info.get('newfilename', source.name)):
-                sub.pop('_prepared_subtitle_target', None)
-                if sub.get('_subtitle_pairing') == 'ambiguous':
-                    sub['_subtitle_status'] = 'held'
-                    continue
-                sub['_subtitle_status'] = 'collision' if collision else 'prepared'
-                sub['_subtitle_staged_name'] = name
-                if collision:
-                    logger.warning('자막 이름 충돌, 영상 성공 후 해당 자막만 격리/보존합니다: %s', sub['original_file'].name)
-                    continue
-                try:
-                    bundle.copy_source(sub['original_file'], name, optional=True)
-                except FileExistsError:
-                    sub['_subtitle_status'] = 'collision'
-                except OSError:
-                    sub['_subtitle_status'] = 'publish_failed'
-                    logger.warning('자막 준비 실패, 원본은 보존하고 영상 처리를 계속합니다: %s', sub['original_file'].name)
             return bundle
         except BaseException:
             bundle.close()
@@ -2359,8 +2326,8 @@ class Task:
 
             # 기존 파일 이동 로직 재사용
             entity = Task.__file_move_logic(config, info, db_model)
-            if entity and entity.move_type is not None:
-                entity.save()
+            if entity and entity.move_type is not None and not config.get('드라이런', False):
+                record_saved(entity.save())
 
 
     # ====================================================================

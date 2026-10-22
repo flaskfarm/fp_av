@@ -2,7 +2,7 @@
 {% block content %}
 {% set av_panel_module = "jav_censored_yaml" %}
 
-{{ macros.m_button_group([['globalSettingSaveBtn', '설정 저장'], ['globalOneExecuteBtn', '1회 실행'], ['globalImmediatelyExecuteBtn', '즉시 실행']])}}
+{{ macros.m_button_group([['globalSettingSaveBtn', '설정 저장']])}}
 {{ macros.m_row_start('5') }}
 {{ macros.m_row_end() }}
   
@@ -17,6 +17,7 @@
   <div class="tab-content mb-4" id="nav-tabContent">
   {{ macros.m_tab_content_start('basic', true) }}
     {{ macros.setting_input_text_and_buttons('jav_censored_yaml_filepath', '설정파일 경로', [['globalEditBtn', '편집', [['file', arg['jav_censored_yaml_filepath']]] ]], desc=None, value=arg['jav_censored_yaml_filepath']) }}
+    {% include "fp_av_job_panel.html" %}
   {{ macros.m_tab_content_end() }}  
 
   {{ macros.m_tab_content_start('auto', false) }}
@@ -28,7 +29,6 @@
   </div><!--tab-content-->
 </form>
 
-{% include "fp_av_job_panel.html" %}
 
 
 <script type="text/javascript">
