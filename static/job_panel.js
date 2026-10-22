@@ -7,11 +7,36 @@
     function el(name) { return panel.querySelector('.av-job-' + name); }
     var labels = {idle:'대기 중', queued:'실행 대기', running:'실행 중', stopping:'중단 요청됨', stopped:'중단됨', completed:'완료', failed:'오류', interrupted:'연결 중단으로 종료'};
     var status = {}, runId = null, cursor = 0, source = null, connected = false, disposed = false, pending = false;
+    var list = window.AvJobList;
+    var dryToggle = panel.querySelector('.av-job-dryrun');
+    var dryRun = list ? list.dryRun() : false;
+    var dryKey = 'fp_av:job_panel:' + panel.dataset.module + ':v1';
+    if (!list) {
+      try { dryRun = JSON.parse(window.localStorage.getItem(dryKey)) === true; } catch (error) { /* Default OFF. */ }
+    }
+    function dryButton() {
+      if (!dryToggle) return;
+      dryToggle.textContent = '드라이런 ' + (dryRun ? 'ON' : 'OFF');
+      dryToggle.setAttribute('aria-pressed', String(dryRun));
+      dryToggle.className = 'btn btn-sm mr-2 av-job-dryrun ' + (dryRun ? 'btn-warning' : 'btn-outline-secondary');
+      el('start').textContent = dryRun ? '드라이런 실행' : '1회 실행';
+    }
+    if (dryToggle) dryToggle.addEventListener('click', function () {
+      if (active() || pending) return;
+      dryRun = !dryRun;
+      if (list) list.setDryRun(dryRun);
+      else {
+        try { window.localStorage.setItem(dryKey, JSON.stringify(dryRun)); } catch (error) { /* Storage may be disabled. */ }
+      }
+      dryButton();
+    });
+    dryButton();
     function active() { return ['queued', 'running', 'stopping'].indexOf(status.state) >= 0; }
     function buttons() {
       el('start').disabled = active() || pending;
       el('reset').disabled = active() || pending;
       el('stop').disabled = !active() || status.state === 'stopping';
+      if (dryToggle) dryToggle.disabled = active() || pending;
     }
     function clock() {
       if (!status.started_at) { el('time').textContent = ''; return; }
@@ -21,6 +46,7 @@
     function render(snapshot) {
       if ((snapshot.status || {}).updated_at < (status.updated_at || 0)) return;
       status = snapshot.status || {};
+      if (list) list.observe(status);
       if (runId !== status.run_id) {
         runId = status.run_id;
         cursor = 0;
@@ -32,7 +58,7 @@
       el('item').textContent = status.item || '';
       var names = {default:'기본 설정', dry_run:'모의 실행', manual_path:'메타 실패 경로 재처리', one_path:'지정 폴더 1회 실행', yaml:'YAML 설정'};
       var jobName = names[status.job_name] || status.job_name;
-      el('source').textContent = status.source ? (status.source.endsWith('_yaml') ? 'YAML 작업' : '기본 작업') + (jobName ? ' · ' + jobName : '') : '';
+      el('source').textContent = status.source ? (status.source.endsWith('_yaml') ? 'YAML 작업' : '기본 작업') + (jobName ? ' · ' + jobName : '') + (status.dry_run ? ' · 드라이런' : '') : '';
       var current = Number(status.current) || 0, total = Number(status.total) || 0;
       var percent = total ? Math.min(100, Math.round(current / total * 100)) : 0;
       el('count').textContent = total ? '현재 단계 ' + current + ' / ' + total : (active() ? (status.state === 'queued' ? '실행 대기' : '대상 확인 중') : '대상 없음');
@@ -54,8 +80,8 @@
       buttons();
       clock();
     }
-    function command(name, arg, callback) {
-      globalSendCommand(name, arg || '', '', '', callback);
+    function command(name, arg, callback, arg2) {
+      globalSendCommand(name, arg || '', arg2 || '', '', callback);
     }
     function poll() {
       if (disposed) return;
@@ -81,7 +107,7 @@
         pending = false;
         el('notice').textContent = result.msg || result.message || '';
         buttons(); poll();
-      });
+      }, dryToggle ? String(dryRun) : '');
       // Recover the button after a dropped command response; the backend guards duplicates.
       window.setTimeout(function () { pending = false; buttons(); poll(); }, 10000);
     });

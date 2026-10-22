@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 {% set av_panel_module = "jav_censored" %}
+<script src="{{ url_for('.static', filename='job_list.js') }}"></script>
 {% include "fp_av_job_panel.html" %}
 
 <div>
@@ -49,41 +50,6 @@
 var package_name = "{{arg['package_name'] }}";
 var sub = "{{arg['sub']}}";
 var current_data = null;
-var last_list_option = "{{arg['jav_censored_last_list_option']}}";
-
-$(document).ready(function(){
-  var tmp = last_list_option.split('|');
-  if (tmp.length == 4) {
-    $("#option1").val(tmp[0]);
-    $("#order").val(tmp[1]);
-    $("#search_word").val(tmp[2]);
-    globalRequestSearch(tmp[3]);
-  } else {
-    globalRequestSearch('1');
-  }
-});
-
-$("#search").click(function(e) {
-  e.preventDefault();
-  globalRequestSearch('1');
-});
-
-$("body").on('click', '#page', function(e){
-  e.preventDefault();
-  globalRequestSearch($(this).data('page'));
-});
-
-$("#reset_btn").click(function(e){
-  e.preventDefault();
-  $("#order").val('desc');
-  $("#option1").val('all');
-  $("#search_word").val('');
-  globalRequestSearch('1');
-});
-
-$("body").on('change', '#order', function(e){
-  globalRequestSearch('1');
-});
 
 
 function make_list(data) {

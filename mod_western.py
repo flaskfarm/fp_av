@@ -48,6 +48,7 @@ class ModuleWestern(JobPanelMixin, PluginModuleBase):
             f"{self.name}_meta_no_path": "",
             f"{self.name}_meta_no_scan_include": "False",
             f"{self.name}_meta_no_retry_every": "0",
+            f"{self.name}_meta_no_last_retry": "",
             
             f"{self.name}_movie_type_use_separate_path": "False",
             f"{self.name}_movie_type_path": "",
@@ -72,8 +73,6 @@ class ModuleWestern(JobPanelMixin, PluginModuleBase):
             f"{self.name}_companion_path": "",
             f"{self.name}_companion_meta_fail_path": "",
             # 메타 취득 임시 오버라이드 기본값
-            f"{self.name}_is_shared_library": "False",
-            f"{self.name}_override_actor_img_order": "",
             f"{self.name}_override_image_mode": "",
             f"{self.name}_strip_images": "False",
         }

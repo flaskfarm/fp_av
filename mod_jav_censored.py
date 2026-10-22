@@ -69,8 +69,6 @@ class ModuleJavCensored(JobPanelMixin, PluginModuleBase):
             f"{self.name}_companion_path": "",
             f"{self.name}_companion_meta_fail_path": "",
             # 메타 취득 임시 오버라이드 기본값
-            f"{self.name}_is_shared_library": "False",
-            f"{self.name}_override_actor_img_order": "",
             f"{self.name}_override_image_mode": "",
             f"{self.name}_strip_images": "False",
         }

@@ -1,4 +1,5 @@
-from .util_jobs import monitored_task, progress
+from .util_jobs import monitored_task, progress, record_saved
+from .util_shared_library import apply_shared_preview_policy, is_shared_library, shared_actor_image_order
 from .util_runtime import cooperate, processing_job, metadata_delay
 from .setup import *
 from pathlib import Path
@@ -7,6 +8,7 @@ import traceback
 import re
 import os
 import shutil
+import copy
 import time
 from datetime import datetime
 from collections import defaultdict
@@ -23,7 +25,7 @@ from .task_make_yaml import Task as TaskMakeYaml
 class TaskBase:
     @F.celery.task(bind=True, acks_late=False)
     @monitored_task('jav_uncensored')
-    def start(self, *args):
+    def start(self, *args, dry_run=None):
         logger.info(f"Task 수신 인자: {args}")
         job_type = args[0]
 
@@ -83,7 +85,7 @@ class TaskBase:
             "부가파일덮어쓰기": ModelSetting.get_bool("jav_uncensored_make_overwrite"),
             "부가파일미디어경로포함": ModelSetting.get_bool("jav_uncensored_include_media_path"),
             "PLEXMATE스캔": ModelSetting.get_bool("jav_uncensored_scan_with_plex_mate"),
-            "드라이런": ModelSetting.get_bool("jav_uncensored_dry_run"),
+            "드라이런": job_type == 'dry_run' or (job_type == 'one_path' and dry_run is True),
 
             "동반자막처리활성화": ModelSetting.get_bool("jav_uncensored_companion_enable"),
             "동반자막언어코드추가": ModelSetting.get_bool("jav_uncensored_companion_add_ko"),
@@ -92,8 +94,10 @@ class TaskBase:
             "동반자막처리경로": ModelSetting.get("jav_uncensored_companion_path").strip(),
             "동반자막처리경로_메타실패시": ModelSetting.get("jav_uncensored_companion_meta_fail_path").strip(),
 
-            "공유용라이브러리": ModelSetting.get_bool("jav_uncensored_is_shared_library") if ModelSetting.get("jav_uncensored_is_shared_library") is not None else False,
-            "배우이미지우선순위": ModelSetting.get("jav_uncensored_override_actor_img_order") or "",
+            # 공유용 옵션은 YAML 작업에서만 지정합니다.
+            "공유용라이브러리": False,
+            "공유용라이브러리_배우이미지우선순위": "",
+            "공유용라이브러리_유저프리뷰클립사용": False,
             "메타이미지모드": ModelSetting.get("jav_uncensored_override_image_mode") or "",
             "메타옵션_이미지제거": ModelSetting.get_bool("jav_uncensored_strip_images") if ModelSetting.get("jav_uncensored_strip_images") is not None else False,
         }
@@ -106,7 +110,7 @@ class TaskBase:
             config["메타매칭실패시이동"] = False
 
         if job_type in ['default', 'dry_run', 'manual_path', 'one_path']:
-            final_config = config.copy()
+            final_config = copy.deepcopy(config)
             final_config["이름"] = job_type
             if final_config.get('드라이런', False):
                 logger.warning(f"'{final_config['이름']}' 작업: Dry Run 모드가 활성화되었습니다.")
@@ -127,7 +131,7 @@ class TaskBase:
                     logger.info(f"YAML 작업 실행 시작: [{job_name}]")
                     logger.info(f"=========================================")
 
-                    final_config = config.copy()
+                    final_config = copy.deepcopy(config)
 
                     for key, value in job.items():
                         if value is None or (isinstance(value, str) and not value.strip()):
@@ -140,7 +144,7 @@ class TaskBase:
                                 logger.error(f"설정 오류: '{key}'의 값 '{value}'은 유효하지 않아 무시합니다. (허용값: {valid_options})")
                                 continue
                         
-                        final_config[key] = value
+                        final_config[key] = copy.deepcopy(value)
 
                     if '자막우선처리활성화' in job:
                         final_config.setdefault('자막우선처리', {})['처리활성화'] = job['자막우선처리활성화']
@@ -155,6 +159,8 @@ class TaskBase:
                         else:
                             final_config['커스텀경로활성화'] = False 
 
+                    if dry_run is not None:
+                        final_config['드라이런'] = dry_run is True
                     if final_config.get('드라이런', False):
                         logger.warning(f"'{final_config.get('이름', 'YAML Job')}' 작업: Dry Run 모드가 활성화되었습니다.")
 
@@ -189,7 +195,7 @@ class Task:
     @staticmethod
     @processing_job
     def start(config):
-        progress(job_name=config.get('이름', ''), force=True)
+        progress(job_name=config.get('이름', ''), dry_run=bool(config.get('드라이런', False)), force=True)
 
         task_context = {
             'module_name': 'jav_uncensored',
@@ -374,7 +380,10 @@ class Task:
         local_meta = info.get('local_meta_json')
         if local_meta:
             logger.info(f"'{info['pure_code']}' 로컬 JSON 메타데이터를 사용하여 검색을 건너뜁니다.")
-            return local_meta
+            return apply_shared_preview_policy(config, local_meta, 'JAV_UNCEN')
+
+        if config.get('드라이런', False):
+            return CensoredTask.readonly_metadata(config, info, 'JAV_UNCEN')
 
         meta_module = CensoredTask.get_meta_module('jav_uncensored')
         if not meta_module:
@@ -382,28 +391,19 @@ class Task:
 
         # extra_opts 초기화 및 옵션 정제
         metadata_delay(config)
-        extra_opts = {}
-
-        skip_trans = None
-        if config.get('번역스킵') is not None:
-            skip_trans = config.get('번역스킵')
-        elif config.get('skip_trans') is not None:
-            skip_trans = config.get('skip_trans')
-        elif config.get('_skip_trans_temp') is not None:
-            skip_trans = config.get('_skip_trans_temp')
-
-        if skip_trans is not None:
-            extra_opts['skip_trans'] = skip_trans
+        extra_opts = {'_media_completion': {}}
+        if not config.get('드라이런', False) and info.get('file_type') == 'video':
+            extra_opts['media_path'] = str(info['original_file'])
 
         # 한글/영문 키 호환 오버라이드 추출
-        is_shared = config.get('공유용라이브러리') or config.get('is_shared_library') or False
-        override_actor_img_order = config.get('배우이미지우선순위') or config.get('actor_img_order') or ""
+        is_shared = is_shared_library(config)
+        override_actor_img_order = config.get('actor_img_order') or ""
         override_image_mode = config.get('메타이미지모드') or config.get('image_mode') or ""
         override_strip_images = config.get('메타옵션_이미지제거') or config.get('strip_images') or False
 
         if is_shared:
             # 공유용 라이브러리 모드: 개인 서버 주소 노출 방지 옵션 주입
-            extra_opts['actor_img_order'] = override_actor_img_order or 'google_fileid, site_img_url'
+            extra_opts['actor_img_order'] = shared_actor_image_order(config)
             extra_opts['image_mode'] = override_image_mode or 'ff_proxy'
             if override_strip_images:
                 extra_opts['strip_images'] = True
@@ -424,24 +424,26 @@ class Task:
         try:
             if manual_url:
                 logger.info(f"'{info['pure_code']}' JAV 수동 URL 매칭 시도: {manual_url}")
-                search_result = meta_module.search(manual_url, manual=True)
+                search_result = meta_module.search(manual_url, manual=True, media_path=str(info['original_file']))
                 if search_result:
-                    best_match = next((item for item in search_result if item and item.get('score', 0) >= 95), None)
+                    best_match = next((item for item in search_result if item and item.get('code') and (item.get('site') or item.get('site_key')) and item.get('score', 0) >= 95), None)
 
-            if not best_match:
+            if not best_match and not manual_url:
                 if info['label'].lower() not in config.get('메타검색지원레이블', set()):
                     return None
                 
-                search_result = meta_module.search(info['pure_code'], manual=False)
+                search_result = meta_module.search(info['pure_code'], manual=False, media_path=str(info['original_file']))
                 if search_result:
-                    best_match = next((item for item in search_result if item and item.get('score', 0) >= 95), None)
+                    best_match = next((item for item in search_result if item and item.get('code') and (item.get('site') or item.get('site_key')) and item.get('score', 0) >= 95), None)
 
-            if best_match:
+            if best_match and best_match.get('code') and (best_match.get('site') or best_match.get('site_key')):
                 meta_info = meta_module.info(best_match["code"], extra_opts=extra_opts)
                 if meta_info:
+                    if extra_opts.get('media_path'):
+                        CensoredTask.record_media_completion(info, extra_opts['_media_completion'])
                     match_site = best_match.get('site', 'N/A')
-                    logger.info(f"'{info['pure_code']}' 메타 검색 성공: {meta_info.get('originaltitle')} (from: {match_site}, 번역스킵:{extra_opts.get('skip_trans', '기본값')}, 공유모드:{is_shared})")
-                    return meta_info
+                    logger.info(f"'{info['pure_code']}' 메타 검색 성공: {meta_info.get('originaltitle')} (from: {match_site}, 공유모드:{is_shared})")
+                    return apply_shared_preview_policy(config, meta_info, 'JAV_UNCEN')
 
         except Exception as e:
             logger.error(f"'{info['pure_code']}' 메타 검색 중 예외: {e}")
@@ -499,53 +501,21 @@ class Task:
             logger.debug(f"'{pure_code}' 그룹 처리 시작 ({len(group_infos)}개 파일)")
 
             first_info = next((i for i in group_infos if i.get('file_type') == 'video'), group_infos[0])
-            progress(item=first_info['original_file'].name, force=True)
-            has_local_meta = bool(first_info.get('local_meta_json'))
+            progress(item=UtilFunc.display_relative_path(first_info['original_file'], config.get('다운로드폴더', [])), force=True)
             
-            config['_skip_trans_temp'] = (not any_meta_option_on) or (not make_overwrite)
             target_dir_for_group, _, meta_info_for_group = Task._get_final_target_path(config, first_info, task_context, do_meta_search=True)
-
-            if meta_info_for_group and any_meta_option_on and not make_overwrite and not has_local_meta:
-                needs_files = False
-                if target_dir_for_group:
-                    if not target_dir_for_group.exists():
-                        needs_files = True
-                    else:
-                        is_code_folder = first_info.get('is_code_folder', False)
-                        identifier = (meta_info_for_group.get('originaltitle') or meta_info_for_group.get('sorttitle') or meta_info_for_group.get('code', 'movie')).lower()
-                        
-                        video_stem = Path(first_info.get('newfilename', first_info['original_file'].name)).stem
-                        if first_info.get('is_part_of_set') and first_info.get('parsed_part_type'):
-                            part_type = first_info.get('parsed_part_type')
-                            if video_stem.endswith(part_type):
-                                video_stem = video_stem[:-len(part_type)]
-
-                        prefix = 'movie' if is_code_folder else video_stem
-                        img_prefix = '' if is_code_folder else f'{video_stem}-'
-                        trailer_name = 'movie-trailer.mp4' if is_code_folder else f'{video_stem}-trailer.mp4'
-
-                        if config.get('부가파일생성_YAML', False) and not target_dir_for_group.joinpath(f'{prefix}.yaml').exists(): needs_files = True
-                        elif config.get('부가파일생성_NFO', False) and not target_dir_for_group.joinpath(f'{prefix}.nfo').exists(): needs_files = True
-                        elif config.get('부가파일생성_JSON', False) and not target_dir_for_group.joinpath(f'{identifier}.json').exists(): needs_files = True
-                        elif config.get('부가파일생성_IMAGE', False):
-                            if meta_info_for_group.get('thumb') and not target_dir_for_group.joinpath(f'{img_prefix}poster.jpg').exists(): needs_files = True
-                            if (meta_info_for_group.get('fanart') or meta_info_for_group.get('thumb')) and not target_dir_for_group.joinpath(f'{img_prefix}fanart.jpg').exists(): needs_files = True
-                        elif config.get('부가파일생성_TRAILER', False) and meta_info_for_group.get('extras') and not target_dir_for_group.joinpath(trailer_name).exists(): needs_files = True
-
-                if needs_files:
-                    logger.debug(f"'{pure_code}' 부가 파일 생성/갱신이 필요하여 번역이 포함된 메타데이터를 다시 요청합니다.")
-                    config['_skip_trans_temp'] = False 
-                    meta_info_for_group = Task._get_metadata(config, first_info)
 
             processed_dirs_for_group = set()
 
             for info in group_infos:
                 cooperate()
+                bundle = None
                 try:
-                    progress(current=item_count, item=info['original_file'].name)
+                    source_path = UtilFunc.display_relative_path(info['original_file'], config.get('다운로드폴더', []))
+                    progress(current=item_count, item=source_path)
                     item_count += 1
                     log_prefix = f"[{item_count:03d}/{total_items_in_plan:03d}]"
-                    logger.info(f"{log_prefix} 처리 시작: {info['original_file'].name}")
+                    logger.info(f"{log_prefix} 처리 시작: {source_path}")
                     
                     target_dir, move_type, meta_info = None, None, meta_info_for_group
                     
@@ -585,87 +555,61 @@ class Task:
                        any_meta_option_on and \
                        info.get('file_type') == 'video':
                         info['should_create_meta'] = True
-                        processed_dirs_for_group.add(current_target_dir_str)
 
                     info.update({'target_dir': target_dir, 'move_type': move_type, 'meta_info': meta_info_for_group})
-                    
-                    # 1. 사전 부가파일 생성
-                    local_json_moved = False
-                    if not config.get('드라이런', False):
-                        target_dir.mkdir(parents=True, exist_ok=True)
-                        
-                        if info.get('file_type') == 'video':
-                            json_file = info['original_file'].with_suffix('.json')
-                            if json_file.exists() and info.get('local_meta_json'):
-                                try:
-                                    target_json_name = (meta_info_for_group.get('originaltitle') or meta_info_for_group.get('sorttitle') or meta_info_for_group.get('code', 'movie')).lower()
-                                    target_json_path = target_dir.joinpath(f"{target_json_name}.json")
-                                    
-                                    if json_file.resolve() != target_json_path.resolve():
-                                        if target_json_path.exists():
-                                            json_file.unlink()
-                                        else:
-                                            shutil.move(str(json_file), str(target_json_path))
-                                            logger.debug(f"로컬 JSON 메타 파일 사전 이동 완료: {target_json_path.name}")
-                                    local_json_moved = True
-                                except Exception as e:
-                                    pass
-                        
+
+                    destination = target_dir / info.get('newfilename', info['original_file'].name)
+                    if not info['original_file'].exists():
+                        logger.warning('영상 원본이 없어 동반자막도 보존합니다: %s', info['original_file'].name)
+                        continue
+                    if info['original_file'].resolve() == destination.resolve():
+                        logger.warning('이미 동일한 파일 경로입니다 (이동 생략): %s', destination)
+                        continue
+
+                    duplicate_video = (move_type in valid_scan_types and info.get('file_type') == 'video' and
+                                       info['original_file'].exists() and
+                                       (destination.exists() or
+                                        UtilFunc.is_duplicate(info['original_file'], destination, config)))
+                    if move_type in valid_scan_types and not duplicate_video:
+                        CensoredTask.complete_metadata_before_move(config, info, 'jav_uncensored')
+
+                    # Stage newly generated sidecars; move existing subtitles only after video success.
+                    if (not config.get('드라이런', False) and info.get('file_type') == 'video'
+                            and move_type in valid_scan_types
+                            and not duplicate_video):
+                        bundle = CensoredTask.prepare_source_bundle(config, info, meta_info_for_group, 'jav_uncensored')
                         if info['should_create_meta'] and meta_info_for_group:
-                            logger.info(f"{log_prefix} 부가 파일 사전 생성 중...: {target_dir}")
-                            printable_meta_info = meta_info_for_group.copy()
+                            printable_meta_info = copy.deepcopy(meta_info_for_group)
                             printable_meta_info.pop('original', None)
-                            
-                            video_stem_for_meta = Path(info.get('newfilename', info['original_file'].name)).stem
-                            if info.get('is_part_of_set') and info.get('parsed_part_type'):
-                                part_type = info.get('parsed_part_type')
-                                if video_stem_for_meta.endswith(part_type):
-                                    video_stem_for_meta = video_stem_for_meta[:-len(part_type)]
-
-                            try:
-                                TaskMakeYaml.make_files(
-                                    printable_meta_info,
-                                    current_target_dir_str,
-                                    make_yaml=config.get('부가파일생성_YAML', False),
-                                    make_nfo=config.get('부가파일생성_NFO', False),
-                                    make_json=config.get('부가파일생성_JSON', False) and not local_json_moved,
-                                    make_image=config.get('부가파일생성_IMAGE', False),
-                                    make_trailer=config.get('부가파일생성_TRAILER', False),
-                                    make_overwrite=config.get('부가파일덮어쓰기', False),
-                                    include_media_path=config.get('부가파일미디어경로포함', False),
-                                    is_code_folder=info.get('is_code_folder', False),
-                                    module_name='jav',
-                                    original_filename=video_stem_for_meta
-                                )
-                            except Exception as meta_e:
-                                logger.error(f"부가 파일 생성 중 오류: {meta_e}")
-
-                    # 2. 동반 자막 선이동
-                    if 'companion_subs_list' in info:
-                        for s_info in info['companion_subs_list']:
-                            cooperate()
-                            sub_ext = s_info['original_file'].suffix
-                            logger.info(f"{log_prefix} 동반 자막 선이동: {s_info['original_file'].name}")
-                            
-                            new_video_stem = Path(info.get('newfilename', info['original_file'].name)).stem
-                            final_sub_name = new_video_stem
-                            
-                            if s_info.get('is_korean', True) and config.get('동반자막언어코드추가', True) and not re.search(r'\.(ko|kr|kor)$', new_video_stem, re.I):
-                                final_sub_name += '.ko'
-                            final_sub_name += sub_ext
-
-                            s_info.update({'target_dir': target_dir, 'move_type': 'companion_kor_sub', 'newfilename': final_sub_name})
-                            s_entity = CensoredTask.__file_move_logic(config, s_info, db_model)
-                            if s_entity and s_entity.target_path: 
-                                s_entity.save()
+                            printable_meta_info.setdefault('extra_info', {}).pop('source_video_path', None)
+                            sidecar_result = TaskMakeYaml.make_files(
+                                printable_meta_info, str(bundle.folder),
+                                make_yaml=config.get('부가파일생성_YAML', False),
+                                make_nfo=config.get('부가파일생성_NFO', False),
+                                make_json=config.get('부가파일생성_JSON', False) and not info.get('_local_json_prepared'),
+                                make_image=config.get('부가파일생성_IMAGE', False),
+                                make_trailer=config.get('부가파일생성_TRAILER', False),
+                                make_overwrite=config.get('부가파일덮어쓰기', False),
+                                include_media_path=config.get('부가파일미디어경로포함', False),
+                                is_code_folder=info.get('is_code_folder', False),
+                                module_name='jav',
+                                original_filename=info['_sidecar_stem'], existing_folder=str(target_dir), storage_result=info.get('_media_completion'))
+                            if sidecar_result is False:
+                                raise RuntimeError('필수 부가파일 저장 실패로 영상 이동을 보류합니다.')
+                        bundle.publish()
 
                     # 3. 본 영상 이동
                     entity = CensoredTask.__file_move_logic(config, info, db_model)
+                    if bundle and entity and entity.target_path and not info['original_file'].exists():
+                        bundle.commit()
+                        processed_dirs_for_group.add(current_target_dir_str)
+                    if info.get('file_type') == 'video':
+                        CensoredTask.finish_companion_subtitles(config, info, entity, db_model)
                     
                     if entity or config.get('드라이런', False):
                         if entity: 
                             if entity.target_path:
-                                entity.save()
+                                record_saved(entity.save(), config.get('드라이런', False))
                                 if info.get('file_type') == 'video':
                                     txt_file = info['original_file'].with_suffix('.txt')
                                     if txt_file.exists() and info.get('manual_url') and not config.get('드라이런', False):
@@ -678,6 +622,9 @@ class Task:
                                 logger.warning(f"'{info['original_file'].name}' 이동 실패: 대상 경로가 없습니다.")
                                 continue
 
+                        if entity and entity.target_path and entity.move_type in valid_scan_types:
+                            CensoredTask.complete_moved_metadata(config, info, entity, 'jav_uncensored')
+
                         # 4. 스캔 요청
                         if scan_enabled and entity and entity.target_path and entity.move_type in valid_scan_types:
                             if info.get('file_type') == 'video':
@@ -685,7 +632,10 @@ class Task:
                 
                 except Exception as e:
                     logger.error(f"'{info.get('pure_code', '알 수 없음')}' 파일 처리 중 예외 발생: {e}")
-                    logger.error(traceback.format_exc())
+                    logger.debug(traceback.format_exc())
+                finally:
+                    if bundle is not None:
+                        bundle.close()
 
         logger.info("fp_av_jav_uncensored: 모든 작업이 완료되었습니다.")
         progress(current=item_count, item='', force=True)

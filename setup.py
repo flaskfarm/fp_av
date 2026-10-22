@@ -19,7 +19,7 @@ setting = {
                     },
                     {
                         'uri': 'list',
-                        'name': '처리결과',
+                        'name': '작업 관리',
                     },
                     {
                         'uri': 'manual/files/jav_censored.md',
@@ -37,7 +37,7 @@ setting = {
                     },
                     {
                         'uri': 'list',
-                        'name': '처리결과',
+                        'name': '작업 관리',
                     },
                 ]
             },
@@ -51,7 +51,7 @@ setting = {
                     },
                     {
                         'uri': 'list',
-                        'name': '처리결과',
+                        'name': '작업 관리',
                     },
                 ]
             },
