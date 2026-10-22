@@ -1,7 +1,6 @@
 from .util_jobs import JobPanelMixin
 from .setup import *
 from .task_jav_censored import TaskBase
-from .task_jav_censored_tool import TaskCensoredJavTool
 
 class ModuleJavCensoredYaml(JobPanelMixin, PluginModuleBase):
     def __init__(self, P):
@@ -27,9 +26,6 @@ class ModuleJavCensoredYaml(JobPanelMixin, PluginModuleBase):
         result = self.job_command(command, arg1, arg2)
         if result is not None:
             return result
-        if command == 'gds':
-            ret = self.start_celery(TaskCensoredJavTool.start, None, command, arg1)
-            return {"ret":"success", "message":"run task"}
 
     def scheduler_function(self):
         yaml_filepath = P.ModelSetting.get(f"{self.name}_filepath")

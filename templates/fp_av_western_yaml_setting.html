@@ -10,7 +10,6 @@
   {{ macros.m_tab_head_start() }}
     {{ macros.m_tab_head('basic', '기본', true) }}
     {{ macros.m_tab_head('auto', '자동 & 기타', false) }}
-    {{ macros.m_tab_head('tool', 'Tool', false) }}
   {{ macros.m_tab_head_end() }}
 </nav>
 
@@ -36,10 +35,6 @@
 $(document).ready(function(){
 });
 
-$("body").on('click', '#gds_btn', function(e){
-  e.preventDefault();
-  globalSendCommand('gds', $('#_gds').val());
-});
 
 </script>    
 {% endblock %}
