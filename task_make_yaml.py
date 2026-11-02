@@ -10,7 +10,7 @@ from support import SupportYaml
 
 
 class Task:
-    def make_files(info, folder_path, make_yaml=True, make_nfo=True, make_json=False, make_image=True, make_trailer=False, make_overwrite=False, include_media_path=False, is_code_folder=None, module_name='jav', original_filename=None, existing_folder=None, report=None, storage_result=None):
+    def make_files(info, folder_path, make_yaml=True, make_nfo=True, make_json=False, make_image=True, make_trailer=False, make_overwrite=False, include_media_path=False, is_code_folder=None, module_name='jav', original_filename=None, existing_folder=None, report=None, output_config=None):
         
         if not any([make_yaml, make_nfo, make_json, make_image, make_trailer]):
             return True
@@ -19,11 +19,6 @@ class Task:
         report = report if report is not None else {}
         report.setdefault('warnings', [])
         report.setdefault('failures', [])
-        if storage_result and (storage_result.get('commit_state') == 'unknown' or storage_result.get('state') == 'blocked'
-                or storage_result.get('error_code') in ('storage_lookup_failed','storage_asset_incomplete','storage_conflict','commit_outcome_unknown')):
-            report['failures'].append('storage_state_blocked')
-            logger.warning('저장소 결과 확인이 필요하여 부가파일 생성을 보류합니다.')
-            return False
 
         # 기본 식별자(Identifier) 결정
         if module_name == 'western' and original_filename:
@@ -86,7 +81,42 @@ class Task:
 
         def download(url, path):
             if make_overwrite or not existing(path):
-                success = Task.file_save(url, path)
+                from urllib.parse import urlparse, parse_qs
+                guarded_source, valid = False, True
+                try:
+                    parsed = urlparse(str(url or ''))
+                    base = urlparse(F.SystemModelSetting.get('ddns') or '')
+                    route_prefix = base.path.rstrip('/') + '/metadata/normal/'
+                    if parsed.path.startswith(route_prefix):
+                        def origin(parts):
+                            if (parts.scheme not in ('http', 'https') or not parts.hostname or parts.netloc.endswith(':') or
+                                    parts.username is not None or parts.password is not None):
+                                raise ValueError('Invalid proxy origin')
+                            port = parts.port if parts.port is not None else (443 if parts.scheme == 'https' else 80)
+                            if not 1 <= port <= 65535:
+                                raise ValueError('Invalid proxy port')
+                            return (parts.scheme, parts.hostname, port)
+                        routes = {route_prefix + name for name in ('jav_image', 'jav_image_un', 'jav_video', 'jav_video_un')}
+                        query = parse_qs(parsed.query, keep_blank_values=True, errors='strict')
+                        if (origin(parsed) != origin(base) or parsed.path not in routes or parsed.params or parsed.fragment or
+                                any(ord(c) <= 32 or ord(c) == 127 for c in str(url)) or '\\' in str(url)):
+                            valid = False
+                        elif 'url' not in query and query.get('mode') in (['preview_local'], ['preview_gdrive']) and parsed.path in (
+                                route_prefix + 'jav_video', route_prefix + 'jav_video_un'):
+                            pass  # Existing private stored-video URLs are not site wrappers.
+                        elif (len(query.get('url', [])) == 1 and query['url'][0].startswith(('http://', 'https://')) and
+                                query.get('mode') not in (['preview_local'], ['preview_gdrive'])):
+                            url, guarded_source = query['url'][0], True
+                        else:
+                            valid = False
+                except (ValueError, TypeError, UnicodeError):
+                    valid = False
+                if not valid:
+                    success = False
+                elif guarded_source:
+                    success = Task.file_save(url, path, guarded_source=True)
+                else:
+                    success = Task.file_save(url, path)
             else:
                 success = ready(path)
             if not success or not ready(path):
@@ -100,9 +130,10 @@ class Task:
             return v if isinstance(v, list) else [v]
 
         # 데이터 가공 및 정제
-        info_for_files = info.copy()
-        info_for_files['extra_info'] = dict(info_for_files.get('extra_info') or {})
-        info_for_files['extra_info'].pop('source_video_path', None)
+        from .util_shared_library import metadata_file_copy
+        category = 'WESTERN' if module_name == 'western' else (info.get('category') or ('JAV_UNCEN' if str(info.get('code') or '').startswith('E') else 'JAV_CEN'))
+        media_sources = {}
+        info_for_files = metadata_file_copy(output_config or {}, info, category, media_sources=media_sources)
 
         # [공용 변수 준비] 
         # 정보 포함 옵션이 켜져 있을 때만 데이터를 추출하고, 꺼져 있으면 빈 값을 유지함
@@ -112,23 +143,15 @@ class Task:
 
         # 이미지/트레일러 물리 파일 저장
         if make_image:
-            poster_url = next((t['value'] for t in get_as_list(info, 'thumb') if isinstance(t, dict) and t.get('aspect') == 'poster'), None)
-
-            landscape_url = next((t['value'] for t in get_as_list(info, 'thumb') if isinstance(t, dict) and t.get('aspect') == 'landscape'), None)
-            if not landscape_url:
-                landscapes = get_as_list(info, 'fanart')
-                if landscapes:
-                    landscape_url = landscapes[0] if isinstance(landscapes[0], str) else landscapes[0].get('value')
-
-            trailer_url = next((e['content_url'] for e in get_as_list(info, 'extras') if isinstance(e, dict) and e.get('content_type') == 'trailer'), None)
-
+            poster_url = media_sources['poster']
+            landscape_url = media_sources['landscape']
             if poster_url:
                 download(poster_url, filepath_poster)
             if landscape_url:
                 download(landscape_url, filepath_fanart)
 
         if make_trailer:
-            trailer_url = next((e.get('content_url') for e in get_as_list(info, 'extras') if isinstance(e, dict) and e.get('content_type') == 'trailer'), None)
+            trailer_url = media_sources['trailer']
             if trailer_url:
                 download(trailer_url, filepath_trailer)
 
@@ -172,11 +195,23 @@ class Task:
                         # logger.debug(f"로컬 트레일러가 우선하므로 메타파일(NFO/YAML) 기록에서 트레일러 URL을 제외합니다.")
                         continue
                 extras_list.append(ext)
+            # JSON, NFO, YAML share the same final media selection.
+            info_for_files['thumb'] = [t for t in all_thumbs if isinstance(t, dict) and t.get('value') and
+                not (t.get('aspect') == 'poster' and skip_poster_url) and
+                not (t.get('aspect') == 'landscape' and skip_fanart_url)]
+            info_for_files['fanart'] = arts
+            info_for_files['extras'] = extras_list
+            if skip_poster_url and 'poster_url' in info_for_files:
+                info_for_files['poster_url'] = ''
+            if skip_fanart_url and 'landscape_url' in info_for_files:
+                info_for_files['landscape_url'] = ''
         else:
             # 정보 포함 안 함 설정 시 관련 필드 삭제 (정제)
             info_for_files.pop('thumb', None)
             info_for_files.pop('fanart', None)
             info_for_files.pop('extras', None)
+            info_for_files.pop('poster_url', None)
+            info_for_files.pop('landscape_url', None)
 
         # --- JSON 파일 생성 ---
         if make_json:
@@ -328,12 +363,15 @@ class Task:
         return metadata_files_ok
 
 
-    def file_save(url, filepath, proxy_url=None):
+    def file_save(url, filepath, proxy_url=None, guarded_source=False):
         cooperate()
         filename = os.path.basename(filepath)
         partial = str(filepath) + '.part-' + uuid.uuid4().hex
         try:
-            logger.debug(f"파일 다운로드 시도: {filename} <- {url}")
+            if guarded_source:
+                logger.debug('파일 다운로드 시도: %s [검증된 원본 전송]', filename)
+            else:
+                logger.debug(f"파일 다운로드 시도: {filename} <- {url}")
             proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else {}
             
             headers = {
@@ -344,7 +382,12 @@ class Task:
                 'Referer': url.split('/', 3)[0] + '//' + url.split('/')[2] 
             }
 
-            with requests.get(url, stream=True, proxies=proxies, headers=headers, verify=False, timeout=180) as r:
+            if guarded_source:
+                from support_site.ssrf_guard import fetch
+                response = fetch(url, stream=True, proxy=proxies, headers=headers, verify=False, timeout=180)
+            else:
+                response = requests.get(url, stream=True, proxies=proxies, headers=headers, verify=False, timeout=180)
+            with response as r:
                 r.raise_for_status()
                 with open(partial, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=8192):
@@ -363,10 +406,16 @@ class Task:
             return True
             
         except requests.exceptions.ConnectionError as ce:
-            logger.error(f"서버 연결 끊김 (방화벽/봇 차단 의심): {filename} - {str(ce)}")
+            if guarded_source:
+                logger.exception('검증된 원본 다운로드 연결 실패: %s', filename)
+            else:
+                logger.error(f"서버 연결 끊김 (방화벽/봇 차단 의심): {filename} - {str(ce)}")
             return False
         except Exception as e:
-            logger.error(f"파일 다운로드 실패: {filename} - {str(e)}")
+            if guarded_source:
+                logger.exception('검증된 원본 다운로드 실패: %s', filename)
+            else:
+                logger.error(f"파일 다운로드 실패: {filename} - {str(e)}")
             return False
         finally:
             try:

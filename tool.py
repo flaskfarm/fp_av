@@ -27,20 +27,26 @@ class SafeFormatter(string.Formatter):
 
 
 class SidecarBundle:
-    """Stage newly generated sidecars; never copy existing source files."""
+    """Stage generated sidecars and unchanged companion JSON until video success."""
     def __init__(self, target, overwrite=False):
         import tempfile
         self.target = Path(target)
-        self.target.mkdir(parents=True, exist_ok=True)
-        self.folder = Path(tempfile.mkdtemp(prefix='.fp_av_prepare_', dir=self.target))
+        # Never stage on a destination mount: VFS may upload temporary names.
+        # Missing/unwritable local storage must fail preparation, with no fallback.
+        self.folder = Path(tempfile.mkdtemp(prefix='.fp_av_prepare_', dir='/data/tmp'))
         self.overwrite = overwrite
-        self.published = []
         self.backups = []
+        self._published = []
         self.sources = []
         self.reserved = set()
-        self.ready = {}
+        self.ready = set()
         self.committed = False
         self.cleanup_pending = False
+        self.closed = False
+
+    @staticmethod
+    def _rename_existing(source, target):
+        os.rename(source, target)
 
     def _reserve_name(self, name):
         if (Path(name).name != name or name.casefold() in self.reserved
@@ -48,78 +54,125 @@ class SidecarBundle:
             raise FileExistsError('준비 경로가 이미 예약되어 있습니다: ' + name)
         self.reserved.add(name.casefold())
 
-    def write_json(self, data, name, source):
-        stat = Path(source).stat()
-        proof = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
-        self._reserve_name(name)
-        with open(self.folder / name, 'x', encoding='utf-8') as fp:
-            json.dump(data, fp, ensure_ascii=False, indent=4)
-        self.sources.append((Path(source), proof, name))
+    def stage_json(self, source, name):
+        try:
+            self._reserve_name(name)
+            with open(source, 'rb') as src, open(self.folder / name, 'xb') as dst:
+                shutil.copyfileobj(src, dst)
+        except OSError as exc:
+            logger.error('원본 JSON 준비 실패: %s -> %s (%s)', source, self.folder / name, exc)
+            raise
+        self.sources.append((Path(source), name))
 
     def publish(self):
+        import uuid
+        self.target.mkdir(parents=True, exist_ok=True)
         for staged in list(self.folder.iterdir()):
             cooperate()
             if not staged.is_file():
                 continue
             target = self.target / staged.name
-            if os.path.lexists(target):
-                if not self.overwrite:
-                    # The configured policy is to reuse existing metadata/media.
-                    import filecmp
-                    if filecmp.cmp(staged, target, shallow=False):
-                        stat = target.stat()
-                        self.ready[staged.name] = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
-                    staged.unlink()
-                    logger.info('기존 부가파일 재사용 (덮어쓰기 비활성화): %s', target)
-                    continue
-                backup = self.folder / ('.backup_' + staged.name)
-                UtilFunc.move(target, backup)
-                self.backups.append((target, backup))
-            UtilFunc.move(staged, target)
-            stat = target.stat()
-            self.published.append((target, (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)))
-            self.ready[staged.name] = self.published[-1][1]
+            backup = None
+            try:
+                if os.path.lexists(target):
+                    if not self.overwrite:
+                        # Only identical reused JSON qualifies for source cleanup.
+                        import filecmp
+                        if filecmp.cmp(staged, target, shallow=False):
+                            self.ready.add(staged.name)
+                        staged.unlink()
+                        logger.info('기존 부가파일 재사용 (덮어쓰기 비활성화): %s', target)
+                        continue
+                    backup = target.with_name('_fp_av_backup_' + uuid.uuid4().hex + '_' + staged.name)
+                    self._rename_existing(target, backup)
+                    self.backups.append((target, backup))
+                # Only sidecars cross filesystems by copying. Video move remains rename-only.
+                with open(staged, 'rb') as src, open(target, 'xb', buffering=0) as dst:
+                    published = [target, None]
+                    self._published.append(published)
+                    try:
+                        shutil.copyfileobj(src, dst)
+                        dst.flush()
+                    finally:
+                        state = os.fstat(dst.fileno())
+                        published[1] = (state.st_dev, state.st_ino, state.st_size,
+                                        state.st_mtime_ns, state.st_ctime_ns)
+                self.ready.add(staged.name)
+            except OSError as exc:
+                if isinstance(exc, FileExistsError) or (backup is not None and (target, backup) not in self.backups):
+                    self.cleanup_pending = True
+                logger.error('부가파일 게시 실패: 최종명=%s, 백업경로=%s, 준비폴더=%s (%s)',
+                             target, backup, self.folder, exc)
+                raise
 
     def commit(self):
         self.committed = True
-        for source, proof, name in self.sources:
+        for target, backup in self.backups:
+            try:
+                backup.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                self.cleanup_pending = True
+                logger.warning('영상 이동 완료 후 기존 부가파일 백업 정리 보류: %s (%s)', backup, exc)
+        for source, name in self.sources:
             if name not in self.ready:
                 continue
             try:
-                target = self.target / name
-                current = target.stat()
-                if self.ready[name] != (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns):
-                    raise OSError('저장된 부가파일이 변경되었습니다.')
-                if source.exists() and source.resolve() != target.resolve():
-                    stat = source.stat()
-                    if proof != (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns):
-                        raise OSError('원본 JSON이 변경되었습니다.')
+                if source.resolve() != (self.target / name).resolve():
                     source.unlink()
-            except OSError:
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
                 self.cleanup_pending = True
-                logger.warning('영상 이동 완료 후 원본 JSON 정리를 보류합니다: %s', source.name)
+                logger.warning('영상 이동 완료 후 원본 JSON 정리를 보류합니다: %s (%s)', source, exc)
 
     def close(self):
+        if self.closed:
+            return
+        self.closed = True
         preserve = self.cleanup_pending
         if not self.committed:
-            for target, owned in reversed(self.published):
+            blocked = set()
+            for target, expected in reversed(self._published):
                 try:
-                    if target.exists():
-                        stat = target.stat()
-                        if (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns) != owned:
-                            raise FileExistsError('생성된 부가파일이 다른 작업에 의해 변경되었습니다.')
-                        target.unlink()
-                except OSError:
+                    state = target.lstat()
+                    current = (state.st_dev, state.st_ino, state.st_size,
+                               state.st_mtime_ns, state.st_ctime_ns)
+                    if expected is None or current != expected:
+                        blocked.add(target)
+                        preserve = True
+                        logger.warning('부가파일 롤백 보류 — 게시 파일 변경 또는 소유 확인 불가: %s (준비폴더=%s)',
+                                       target, self.folder)
+                        continue
+                    target.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    blocked.add(target)
                     preserve = True
-                    logger.warning('부가파일 정리를 보류합니다: %s', target.name)
+                    logger.warning('부가파일 롤백 정리 실패: %s (준비폴더=%s, 원인=%s)', target, self.folder, exc)
             for target, backup in reversed(self.backups):
                 try:
-                    UtilFunc.move(backup, target)
-                except OSError:
+                    if target in blocked or os.path.lexists(target):
+                        preserve = True
+                        logger.warning('부가파일 복원 보류 — 최종 파일 보존: 최종명=%s, 백업경로=%s, 준비폴더=%s',
+                                       target, backup, self.folder)
+                        continue
+                    self._rename_existing(backup, target)
+                except OSError as exc:
                     preserve = True
-                    logger.warning('기존 부가파일 복원을 보류합니다: %s', target.name)
+                    logger.warning('부가파일 복원 실패: 최종명=%s, 백업경로=%s, 준비폴더=%s (원인=%s)',
+                                   target, backup, self.folder, exc)
+        self.cleanup_pending = preserve
+        if preserve:
+            logger.warning('미완료 부가파일 보존: 대상폴더=%s, 준비폴더=%s', self.target, self.folder)
         if not preserve:
-            shutil.rmtree(self.folder)
+            try:
+                shutil.rmtree(self.folder)
+            except OSError as exc:
+                self.cleanup_pending = True
+                logger.warning('로컬 부가파일 임시 폴더 정리 보류: %s (%s)', self.folder, exc)
 
 class ToolExpandFileProcess:
     ##########################
@@ -267,7 +320,11 @@ class ToolExpandFileProcess:
                     is_not_allowed = True
 
                 if is_not_allowed:
-                    newdir = errpath.joinpath("[FILENAME NOT ALLOWED]") if errpath else None
+                    if is_dry_run:
+                        logger.warning(f"[Dry Run] 전처리 제외 파일 삭제 예정: {file}")
+                    else:
+                        file.unlink()
+                    continue
                 else:
                     files.append(file)
                     continue
@@ -1132,7 +1189,7 @@ class UtilFunc:
 
     @staticmethod
     def move(src: Path, trg: Path):
-        """Rename an existing file or directory; never turn a move into a copy."""
+        """Rename on one filesystem, or use the standard cross-filesystem move."""
         src, trg = Path(src), Path(trg)
         if UtilFunc.destination_state(src, trg) == 'same':
             return trg
@@ -1140,8 +1197,12 @@ class UtilFunc:
             raise ValueError('원본 폴더 내부로 이동할 수 없습니다.')
         if os.path.lexists(trg):
             raise FileExistsError(str(trg))
-        # The filesystem (including mergerfs) decides how to rename the entry.
-        # EXDEV and other rename errors are reported; no copy/delete fallback.
-        os.rename(src, trg)
+        try:
+            os.rename(src, trg)
+        except OSError as exc:
+            import errno
+            if exc.errno != errno.EXDEV:
+                raise
+            shutil.move(src, trg)
         logger.debug("Moved: %s -> %s", src.name, trg)
         return trg
