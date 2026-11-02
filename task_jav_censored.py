@@ -1,5 +1,5 @@
 from .util_jobs import monitored_task, progress, record_saved
-from .util_shared_library import apply_shared_preview_policy, is_shared_library, shared_actor_image_order
+from .util_shared_library import is_shared_library
 from .util_runtime import cooperate, processing_job, metadata_delay
 from .setup import *
 from pathlib import Path
@@ -1013,6 +1013,9 @@ class Task:
                 if not comp_path:
                     comp_path = matched_custom_rule.get('동반자막처리경로')
                 comp_format = matched_custom_rule.get('동반자막처리폴더포맷')
+                if not comp_format and (is_meta_success or matched_custom_rule.get('force_on_meta_fail') or
+                                        matched_custom_rule.get('메타실패시강제적용')):
+                    comp_format = matched_custom_rule.get('format') or matched_custom_rule.get('폴더포맷')
                 if comp_path: use_separate_path = True
 
             if use_separate_path and not comp_path:
@@ -1116,10 +1119,7 @@ class Task:
         local_meta = info.get('local_meta_json')
         if local_meta:
             logger.info(f"'{info['pure_code']}' 로컬 JSON 메타데이터를 사용하여 검색을 건너뜁니다.")
-            return apply_shared_preview_policy(config, local_meta, 'JAV_CEN')
-
-        if config.get('드라이런', False):
-            return Task.readonly_metadata(config, info, 'JAV_CEN')
+            return local_meta
 
         meta_module = Task.get_meta_module('jav_censored')
         if not meta_module:
@@ -1128,30 +1128,11 @@ class Task:
 
         # extra_opts 초기화 및 옵션 정제
         metadata_delay(config)
-        extra_opts = {'_media_completion': {}}
-        if not config.get('드라이런', False) and info.get('file_type') == 'video':
+        extra_opts = {'_raw_media': True}
+        if info.get('file_type') == 'video':
             extra_opts['media_path'] = str(info['original_file'])
 
-        # 한글/영문 키 호환 오버라이드 추출
         is_shared = is_shared_library(config)
-        override_actor_img_order = config.get('actor_img_order') or ""
-        override_image_mode = config.get('메타이미지모드') or config.get('image_mode') or ""
-        override_strip_images = config.get('메타옵션_이미지제거') or config.get('strip_images') or False
-
-        if is_shared:
-            # 공유용 라이브러리 모드: 개인 서버 주소 노출 방지 옵션 주입
-            extra_opts['actor_img_order'] = shared_actor_image_order(config)
-            extra_opts['image_mode'] = override_image_mode or 'ff_proxy'
-            if override_strip_images:
-                extra_opts['strip_images'] = True
-        else:
-            # 개인용 라이브러리 모드: 사용자가 명시적으로 오버라이드한 값만 주입
-            if override_actor_img_order:
-                extra_opts['actor_img_order'] = override_actor_img_order
-            if override_image_mode:
-                extra_opts['image_mode'] = override_image_mode
-            if override_strip_images:
-                extra_opts['strip_images'] = True
 
         # 기본 검색어 설정 (파싱된 품번)
         search_name = info.get('search_keyword') or info['pure_code']
@@ -1224,8 +1205,6 @@ class Task:
                 keyword_param = info.get('search_keyword') if manual_url else search_name
                 meta_info = meta_module.info(best_match["code"], keyword=keyword_param, extra_opts=extra_opts)
                 if meta_info:
-                    if extra_opts.get('media_path'):
-                        Task.record_media_completion(info, extra_opts['_media_completion'])
                     match_site = best_match.get('site', 'N/A')
             except Exception as e:
                 logger.error(f"'{best_match['code']}'의 상세 정보 획득 중 예외 발생: {e}")
@@ -1233,7 +1212,7 @@ class Task:
                 
         if meta_info:
             logger.info(f"'{info['pure_code']}' 메타 검색 성공: {meta_info.get('originaltitle')} (from: {match_site}, 공유모드:{is_shared})")
-            return apply_shared_preview_policy(config, meta_info, 'JAV_CEN')
+            return meta_info
         else:
             logger.info(f"'{info['pure_code']}'에 대한 유효한 메타 정보를 찾지 못했습니다.")
             return None
@@ -1355,7 +1334,11 @@ class Task:
                         target_dir, move_type, _ = Task._get_final_target_path(config, info, task_context, preloaded_meta=meta_info_for_group)
                     
                     if not target_dir:
-                        logger.warning(f"'{info['original_file'].name}'의 이동 경로를 결정할 수 없어 건너뜁니다. (이동 타입: {move_type})")
+                        if move_type == 'meta_fail_skipped':
+                            prefix = '[Dry Run] ' if config.get('드라이런', False) else ''
+                            logger.info(f"{prefix}'{info['original_file'].name}': 메타 매칭 실패 및 실패시 이동 비활성화 정책에 따라 건너뜁니다.")
+                        else:
+                            logger.warning(f"'{info['original_file'].name}'의 이동 경로를 결정할 수 없어 건너뜁니다. (이동 타입: {move_type})")
                         continue
                     
                     current_target_dir_str = str(target_dir)
@@ -1382,8 +1365,6 @@ class Task:
                                        info['original_file'].exists() and
                                        (destination.exists() or
                                         UtilFunc.is_duplicate(info['original_file'], destination, config)))
-                    if move_type in valid_scan_types and not duplicate_video:
-                        Task.complete_metadata_before_move(config, info, 'jav_censored')
 
                     # Stage newly generated sidecars; move existing subtitles only after video success.
                     if (not config.get('드라이런', False) and info.get('file_type') == 'video'
@@ -1391,11 +1372,8 @@ class Task:
                             and not duplicate_video):
                         bundle = Task.prepare_source_bundle(config, info, meta_info_for_group, 'jav_censored')
                         if info['should_create_meta'] and meta_info_for_group:
-                            printable_meta_info = copy.deepcopy(meta_info_for_group)
-                            printable_meta_info.pop('original', None)
-                            printable_meta_info.setdefault('extra_info', {}).pop('source_video_path', None)
                             sidecar_result = TaskMakeYaml.make_files(
-                                printable_meta_info, str(bundle.folder),
+                                meta_info_for_group, str(bundle.folder),
                                 make_yaml=config.get('부가파일생성_YAML', False),
                                 make_nfo=config.get('부가파일생성_NFO', False),
                                 make_json=config.get('부가파일생성_JSON', False) and not info.get('_local_json_prepared'),
@@ -1405,7 +1383,7 @@ class Task:
                                 include_media_path=config.get('부가파일미디어경로포함', False),
                                 is_code_folder=info.get('is_code_folder', False),
                                 module_name='jav',
-                                original_filename=info['_sidecar_stem'], existing_folder=str(target_dir), storage_result=info.get('_media_completion'))
+                                original_filename=info['_sidecar_stem'], existing_folder=str(target_dir), output_config=config)
                             if sidecar_result is False:
                                 raise RuntimeError('필수 부가파일 저장 실패로 영상 이동을 보류합니다.')
                         bundle.publish()
@@ -1434,8 +1412,6 @@ class Task:
                                 logger.warning(f"'{info['original_file'].name}' 이동 실패: 대상 경로가 없습니다.")
                                 continue
 
-                        if entity and entity.target_path and entity.move_type in valid_scan_types:
-                            Task.complete_moved_metadata(config, info, entity, 'jav_censored')
 
                         # 4. 스캔 요청: 모든 파일 이동이 끝난 후, 대상이 '영상(video)'일 때만 1회 즉시 호출
                         if scan_enabled and entity and entity.target_path and entity.move_type in valid_scan_types:
@@ -1853,8 +1829,10 @@ class Task:
             logger.error(f"폴더 포맷 변수 처리 중 오류: {e}")
 
         # 안전한 포맷팅 및 후처리
-        safe_fmt = SafeFormatter()
-        folders = safe_fmt.format(folder_format, **data)
+        if '[[' in folder_format:
+            folders = ToolExpandFileProcess._format_conditional_template(folder_format, data, format_all=True)
+        else:
+            folders = SafeFormatter().format(folder_format, **data)
         # 포맷팅 후에도 남아있는 {태그} 제거
         folders = re.sub(r'\{[a-zA-Z0-9_.-]+\}', '', folders)
         # 비어있는 모든 종류의 괄호 제거: (), [], {}
@@ -1893,41 +1871,6 @@ class Task:
                 ret.append(Path(t))
         return ret
 
-
-    @staticmethod
-    def readonly_metadata(config, info, category):
-        """Dry-run uses only already-initialized DB reads; no provider/info calls."""
-        try:
-            from metadata.mod_meta_db import ModuleMetaDb, MetaItem
-            from sqlalchemy.orm import sessionmaker
-            from sqlalchemy import or_
-            domain = {'JAV_CEN': 'jav_cen', 'JAV_UNCEN': 'jav_uncen', 'WESTERN': 'western'}[category]
-            registry = ModuleMetaDb._sessions.get('postgres' if ModuleMetaDb._is_postgres else domain)
-            if registry is None:
-                return None
-            session = sessionmaker(bind=registry.get_bind())()
-            try:
-                code = info.get('pure_code') or ''
-                identity = (MetaItem.code == code) if category == 'WESTERN' else or_(
-                    MetaItem.code == code, MetaItem.ui_code == code.upper())
-                item = session.query(MetaItem).filter(MetaItem.category == category, identity).first()
-                if item:
-                    return apply_shared_preview_policy(config, ModuleMetaDb.to_entity_dict(item), category)
-            finally:
-                session.close()
-        except Exception:
-            logger.warning('[Dry Run] 기존 메타 DB 읽기가 불가하여 파일명 기준 계획만 표시합니다.')
-        return None
-
-    @staticmethod
-    def record_media_completion(info, receipt):
-        if not receipt or receipt.get('path') != str(info.get('original_file')):
-            return
-        info['_media_completion'] = dict(receipt)
-        if receipt.get('state') in ('finished', 'finished_with_warnings'):
-            info['_media_completed_path'] = receipt['path']
-        if receipt.get('state') != 'finished':
-            logger.warning('미디어 보완 결과: %s (%s)', receipt.get('state'), receipt.get('error_code') or receipt.get('warnings') or receipt.get('failures') or '')
 
     @staticmethod
     def companion_subtitle_names(config, info, video_target):
@@ -2038,86 +1981,15 @@ class Task:
             info['_sidecar_stem'] = stem
             local_json = source.with_suffix('.json')
             if info.get('local_meta_json') and local_json.is_file():
-                data = copy.deepcopy(info['local_meta_json'])
-                def merge(target, incoming):
-                    for key, value in incoming.items():
-                        if isinstance(value, dict) and isinstance(target.get(key), dict):
-                            merge(target[key], value)
-                        else:
-                            target[key] = copy.deepcopy(value)
-                merge(data, metadata or {})
-                data = apply_shared_preview_policy(config, data, 'WESTERN' if module_name == 'western' else 'JAV_UNCEN' if module_name == 'jav_uncensored' else 'JAV_CEN')
-                def clean(value):
-                    if isinstance(value, dict):
-                        return {key: clean(item) for key, item in value.items() if key != 'source_video_path'}
-                    if isinstance(value, list):
-                        return [clean(item) for item in value]
-                    return value
+                data = info['local_meta_json']
                 name = stem if module_name == 'western' else str(data.get('originaltitle') or data.get('sorttitle') or data.get('code') or source.stem).lower()
-                bundle.write_json(clean(data), name + '.json', local_json)
+                bundle.stage_json(local_json, name + '.json')
                 info['_local_json_prepared'] = True
             return bundle
         except BaseException:
             bundle.close()
             raise
 
-    @staticmethod
-    def complete_metadata_before_move(config, info, module_name):
-        """Finish and persist media before a move can trigger an external scan."""
-        metadata = info.get('meta_info')
-        if config.get('드라이런', False) or info.get('file_type') != 'video' or not metadata:
-            return
-        source_path = str(info['original_file'])
-        if info.get('_media_completed_path') == source_path:
-            logger.debug('[MetaDB] 메타 수집 단계에서 미디어 보완 완료, 중복 처리 생략: %s', metadata.get('code'))
-            return
-        receipt = info.get('_media_completion') or {}
-        if receipt.get('path') == source_path and receipt.get('state') in ('blocked', 'policy_skipped', 'finished_with_warnings', 'finished'):
-            logger.warning('이미 처리/보류된 같은 미디어 요청을 재발행하지 않습니다: %s', receipt.get('state'))
-            return
-        code = metadata.get('code')
-        if not code:
-            logger.warning('[MetaDB] 미디어 보완 생략: 메타데이터 고유 코드 없음 (%s)', source_path)
-            return
-        try:
-            module = Task.get_meta_module(module_name)
-            if module is None:
-                return
-            from metadata.mod_meta_db import ModuleMetaDb
-            logger.debug('[MetaDB] 이동 전 미디어 보완 시작: %s (%s)', code, source_path)
-            result = ModuleMetaDb.complete_item_media(code, module.category, source_path, metadata=metadata)
-            from metadata.util_metadata import MetaUtil
-            receipt = {}
-            MetaUtil.note_media_completion({'_media_completion': receipt}, result, source_path)
-            Task.record_media_completion(info, receipt)
-            completed = result.get('data') or {}
-            if completed:
-                extra = metadata.setdefault('extra_info', {})
-                extra.pop('source_video_path', None)
-                for key in ('trailer_video', 'preview_clip', 'media_errors'):
-                    if key in completed.get('extra_info', {}):
-                        extra[key] = completed['extra_info'][key]
-                    else:
-                        extra.pop(key, None)
-                metadata['extras'] = completed.get('extras') or []
-                if 'original' in completed:
-                    metadata['original'] = completed['original']
-                filtered = apply_shared_preview_policy(config, metadata, module.category)
-                if filtered is not metadata:
-                    metadata.clear()
-                    metadata.update(filtered)
-            if result.get('ret') == 'success':
-                logger.debug('[MetaDB] 이동 전 미디어 보완 완료: %s', code)
-        except Exception:
-            logger.exception('[MetaDB] 미디어 보완 오류, 파일처리 계속: %s', code)
-
-    @staticmethod
-    def complete_moved_metadata(config, info, entity, module_name):
-        """Keep source movie locations out of metadata after the move."""
-        metadata = info.get('meta_info')
-        if config.get('드라이런', False) or info.get('file_type') != 'video' or not metadata or not entity.target_path:
-            return
-        metadata.setdefault('extra_info', {}).pop('source_video_path', None)
 
     @staticmethod
     def get_meta_module(module_name):

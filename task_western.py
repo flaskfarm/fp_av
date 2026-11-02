@@ -1,5 +1,5 @@
 from .util_jobs import monitored_task, progress, record_saved
-from .util_shared_library import apply_shared_preview_policy, is_shared_library, shared_actor_image_order
+from .util_shared_library import is_shared_library
 from .util_runtime import cooperate, processing_job, metadata_delay
 from .setup import *
 from pathlib import Path
@@ -585,6 +585,9 @@ class Task:
                 if not comp_path:
                     comp_path = matched_custom_rule.get('동반자막처리경로')
                 comp_format = matched_custom_rule.get('동반자막처리폴더포맷')
+                if not comp_format and (is_meta_success or matched_custom_rule.get('force_on_meta_fail') or
+                                        matched_custom_rule.get('메타실패시강제적용')):
+                    comp_format = matched_custom_rule.get('format') or matched_custom_rule.get('폴더포맷')
                 if comp_path: use_separate_path = True
 
             if use_separate_path and not comp_path:
@@ -694,11 +697,13 @@ class Task:
                 else:
                     if meta_info:
                         try:
-                            temp_path = existing_dir_path.with_name(folder_part + "_TEMP_RENAME")
-                            existing_dir_path.rename(temp_path)
-                            temp_path.rename(current_path.joinpath(folder_part))
-                            
-                            logger.info(f"폴더명 교정 (메타데이터 반영): '{matched_existing_folder}' -> '{folder_part}'")
+                            if config.get('드라이런', False):
+                                logger.info(f"[Dry Run] 기존 경로 대소문자 교정 예정: '{matched_existing_folder}' -> '{folder_part}'")
+                            else:
+                                temp_path = existing_dir_path.with_name(folder_part + "_TEMP_RENAME")
+                                existing_dir_path.rename(temp_path)
+                                temp_path.rename(current_path.joinpath(folder_part))
+                                logger.info(f"폴더명 교정 (메타데이터 반영): '{matched_existing_folder}' -> '{folder_part}'")
                             final_folder_name = folder_part
                         except Exception as e:
                             logger.warning(f"폴더명 대소문자 교정 실패 (권한 등): {e}. 기존 이름 유지.")
@@ -724,10 +729,7 @@ class Task:
         local_meta = info.get('local_meta_json')
         if local_meta:
             logger.info(f"'{info.get('pure_code', '')}' 로컬 JSON 메타데이터를 사용하여 검색을 건너뜁니다.")
-            return apply_shared_preview_policy(config, local_meta, 'WESTERN')
-
-        if config.get('드라이런', False):
-            return CensoredTask.readonly_metadata(config, info, 'WESTERN')
+            return local_meta
 
         meta_module = CensoredTask.get_meta_module('western')
         if not meta_module:
@@ -737,30 +739,11 @@ class Task:
 
         # extra_opts 초기화 및 옵션 정제
         metadata_delay(config)
-        extra_opts = {'_media_completion': {}}
-        if not config.get('드라이런', False) and info.get('file_type') == 'video':
+        extra_opts = {'_raw_media': True}
+        if info.get('file_type') == 'video':
             extra_opts['media_path'] = str(info['original_file'])
 
-        # 한글/영문 키 호환 오버라이드 추출
         is_shared = is_shared_library(config)
-        override_actor_img_order = config.get('actor_img_order') or ""
-        override_image_mode = config.get('메타이미지모드') or config.get('image_mode') or ""
-        override_strip_images = config.get('메타옵션_이미지제거') or config.get('strip_images') or False
-
-        if is_shared:
-            # 공유용 라이브러리 모드: 개인 서버 주소 노출 방지 옵션 주입
-            extra_opts['actor_img_order'] = shared_actor_image_order(config)
-            extra_opts['image_mode'] = override_image_mode or 'ff_proxy'
-            if override_strip_images:
-                extra_opts['strip_images'] = True
-        else:
-            # 개인용 라이브러리 모드: 사용자가 명시적으로 오버라이드한 값만 주입
-            if override_actor_img_order:
-                extra_opts['actor_img_order'] = override_actor_img_order
-            if override_image_mode:
-                extra_opts['image_mode'] = override_image_mode
-            if override_strip_images:
-                extra_opts['strip_images'] = True
 
         search_name = info.get('search_keyword') or info.get('pure_code', '알수없음')
 
@@ -782,11 +765,9 @@ class Task:
                 
                 if forced_code:
                     meta_info = meta_module.info(forced_code, extra_opts=extra_opts)
-                    if meta_info and extra_opts.get('media_path'):
-                        CensoredTask.record_media_completion(info, extra_opts['_media_completion'])
                     if meta_info:
                         logger.info(f"'{search_name}' 수동 매칭 성공!: {meta_info.get('originaltitle')} (공유모드:{is_shared})")
-                        return apply_shared_preview_policy(config, meta_info, 'WESTERN')
+                        return meta_info
                     else:
                         logger.warning(f"'{search_name}' 수동 매칭 실패 (잘못된 URL이거나 서버 오류). 자동 검색으로 넘어갑니다.")
 
@@ -798,12 +779,10 @@ class Task:
             
             if best_match and best_match.get('code') and (best_match.get('site') or best_match.get('site_key')):
                 meta_info = meta_module.info(best_match["code"], extra_opts=extra_opts)
-                if meta_info and extra_opts.get('media_path'):
-                    CensoredTask.record_media_completion(info, extra_opts['_media_completion'])
                 if meta_info:
                     match_site = best_match.get('site', 'N/A')
                     logger.info(f"'{search_name}' 메타 검색 성공: {meta_info.get('originaltitle')} (from: {match_site}, 공유모드:{is_shared})")
-                    return apply_shared_preview_policy(config, meta_info, 'WESTERN')
+                    return meta_info
             
             logger.info(f"'{search_name}'에 대한 유효한 메타 정보를 찾지 못했습니다.")
             
@@ -1202,7 +1181,11 @@ class Task:
                         target_dir, move_type, _ = Task._get_final_target_path(config, info, task_context, preloaded_meta=meta_info_for_group)
 
                     if not target_dir:
-                        logger.warning(f"'{info['original_file'].name}'의 이동 경로를 결정할 수 없어 건너뜁니다.")
+                        if move_type == 'meta_fail_skipped':
+                            prefix = '[Dry Run] ' if config.get('드라이런', False) else ''
+                            logger.info(f"{prefix}'{info['original_file'].name}': 메타 매칭 실패 및 실패시 이동 비활성화 정책에 따라 건너뜁니다.")
+                        else:
+                            logger.warning(f"'{info['original_file'].name}'의 이동 경로를 결정할 수 없어 건너뜁니다.")
                         continue
                     
                     if move_type in ['no_meta', 'meta_fail']:
@@ -1250,8 +1233,6 @@ class Task:
                                        info['original_file'].exists() and
                                        (destination.exists() or
                                         UtilFunc.is_duplicate(info['original_file'], destination, config)))
-                    if move_type in valid_scan_types and not duplicate_video:
-                        CensoredTask.complete_metadata_before_move(config, info, 'western')
 
                     is_meta_fail = (move_type in ['no_meta', 'meta_fail'])
                     is_subfolder_fail = is_meta_fail and bool(Task._get_subfolder_to_move(info['original_file'], config.get('다운로드폴더', [])))
@@ -1262,11 +1243,8 @@ class Task:
                             and not duplicate_video):
                         bundle = CensoredTask.prepare_source_bundle(config, info, meta_info_for_group, 'western')
                         if info['should_create_meta'] and meta_info_for_group:
-                            printable_meta_info = copy.deepcopy(meta_info_for_group)
-                            printable_meta_info.pop('original', None)
-                            printable_meta_info.setdefault('extra_info', {}).pop('source_video_path', None)
                             sidecar_result = TaskMakeYaml.make_files(
-                                printable_meta_info, str(bundle.folder),
+                                meta_info_for_group, str(bundle.folder),
                                 make_yaml=config.get('부가파일생성_YAML', False),
                                 make_nfo=config.get('부가파일생성_NFO', False),
                                 make_json=config.get('부가파일생성_JSON', False) and not info.get('_local_json_prepared'),
@@ -1276,7 +1254,7 @@ class Task:
                                 include_media_path=config.get('부가파일미디어경로포함', False),
                                 is_code_folder=info.get('is_code_folder', False),
                                 module_name='western',
-                                original_filename=info['_sidecar_stem'], existing_folder=str(target_dir), storage_result=info.get('_media_completion'))
+                                original_filename=info['_sidecar_stem'], existing_folder=str(target_dir), output_config=config)
                             if sidecar_result is False:
                                 raise RuntimeError('필수 부가파일 저장 실패로 영상 이동을 보류합니다.')
                         bundle.publish()
@@ -1306,8 +1284,6 @@ class Task:
                                 logger.warning(f"'{info['original_file'].name}' 이동 실패: 대상 경로가 없습니다.")
                                 continue
 
-                        if entity and entity.target_path and entity.move_type in valid_scan_types:
-                            CensoredTask.complete_moved_metadata(config, info, entity, 'western')
 
                         # 4. 스캔 요청
                         if scan_enabled and entity and entity.target_path and entity.move_type in valid_scan_types:

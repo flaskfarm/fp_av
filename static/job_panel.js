@@ -81,7 +81,28 @@
       clock();
     }
     function command(name, arg, callback, arg2) {
-      globalSendCommand(name, arg || '', arg2 || '', '', callback);
+      var sent = false;
+      function deliver(result) {
+        if (sent) return;
+        sent = true;
+        callback(result);
+      }
+      return $.ajax({
+        url: '/' + encodeURIComponent(panel.dataset.package) + '/ajax/' + encodeURIComponent(panel.dataset.module) + '/command',
+        type: 'POST', dataType: 'json',
+        data: {command:name, arg1:arg || '', arg2:arg2 || '', arg3:''},
+        success: deliver,
+        error: function(xhr) {
+          var result = xhr.responseJSON;
+          if (!result && xhr.responseText) {
+            try { result = JSON.parse(xhr.responseText); } catch (e) { /* Unknown outcome. */ }
+          }
+          deliver(result && typeof result === 'object' ? result : {
+            ret:'error', error_code:'request_outcome_unknown', error_origin:'unknown', uncertain:true,
+            msg:'응답을 확인하지 못했습니다. 다시 실행하지 말고 작업 상태를 확인하세요.'
+          });
+        }
+      });
     }
     function poll() {
       if (disposed) return;

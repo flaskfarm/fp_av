@@ -340,6 +340,7 @@ class JobPanelMixin:
         status = backend.reserve(self.name, self.name, mode, task_id, dry_run=dry_run)
         if status is None:
             return jsonify(ret='warning', msg='이미 이 작업이 실행 중입니다.')
+        submission_started = False
         try:
             from importlib import import_module
             task = import_module(f'.task_{family}', __package__).TaskBase.start
@@ -347,9 +348,18 @@ class JobPanelMixin:
             options = {'monitor_token': status['run_id']}
             if (mode == 'one_path' and dry_run) or (mode == 'yaml' and dry_value):
                 options['dry_run'] = dry_run
+            submission_started = True
             task.apply_async(args=args, kwargs=options, task_id=task_id)
         except Exception as exc:
-            backend.append(self.name, status['run_id'], ['작업 실행 요청 실패: ' + str(exc)[:8000]])
-            backend.update(self.name, status['run_id'], state='failed', stage='실행 요청 실패', finished_at=time.time())
-            return jsonify(ret='error', msg=str(exc))
-        return jsonify(ret='success', msg='작업 실행을 요청했습니다.', run_id=status['run_id'])
+            logging.getLogger(__name__).exception('파일처리 작업 접수 응답 확인 실패')
+            if not submission_started:
+                message = '작업 실행을 준비하지 못했습니다. FF 로그를 확인하세요.'
+                backend.append(self.name, status['run_id'], [message])
+                backend.update(self.name, status['run_id'], state='failed', stage='실행 준비 실패', finished_at=time.time())
+                return jsonify(ret='error', error_code='ff_internal_error', error_origin='ff', msg=message, run_id=status['run_id']), 500
+            message = '작업 접수 여부를 확인하지 못했습니다. 다시 시작하지 말고 작업 상태를 확인하세요.'
+            backend.append(self.name, status['run_id'], [message])
+            backend.update(self.name, status['run_id'], stage='작업 접수 확인 필요', uncertain=True)
+            return jsonify(ret='error', error_code='queue_submission_unknown', error_origin='ff',
+                           msg=message, run_id=status['run_id'], uncertain=True), 503
+        return jsonify(ret='success', msg='작업 실행을 요청했습니다.', run_id=status['run_id'], state='queued'), 202

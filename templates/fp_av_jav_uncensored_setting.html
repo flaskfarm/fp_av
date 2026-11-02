@@ -32,7 +32,7 @@
 
     {{ macros.setting_input_textarea('jav_uncensored_filename_cleanup_list', '품번 파싱 제외 키워드', value=arg['jav_uncensored_filename_cleanup_list'], row='5', desc=['품번 파싱시 파일명에서 제외할 키워드 목록입니다.', '대소문자를 구분하지 않습니다. 너무 짧거나 레이블과 겹칠 수 있는 단어는 피하시고', '파일명 예외 키워드 옵션 활용 또한 고려하시기 바랍니다.', '구분자: 바(|)']) }}
 
-    {{ macros.setting_input_textarea('jav_uncensored_filename_not_allowed_list', '파일명 예외 키워드', desc=['파일명에 위와 같은 문자열이 포함된 경우 [FILENAME NOT ALLOWED] 폴더 아래에 분류', '구분자: 파이프( | ) 또는 줄바꿈(Enter)', '정규 표현식 사용: 줄의 시작을 regex|| 로 작성 (예: regex||.*-pt\\d+.*)'], value=arg['jav_uncensored_filename_not_allowed_list'], row='5') }}
+    {{ macros.setting_input_textarea('jav_uncensored_filename_not_allowed_list', '파일명 예외 키워드', desc=['설정한 키워드가 파일명에 포함되거나 정규식에 일치하면 원본 파일을 즉시 삭제합니다. (드라이런은 삭제 예정만 표시)', '구분자: 파이프( | ) 또는 줄바꿈(Enter)', '정규 표현식 사용: 줄의 시작을 regex|| 로 작성 (예: regex||.*-pt\\d+.*)'], value=arg['jav_uncensored_filename_not_allowed_list'], row='5') }}
 
     {{ macros.setting_input_int('jav_uncensored_delay_per_file', '파일당 처리 딜레이', value=arg['jav_uncensored_delay_per_file'], placeholder='0', min='0', desc=['개별 파일을 처리하기 전 대기하는 시간입니다.', '메타데이터 사이트의 과도한 연속 호출을 방지합니다. 단위: 초(second)']) }}
 
