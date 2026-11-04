@@ -1012,12 +1012,26 @@ class ToolExpandFileProcess:
 
             # 해상도 태그(res_tag) 계산
             res_tag_raw = ""
-            if height > 0:
+            long_side = max(width, height)
+            short_side = min(width, height)
+            if short_side > 0:
                 res_tiers = ffprobe_config.get('resolution_tiers', [])
-                for tier in res_tiers:
-                    if tier['min_height'] <= height < tier['max_height']:
-                        res_tag_raw = tier['tag']
-                        break
+                if res_tiers and 'min_height' in res_tiers[0]:
+                    # 구형 사용자 설정은 짧은 변의 기존 구간 판정을 유지한다.
+                    for tier in res_tiers:
+                        if tier['min_height'] <= short_side < tier['max_height']:
+                            res_tag_raw = tier['tag']
+                            break
+                else:
+                    from math import ceil
+                    margin_factor = 1 - float(ffprobe_config.get('resolution_margin_percent', 2)) / 100
+                    for tier in res_tiers:
+                        if tier['tag'] == 'SD' or (
+                            long_side >= ceil(tier['min_long'] * margin_factor) and
+                            short_side >= ceil(tier['min_short'] * margin_factor)
+                        ) or short_side >= ceil(tier['alt_short'] * margin_factor):
+                            res_tag_raw = tier['tag']
+                            break
 
             # tag_title 추출 및 정제
             tag_title = data.get('format', {}).get('tags', {}).get('title', '').strip()

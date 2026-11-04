@@ -832,7 +832,7 @@ class Task:
             if re.search(r'\b(4320p|8k)\b', stem_lower): res_tag = "8K"
             elif re.search(r'\b(2880p|6k)\b', stem_lower): res_tag = "6K"
             elif re.search(r'\b(2160p|4k|uhd)\b', stem_lower): res_tag = "4K"
-            elif re.search(r'\b(1440p|3k|2k|qhd)\b', stem_lower): res_tag = "3K"
+            elif re.search(r'\b(1440p|3k|2k|qhd)\b', stem_lower): res_tag = "FHD"
             elif re.search(r'\b(1080p|fhd)\b', stem_lower): res_tag = "FHD"
             elif re.search(r'\b(720p|hd)\b', stem_lower): res_tag = "HD"
             elif re.search(r'\b(480p|576p|sd)\b', stem_lower): res_tag = "SD"

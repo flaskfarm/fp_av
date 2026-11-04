@@ -474,14 +474,14 @@ class Task:
                     'ffprobe_path': '/usr/bin/ffprobe',
                     'tolerance': {'audio_bitrate': 5, 'fps': 0.01},
                     'standard_fps_values': [23.976, 24, 25, 29.97, 30, 59.94, 60],
+                    'resolution_margin_percent': 2,
                     'resolution_tiers': [
-                        {'min_height': 4000, 'max_height': 6000, 'tag': "8K"},
-                        {'min_height': 2880, 'max_height': 4000, 'tag': "6K"},
-                        {'min_height': 1600, 'max_height': 2880, 'tag': "4K"},
-                        {'min_height': 1200, 'max_height': 1600, 'tag': "3K"},
-                        {'min_height': 900,  'max_height': 1200, 'tag': "FHD"},
-                        {'min_height': 600,  'max_height': 900,  'tag': "HD"},
-                        {'min_height': 0,    'max_height': 600,  'tag': "SD"}
+                        {'tag': "8K", 'min_long': 7680, 'min_short': 2880, 'alt_short': 4320},
+                        {'tag': "6K", 'min_long': 5760, 'min_short': 2160, 'alt_short': 3240},
+                        {'tag': "4K", 'min_long': 3840, 'min_short': 1440, 'alt_short': 2160},
+                        {'tag': "FHD", 'min_long': 1920, 'min_short': 720, 'alt_short': 1080},
+                        {'tag': "HD", 'min_long': 1280, 'min_short': 480, 'alt_short': 720},
+                        {'tag': "SD"}
                     ],
                     'media_info_template': "[[{res_tag}]][[.{v_codec}]][[.{fps}fps]][[.{a_codec}]][[-{a_bitrate}kbps]]",
                     'enable_reprocessing': True,
