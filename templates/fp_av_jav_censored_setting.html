@@ -96,7 +96,11 @@
 
     <div id="jav_censored_use_meta_on_div" class="collapse">
       {{ macros.setting_input_text('jav_censored_meta_dvd_path', '정상 매칭시 이동 경로', desc=['정상 매칭시 이동할 루트 폴더입니다.'], value=arg['jav_censored_meta_dvd_path']) }}
-      {{ macros.setting_input_text('jav_censored_meta_dvd_vr_path', 'VR영상 이동 경로', desc=['빈값이면 VR영상을 따로 분리하지 않습니다.'], value=arg['jav_censored_meta_dvd_vr_path']) }}
+      {{ macros.setting_checkbox('jav_censored_vr_separate_enable', 'VR 별도 처리', value=arg['jav_censored_vr_separate_enable'], desc=['ON: 메타데이터에서 VR로 판정된 영상을 아래 경로로 별도 이동합니다.', 'OFF: 경로가 입력돼 있어도 VR 분류와 별도 이동을 적용하지 않습니다. VR 이동 경로가 비어 있으면 ON이어도 일반 경로를 사용합니다.']) }}
+      <div id="jav_censored_vr_separate_enable_div" class="collapse">
+        {{ macros.setting_input_text('jav_censored_meta_dvd_vr_path', 'VR 영상 이동 경로', desc=['빈값이면 VR영상을 따로 분리하지 않습니다.'], value=arg['jav_censored_meta_dvd_vr_path']) }}
+        {{ macros.setting_input_textarea('jav_censored_vr_match_names', 'VR 폴백 레이블/스튜디오명', value=arg['jav_censored_vr_match_names'], row='3', desc=['메타 장르와 원본 제목 표식으로 VR을 찾지 못할 때 입력한 레이블/스튜디오명과 정확히 일치하면 VR 경로를 사용합니다.', '줄바꿈 또는 쉼표로 구분하며 대소문자를 구분하지 않습니다. 비우면 사용하지 않습니다. VR 이동 경로가 비어 있으면 적용하지 않습니다.']) }}
+      </div>
       {{ macros.setting_checkbox('jav_censored_meta_dvd_use_dmm_only', '정상 매칭 판단에 DMM+MGS만 사용', value=arg['jav_censored_meta_dvd_use_dmm_only'], desc=['On: DMM+MGS 사용해서 정식 발매 여부를 판단', 'Off: 메타데이터 플러그인 설정을 따릅니다.']) }}
       {{ macros.setting_input_text('jav_censored_folder_format_actor', '배우 검색시 폴더 구조', desc=['정상 매칭 영상이고 배우가 한명일 경우에만 작동할 폴더 구조입니다.', '예) 배우별/{actor}/{code} 배우별/배우폴더/품번폴더 생성 후 이동', '빈값이면 기본 폴더 구조를 사용합니다.'], value=arg['jav_censored_folder_format_actor']) }}
       {{ macros.setting_input_textarea('jav_censored_meta_dvd_labels_exclude', '정상 매칭 제외 레이블', desc=['정상 매칭에서 제외할 레이블', '구분자: 콤마'], value=arg['jav_censored_meta_dvd_labels_exclude'], row='3') }}
@@ -173,6 +177,9 @@ $('#jav_censored_media_info_template_default_btn').click(function(e) {
 $('#jav_censored_companion_enable').change(function() {
   use_collapse('jav_censored_companion_enable');
 });
+$('#jav_censored_vr_separate_enable').change(function() {
+  use_collapse('jav_censored_vr_separate_enable');
+});
 $('#jav_censored_companion_use_separate_path').change(function() {
   use_collapse('jav_censored_companion_use_separate_path');
 });
@@ -187,6 +194,7 @@ $('input[type=radio][name=jav_censored_use_meta]').change(function() {
 
 
 function use_meta(value) {
+  use_collapse('jav_censored_vr_separate_enable');
   if (value == 'not_using') {
     $('#jav_censored_use_meta_on_div').collapse('hide');
     $('#jav_censored_use_meta_off_div').collapse('show');

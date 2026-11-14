@@ -41,6 +41,56 @@ class TaskBase:
         else:
             target_paths = ModelSetting.get("western_download_path").splitlines()
 
+        config = TaskBase._build_config(job_type, target_paths, dry_run=dry_run)
+
+        if is_manual_retry:
+            logger.debug("수동 재처리 모드: '메타 매칭 실패 시 이동 설정', '폴더명으로 파일명 변경'을 강제로 False로 전환합니다.")
+            config["메타매칭실패시이동"] = False
+            config["파일명변경"] = False
+            config["폴더명으로파일명변경"] = False
+            config["메타데이터기반파일명변경"] = False
+
+        # 작업 실행 분기
+        if job_type in ['default', 'dry_run', 'manual_path', 'one_path']:
+            final_config = copy.deepcopy(config)
+            final_config["이름"] = job_type
+            if final_config.get('드라이런', False):
+                logger.warning(f"'{final_config['이름']}' 작업: Dry Run 모드가 활성화되었습니다.")
+
+            TaskBase.__task(final_config)
+
+        elif job_type == 'yaml':
+            yaml_filepaths = args[1] if isinstance(args[1], list) else [args[1]]
+            if isinstance(args[1], list) and (not yaml_filepaths or any(not Path(path).is_file() for path in yaml_filepaths)):
+                raise ValueError('선택한 YAML 파일이 없거나 실행 시점에 존재하지 않습니다.')
+            try:
+                for yaml_filepath in yaml_filepaths:
+                    cooperate()
+                    progress(stage=f'YAML 파일: {Path(yaml_filepath).name}', current=0, total=0, item='', force=True)
+                    logger.info('YAML 파일 실행 시작: %s', Path(yaml_filepath).name)
+                    yaml_data = SupportYaml.read_yaml(yaml_filepath)
+                    if not yaml_data:
+                        logger.error(f"YAML 파일을 읽을 수 없거나 비어있습니다: {yaml_filepath}")
+                        raise ValueError("YAML 파일이 비어있습니다.")
+
+                    for job in yaml_data.get('작업', []):
+                        cooperate()
+                        if not job.get('사용', True): continue
+
+                        job_name = job.get('이름', '이름 없는 작업')
+                        progress(stage=f'YAML: {job_name}', current=0, total=0, item='', force=True)
+                        logger.info(f"=========================================")
+                        logger.info(f"YAML 작업 실행 시작: [{job_name}]")
+                        logger.info(f"=========================================")
+
+                        TaskBase.run_yaml_job(job, dry_run=dry_run, config=config)
+            except Exception as e:
+                logger.error(f"YAML 파일 처리 중 오류 발생: {e}")
+                logger.error(traceback.format_exc())
+                raise
+
+    @staticmethod
+    def _build_config(job_type, target_paths, dry_run=None):
         change_filename = ModelSetting.get_bool("western_change_filename")
         change_filename_type = ModelSetting.get("western_change_filename_type") or "folder"
 
@@ -80,6 +130,9 @@ class TaskBase:
             "메타매칭커트라인": ModelSetting.get_int("western_meta_min_score"),
 
             "메타매칭시이동폴더": ModelSetting.get("western_meta_path").strip(),
+            "VR영상이동폴더": (ModelSetting.get("western_vr_path") or "").strip(),
+            "VR별도처리": ModelSetting.get_bool("western_vr_separate_enable"),
+            "VR폴백레이블스튜디오명": ModelSetting.get("western_vr_match_names") or "",
             "메타매칭실패시이동": ModelSetting.get_bool("western_meta_no_move"),
             "메타매칭실패시이동폴더": ModelSetting.get("western_meta_no_path").strip(),
             "매칭실패이동후스캔": ModelSetting.get_bool("western_meta_no_scan_include"),
@@ -129,71 +182,44 @@ class TaskBase:
         config['parse_mode'] = 'western'
         CensoredTask._load_extended_settings(config)
 
-        if is_manual_retry:
-            logger.debug("수동 재처리 모드: '메타 매칭 실패 시 이동 설정', '폴더명으로 파일명 변경'을 강제로 False로 전환합니다.")
-            config["메타매칭실패시이동"] = False
-            config["파일명변경"] = False
-            config["폴더명으로파일명변경"] = False
-            config["메타데이터기반파일명변경"] = False
+        return config
 
-        # 작업 실행 분기
-        if job_type in ['default', 'dry_run', 'manual_path', 'one_path']:
-            final_config = copy.deepcopy(config)
-            final_config["이름"] = job_type
-            if final_config.get('드라이런', False):
-                logger.warning(f"'{final_config['이름']}' 작업: Dry Run 모드가 활성화되었습니다.")
+    @staticmethod
+    def run_yaml_job(job, dry_run=None, config=None):
+        if config is None:
+            config = TaskBase._build_config('yaml', ModelSetting.get("western_download_path").splitlines())
+        final_config = copy.deepcopy(config)
 
-            TaskBase.__task(final_config)
+        # Safe Update
+        for key, value in job.items():
+            if key == '모듈':
+                continue
+            if value is None or (isinstance(value, str) and not value.strip()):
+                continue
+            if key == 'VR별도처리':
+                value = value is True or (isinstance(value, str) and value.strip().casefold() == 'true')
+            final_config[key] = copy.deepcopy(value)
 
-        elif job_type == 'yaml':
-            yaml_filepath = args[1]
-            try:
-                yaml_data = SupportYaml.read_yaml(yaml_filepath)
-                if not yaml_data:
-                    logger.error(f"YAML 파일을 읽을 수 없거나 비어있습니다: {yaml_filepath}")
-                    raise ValueError("YAML 파일이 비어있습니다.")
+        # 하위 딕셔너리 업데이트
+        if '자막우선처리활성화' in job:
+            final_config.setdefault('자막우선처리', {})['처리활성화'] = job['자막우선처리활성화']
 
-                for job in yaml_data.get('작업', []):
-                    cooperate()
-                    if not job.get('사용', True): continue
+        if '동반자막처리활성화' in job:
+            final_config.setdefault('동반자막처리', {})['처리활성화'] = job['동반자막처리활성화']
 
-                    job_name = job.get('이름', '이름 없는 작업')
-                    progress(stage=f'YAML: {job_name}', current=0, total=0, item='', force=True)
-                    logger.info(f"=========================================")
-                    logger.info(f"YAML 작업 실행 시작: [{job_name}]")
-                    logger.info(f"=========================================")
+        if '커스텀경로규칙' in job:
+            if isinstance(job.get('커스텀경로규칙'), list):
+                final_config['커스텀경로활성화'] = True
+            else:
+                final_config['커스텀경로활성화'] = False
 
-                    final_config = copy.deepcopy(config)
-                    
-                    # Safe Update
-                    for key, value in job.items():
-                        if value is None or (isinstance(value, str) and not value.strip()):
-                            continue
-                        final_config[key] = copy.deepcopy(value)
+        if dry_run is not None:
+            final_config['드라이런'] = dry_run is True
+        if final_config.get('드라이런', False):
+            logger.warning(f"'{final_config.get('이름', 'YAML Job')}' 작업: Dry Run 모드가 활성화되었습니다.")
 
-                    # 하위 딕셔너리 업데이트
-                    if '자막우선처리활성화' in job:
-                        final_config.setdefault('자막우선처리', {})['처리활성화'] = job['자막우선처리활성화']
-                    
-                    if '동반자막처리활성화' in job:
-                        final_config.setdefault('동반자막처리', {})['처리활성화'] = job['동반자막처리활성화']
+        TaskBase.__task(final_config)
 
-                    if '커스텀경로규칙' in job:
-                        if isinstance(job.get('커스텀경로규칙'), list):
-                            final_config['커스텀경로활성화'] = True
-                        else:
-                            final_config['커스텀경로활성화'] = False 
-
-                    if dry_run is not None:
-                        final_config['드라이런'] = dry_run is True
-                    if final_config.get('드라이런', False):
-                        logger.warning(f"'{final_config.get('이름', 'YAML Job')}' 작업: Dry Run 모드가 활성화되었습니다.")
-
-                    TaskBase.__task(final_config)
-            except Exception as e:
-                logger.error(f"YAML 파일 처리 중 오류 발생: {e}")
-                logger.error(traceback.format_exc())
-                raise
 
     @staticmethod
     def __task(config):
@@ -572,6 +598,18 @@ class Task:
             else:
                 return None, "meta_fail_skipped", meta_info
 
+        # VR is more specific than Movie; later companion/custom/subtitle overrides stay intact.
+        vr_path = config.get('VR영상이동폴더', '').strip()
+        if use_meta_option == 'using' and is_meta_success and meta_info and config.get('VR별도처리') is True and vr_path:
+            vr_reason = CensoredTask._vr_match_reason('western', meta_info, info, config.get('VR폴백레이블스튜디오명', ''))
+            if vr_reason:
+                base, format_ = CensoredTask._resolve_path_template(config, info, meta_info, vr_path)
+                if base is not None:
+                    final_path_str = str(base)
+                    final_format_str = format_ or config.get('이동폴더포맷', '').strip()
+                    final_move_type = 'vr'
+                    logger.debug('VR 기본 경로 선택: %s (%s)', info.get('pure_code') or meta_info.get('code'), vr_reason)
+
         # --- 4. 오버라이드 룰 확인 및 병합 ---
         # 4-1. 동반 자막 처리 
         if is_companion_pair:
@@ -766,7 +804,7 @@ class Task:
                 if forced_code:
                     meta_info = meta_module.info(forced_code, extra_opts=extra_opts)
                     if meta_info:
-                        logger.info(f"'{search_name}' 수동 매칭 성공!: {meta_info.get('originaltitle')} (공유모드:{is_shared})")
+                        logger.info(f"'{search_name}' 수동 매칭 성공!: {meta_info.get('originaltitle')}{' (공유모드:True)' if is_shared else ''}")
                         return meta_info
                     else:
                         logger.warning(f"'{search_name}' 수동 매칭 실패 (잘못된 URL이거나 서버 오류). 자동 검색으로 넘어갑니다.")
@@ -781,7 +819,7 @@ class Task:
                 meta_info = meta_module.info(best_match["code"], extra_opts=extra_opts)
                 if meta_info:
                     match_site = best_match.get('site', 'N/A')
-                    logger.info(f"'{search_name}' 메타 검색 성공: {meta_info.get('originaltitle')} (from: {match_site}, 공유모드:{is_shared})")
+                    logger.info(f"'{search_name}' 메타 검색 성공: {meta_info.get('originaltitle')} (from: {match_site}{', 공유모드:True' if is_shared else ''})")
                     return meta_info
             
             logger.info(f"'{search_name}'에 대한 유효한 메타 정보를 찾지 못했습니다.")
@@ -1118,6 +1156,7 @@ class Task:
         for pure_code, group_infos_iter in groupby(execution_plan, key=lambda x: x['pure_code']):
             cooperate()
             group_infos = list(group_infos_iter)
+            scan_targets = {}
             
             first_info = next((i for i in group_infos if i.get('file_type') == 'video'), group_infos[0])
             first_path = UtilFunc.display_relative_path(first_info['original_file'], config.get('다운로드폴더', []))
@@ -1285,10 +1324,11 @@ class Task:
                                 continue
 
 
-                        # 4. 스캔 요청
+                        # Defer scans until this group's moves finish, one representative video per folder.
                         if scan_enabled and entity and entity.target_path and entity.move_type in valid_scan_types:
                             if info.get('file_type') == 'video':
-                                CensoredTask.__request_plex_mate_scan(config, Path(entity.target_path), entity)
+                                scan_path = Path(entity.target_path)
+                                scan_targets.setdefault(scan_path.parent, (scan_path, entity))
 
 
                 except Exception as e:
@@ -1297,6 +1337,13 @@ class Task:
                 finally:
                     if bundle is not None:
                         bundle.close()
+
+            for scan_path, scan_entity in scan_targets.values():
+                try:
+                    CensoredTask.__request_plex_mate_scan(config, scan_path, scan_entity)
+                except Exception as e:
+                    logger.error(f"'{pure_code}' 그룹 스캔 요청 중 예외 발생: {e}")
+                    logger.debug(traceback.format_exc())
 
         logger.info("fp_av_western: 모든 작업이 완료되었습니다.")
         progress(current=item_count, item='', force=True)

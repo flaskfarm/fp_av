@@ -120,6 +120,19 @@ class JobStore:
             db.execute('DELETE FROM logs WHERE family=?', (family,))
             return True
 
+    def reset_abandoned_on_startup(self, family):
+        """Clear abandoned active/stopped panels at plugin startup, keeping log history."""
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            status = self.read(db, family)
+            if status['state'] not in ('queued', 'running', 'stopping', 'stopped'):
+                return False
+            self.write(db, family, dict(family=family, state='idle', stage='대기 중',
+                                       current=0, total=0, item='', job_name='',
+                                       run_id=None, task_id=None, stop_requested=False,
+                                       started_at=None, finished_at=None, updated_at=time.time()))
+            return True
+
     def status(self, family):
         with self.connect() as db:
             return self.read(db, family)
@@ -150,6 +163,29 @@ class JobStore:
 def store():
     from .setup import path_data
     return JobStore(Path(path_data) / 'db' / 'fp_av_jobs.sqlite3')
+
+
+def yaml_file_names():
+    from .setup import path_data
+    folder = Path(path_data) / 'db'
+    return sorted(path.name for path in folder.glob('fp_av_*.yaml')
+                  if path.is_file() and path.resolve().parent == folder.resolve())
+
+
+def resolve_yaml_files(names):
+    from .setup import path_data
+    if isinstance(names, str):
+        try:
+            names = json.loads(names)
+        except ValueError as error:
+            raise ValueError('YAML 파일명 목록(JSON 배열)을 지정하세요.') from error
+    if not isinstance(names, list) or not names or any(not isinstance(name, str) for name in names):
+        raise ValueError('실행할 YAML 파일을 하나 이상 선택하세요.')
+    available = set(yaml_file_names())
+    for name in names:
+        if name not in available:
+            raise ValueError(f'현재 선택 가능한 YAML 파일이 아닙니다: {name}')
+    return [str(Path(path_data) / 'db' / name) for name in names]
 
 
 class Monitor(logging.Handler):
@@ -200,6 +236,8 @@ def checkpoint():
 def progress(stage=None, current=None, total=None, item=None, job_name=None, force=False, dry_run=None):
     monitor = _current.get()
     if monitor:
+        if job_name is not None and getattr(monitor, 'yaml_job_label', None):
+            job_name = monitor.yaml_job_label
         monitor.checkpoint(force=force, **{k: v for k, v in
                            dict(stage=stage, current=current, total=total, item=item, job_name=job_name, dry_run=dry_run).items() if v is not None})
 
@@ -277,6 +315,9 @@ def monitored_task(family):
 
 class JobPanelMixin:
     """Normal authenticated plugin routes for all three modules and YAML variants."""
+    def plugin_load(self):
+        store().reset_abandoned_on_startup(self.name)
+
     def process_normal(self, sub, req):
         if sub != 'job_stream':
             return None
@@ -327,9 +368,10 @@ class JobPanelMixin:
         dry_run = dry_value == 'true'
         path = str(arg1 or '').strip()
         if mode == 'yaml':
-            path = path or P.ModelSetting.get(f'{self.name}_filepath')
-            if not path or not Path(path).is_file():
-                return jsonify(ret='warning', msg='유효한 YAML 파일 경로를 지정하세요.')
+            try:
+                path = resolve_yaml_files(path)
+            except ValueError as error:
+                return jsonify(ret='warning', msg=str(error))
         elif path:
             if not Path(path).is_dir():
                 return jsonify(ret='warning', msg='처리할 폴더가 존재하지 않습니다.')

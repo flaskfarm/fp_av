@@ -1,4 +1,4 @@
-from .util_jobs import JobPanelMixin
+from .util_jobs import JobPanelMixin, yaml_file_names, resolve_yaml_files
 from .setup import *
 from .task_jav_censored import TaskBase
 
@@ -6,6 +6,7 @@ class ModuleJavCensoredYaml(JobPanelMixin, PluginModuleBase):
     def __init__(self, P):
         super(ModuleJavCensoredYaml, self).__init__(P, 'setting', name='jav_censored_yaml', scheduler_desc="AV 파일처리 - JavCensored with YAML")
         self.db_default = {
+            f"{self.name}_schedule_files": "[]",
             f"{self.name}_db_version": "1",
             f"{self.name}_auto_start": "False",
             f"{self.name}_interval": "60",
@@ -15,6 +16,7 @@ class ModuleJavCensoredYaml(JobPanelMixin, PluginModuleBase):
     def process_menu(self, page_name, req):
         arg = P.ModelSetting.to_dict()
         try:
+            arg['yaml_files'] = yaml_file_names()
             arg['is_include'] = F.scheduler.is_include(self.get_scheduler_name())
             arg['is_running'] = F.scheduler.is_running(self.get_scheduler_name())
             return render_template(f'{P.package_name}_{self.name}_{page_name}.html', arg=arg)
@@ -28,11 +30,11 @@ class ModuleJavCensoredYaml(JobPanelMixin, PluginModuleBase):
             return result
 
     def scheduler_function(self):
-        yaml_filepath = P.ModelSetting.get(f"{self.name}_filepath")
-        if not yaml_filepath or not os.path.exists(yaml_filepath):
-            logger.error(f"YAML 파일 경로가 유효하지 않습니다: {yaml_filepath}")
+        try:
+            paths = resolve_yaml_files(P.ModelSetting.get(f"{self.name}_schedule_files") or '[]')
+        except ValueError as error:
+            logger.warning('YAML 예약 실행을 건너뜁니다: %s', error)
             return
-
-        ret = self.start_celery(TaskBase.start, None, "yaml", yaml_filepath)
+        self.start_celery(TaskBase.start, None, "yaml", paths)
 
     ###################################################################

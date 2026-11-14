@@ -45,6 +45,48 @@ class TaskBase:
         else:
             target_paths = ModelSetting.get(f"jav_censored_download_path").splitlines()
 
+        config = TaskBase._build_config(job_type, target_paths, dry_run=dry_run)
+
+        if is_manual_retry:
+            logger.info("수동 재처리 모드: 메타 매칭 실패 시 이동 설정을 강제로 False로 전환합니다.")
+            config["메타매칭실패시이동"] = False
+
+        if job_type in ['default', 'dry_run', 'manual_path', 'one_path']:
+            final_config = copy.deepcopy(config)
+            final_config["이름"] = job_type
+            if final_config.get('드라이런', False):
+                logger.warning(f"'{final_config['이름']}' 작업: Dry Run 모드가 활성화되었습니다.")
+
+            TaskBase.__task(final_config)
+
+        elif job_type == 'yaml':
+            yaml_filepaths = args[1] if isinstance(args[1], list) else [args[1]]
+            if isinstance(args[1], list) and (not yaml_filepaths or any(not Path(path).is_file() for path in yaml_filepaths)):
+                raise ValueError('선택한 YAML 파일이 없거나 실행 시점에 존재하지 않습니다.')
+            try:
+                for yaml_filepath in yaml_filepaths:
+                    cooperate()
+                    progress(stage=f'YAML 파일: {Path(yaml_filepath).name}', current=0, total=0, item='', force=True)
+                    logger.info('YAML 파일 실행 시작: %s', Path(yaml_filepath).name)
+                    yaml_data = SupportYaml.read_yaml(yaml_filepath)
+                    for job in yaml_data.get('작업', []):
+                        cooperate()
+                        if not job.get('사용', True): continue
+
+                        job_name = job.get('이름', '이름 없는 작업')
+                        progress(stage=f'YAML: {job_name}', current=0, total=0, item='', force=True)
+                        logger.info(f"=========================================")
+                        logger.info(f"YAML 작업 실행 시작: [{job_name}]")
+                        logger.info(f"=========================================")
+
+                        TaskBase.run_yaml_job(job, dry_run=dry_run, config=config)
+            except Exception as e:
+                logger.error(f"YAML 파일 처리 중 오류 발생: {e}")
+                raise
+
+
+    @staticmethod
+    def _build_config(job_type, target_paths, dry_run=None):
         config = {
             "이름": job_type,
             "사용": True,
@@ -70,6 +112,8 @@ class TaskBase:
             "메타검색에공식사이트만사용": ModelSetting.get_bool("jav_censored_meta_dvd_use_dmm_only"),
             "메타매칭시이동폴더": ModelSetting.get("jav_censored_meta_dvd_path").strip(),
             "VR영상이동폴더": ModelSetting.get("jav_censored_meta_dvd_vr_path").strip(),
+            "VR별도처리": ModelSetting.get_bool("jav_censored_vr_separate_enable"),
+            "VR폴백레이블스튜디오명": ModelSetting.get("jav_censored_vr_match_names") or "",
 
             "메타매칭제외레이블": ModelSetting.get_list("jav_censored_meta_dvd_labels_exclude", ","),
             "메타매칭포함레이블": ModelSetting.get_list("jav_censored_meta_dvd_labels_include", ','),
@@ -117,73 +161,55 @@ class TaskBase:
         config['parse_mode'] = 'censored'
         Task._load_extended_settings(config)
 
-        if is_manual_retry:
-            logger.info("수동 재처리 모드: 메타 매칭 실패 시 이동 설정을 강제로 False로 전환합니다.")
-            config["메타매칭실패시이동"] = False
+        return config
 
-        if job_type in ['default', 'dry_run', 'manual_path', 'one_path']:
-            final_config = copy.deepcopy(config)
-            final_config["이름"] = job_type
-            if final_config.get('드라이런', False):
-                logger.warning(f"'{final_config['이름']}' 작업: Dry Run 모드가 활성화되었습니다.")
+    @staticmethod
+    def run_yaml_job(job, dry_run=None, config=None):
+        if config is None:
+            config = TaskBase._build_config('yaml', ModelSetting.get("jav_censored_download_path").splitlines())
+        final_config = copy.deepcopy(config)
 
-            TaskBase.__task(final_config)
+        # 안전한 덮어쓰기 로직 적용
+        for key, value in job.items():
+            if key == '모듈':
+                continue
+            # 1. 값이 없거나 빈 문자열이면 무시 (기본값 유지)
+            if value is None or (isinstance(value, str) and not value.strip()):
+                # logger.warning(f"설정 무시: '{key}' 값이 비어있습니다.")
+                continue
 
-        elif job_type == 'yaml':
-            yaml_filepath = args[1]
-            try:
-                yaml_data = SupportYaml.read_yaml(yaml_filepath)
-                for job in yaml_data.get('작업', []):
-                    cooperate()
-                    if not job.get('사용', True): continue
+            # 2. 특정 중요 옵션 유효성 검사 (오타 방지)
+            if key == '원본파일명처리옵션':
+                valid_options = ['original', 'original_bytes', 'original_giga', 'bytes']
+                if value not in valid_options:
+                    logger.error(f"설정 오류: '{key}'의 값 '{value}'은 유효하지 않아 무시합니다. (허용값: {valid_options})")
+                    continue
 
-                    job_name = job.get('이름', '이름 없는 작업')
-                    progress(stage=f'YAML: {job_name}', current=0, total=0, item='', force=True)
-                    logger.info(f"=========================================")
-                    logger.info(f"YAML 작업 실행 시작: [{job_name}]")
-                    logger.info(f"=========================================")
+            if key == 'VR별도처리':
+                value = value is True or (isinstance(value, str) and value.strip().casefold() == 'true')
 
-                    final_config = copy.deepcopy(config)
-                    
-                    # 안전한 덮어쓰기 로직 적용
-                    for key, value in job.items():
-                        # 1. 값이 없거나 빈 문자열이면 무시 (기본값 유지)
-                        if value is None or (isinstance(value, str) and not value.strip()):
-                            # logger.warning(f"설정 무시: '{key}' 값이 비어있습니다.")
-                            continue
-                        
-                        # 2. 특정 중요 옵션 유효성 검사 (오타 방지)
-                        if key == '원본파일명처리옵션':
-                            valid_options = ['original', 'original_bytes', 'original_giga', 'bytes']
-                            if value not in valid_options:
-                                logger.error(f"설정 오류: '{key}'의 값 '{value}'은 유효하지 않아 무시합니다. (허용값: {valid_options})")
-                                continue
-                        
-                        # 3. 검증 통과 시 덮어쓰기
-                        final_config[key] = copy.deepcopy(value)
+            # 3. 검증 통과 시 덮어쓰기
+            final_config[key] = copy.deepcopy(value)
 
-                    # 아래 로직들은 job에 해당 키가 '있을 때만' 동작하므로 안전함
-                    if '자막우선처리활성화' in job:
-                        final_config.setdefault('자막우선처리', {})['처리활성화'] = job['자막우선처리활성화']
-                    
-                    if '동반자막처리활성화' in job:
-                        final_config.setdefault('동반자막처리', {})['처리활성화'] = job['동반자막처리활성화']
+        # 아래 로직들은 job에 해당 키가 '있을 때만' 동작하므로 안전함
+        if '자막우선처리활성화' in job:
+            final_config.setdefault('자막우선처리', {})['처리활성화'] = job['자막우선처리활성화']
 
-                    if '커스텀경로규칙' in job:
-                        if isinstance(job.get('커스텀경로규칙'), list):
-                            final_config['커스텀경로활성화'] = True
-                        else:
-                            final_config['커스텀경로활성화'] = False 
+        if '동반자막처리활성화' in job:
+            final_config.setdefault('동반자막처리', {})['처리활성화'] = job['동반자막처리활성화']
 
-                    if dry_run is not None:
-                        final_config['드라이런'] = dry_run is True
-                    if final_config.get('드라이런', False):
-                        logger.warning(f"'{final_config.get('이름', 'YAML Job')}' 작업: Dry Run 모드가 활성화되었습니다.")
+        if '커스텀경로규칙' in job:
+            if isinstance(job.get('커스텀경로규칙'), list):
+                final_config['커스텀경로활성화'] = True
+            else:
+                final_config['커스텀경로활성화'] = False
 
-                    TaskBase.__task(final_config)
-            except Exception as e:
-                logger.error(f"YAML 파일 처리 중 오류 발생: {e}")
-                raise
+        if dry_run is not None:
+            final_config['드라이런'] = dry_run is True
+        if final_config.get('드라이런', False):
+            logger.warning(f"'{final_config.get('이름', 'YAML Job')}' 작업: Dry Run 모드가 활성화되었습니다.")
+
+        TaskBase.__task(final_config)
 
 
     @staticmethod
@@ -322,62 +348,7 @@ class Task:
             logger.debug(f"분할 파일 세트 식별 및 처리 시작")
             Task.__process_part_sets(execution_plan)
 
-        # 6. 파일명 조립을 위한 최종 데이터(final_media_info) 준비
-        ext_config = config.get('미디어정보설정', {})
-        use_media_info = config.get('파일명에미디어정보포함')
-
-        if not use_media_info:
-            for info in execution_plan:
-                cooperate()
-                info['final_media_info'] = None
-        else:
-            from collections import defaultdict
-            
-            # 분할 파일 세트끼리만 묶기 위한 딕셔너리
-            # Key: (품번, prefix, suffix) -> 유니크한 세트 식별자
-            set_groups = defaultdict(list)
-
-            for info in execution_plan:
-                cooperate()
-                if info.get('is_part_of_set'):
-                    # 분할 파일인 경우: 고유 세트 키로 그룹핑
-                    set_key = (info['pure_code'], info.get('part_set_prefix'), info.get('part_set_suffix'))
-                    set_groups[set_key].append(info)
-                else:
-                    # 단일 파일인 경우: 개별 미디어 정보 즉시 할당
-                    info['final_media_info'] = info.get('media_info')
-
-            # 식별된 세트들에 대해서만 병합(Merge) 로직 수행
-            for key, group_infos in set_groups.items():
-                cooperate()
-                pure_code = key[0]
-                merge_result = Task._merge_and_standardize_media_info(group_infos, ext_config)
-                
-                if merge_result.get('is_valid_set'):
-                    # 세트가 유효(해상도/코덱 일치)하면 병합된 정보 사용
-                    for info in group_infos:
-                        cooperate()
-                        info['final_media_info'] = merge_result['final_media']
-                else:
-                    # 세트 내 스펙 불일치 시 그룹 해제 및 개별 처리
-                    logger.warning(f"'{pure_code}' 분할 세트의 미디어 정보 불일치로 세트 처리를 취소합니다.")
-                    failed_files_set = {f['original_file'].name for f in merge_result.get('failed_files', [])}
-                    
-                    for info in group_infos:
-                        cooperate()
-                        info.update({'is_part_of_set': False, 'parsed_part_type': ''})
-                        # 정보 분석에 실패했던 파일만 invalid 처리, 나머지는 본인 정보 사용
-                        if info['original_file'].name in failed_files_set:
-                            info['final_media_info'] = {'is_valid': False}
-                        else:
-                            info['final_media_info'] = info.get('media_info')
-
-        # 7. 최종 파일명 조립 (tool.py 호출)
-        for info in execution_plan:
-            cooperate()
-            info['newfilename'] = ToolExpandFileProcess.assemble_filename(config, info)
-
-        # 8. 실제 파일 이동 (각 모듈의 __execute_plan 호출)
+        # 미디어 분석과 최종 파일명은 실제 항목/분할 세트 처리 시 준비한다.
         task_context['execute_plan'](config, execution_plan, task_context['db_model'], task_context)
 
 
@@ -773,14 +744,50 @@ class Task:
             'ext': parsed['ext'],
             'meta_info': None,
             'media_info': None,
+            'final_media_info': None,
             'manual_url': manual_url,
             'local_meta_json': local_meta_json
         }
-        ext_config = config.get('미디어정보설정', {})
-        if config.get('파일명에미디어정보포함') and info.get('file_type') == 'video':
-            info['media_info'] = ToolExpandFileProcess._get_media_info(file, ext_config)
-
         return info
+
+
+    @staticmethod
+    def _prepare_execution_info(config, info, group_infos):
+        """현재 파일 또는 현재 분할 세트만 분석하고 최종 파일명을 확정한다."""
+        if info.get('_execution_info_prepared'):
+            return
+        members = [info]
+        if config.get('파일명에미디어정보포함') and info.get('file_type') == 'video':
+            if info.get('is_part_of_set'):
+                # 메타 품번 보정 전의 세트 식별은 part_set_code에 남아 있다.
+                key = (info.get('part_set_code', info['pure_code']), info.get('part_set_prefix'), info.get('part_set_suffix'))
+                members = [part for part in group_infos if part.get('file_type') == 'video' and part.get('is_part_of_set') and
+                           (part.get('part_set_code', part['pure_code']), part.get('part_set_prefix'), part.get('part_set_suffix')) == key]
+            for part in members:
+                cooperate()
+                if not part.get('_media_info_prepared'):
+                    part['media_info'] = ToolExpandFileProcess._get_media_info(part['original_file'], config.get('미디어정보설정', {}))
+                    part['_media_info_prepared'] = True
+            if info.get('is_part_of_set'):
+                merged = Task._merge_and_standardize_media_info(members, config)
+                failed = {id(part) for part in merged.get('failed_files', [])}
+                if not merged.get('is_valid_set'):
+                    logger.warning("'%s' 분할 세트의 미디어 분석 실패로 세트 처리를 취소합니다.", info['pure_code'])
+                for part in members:
+                    if merged.get('is_valid_set'):
+                        part['final_media_info'] = merged['final_media']
+                    else:
+                        part.update(is_part_of_set=False, parsed_part_type='')
+                        part['final_media_info'] = {'is_valid': False} if id(part) in failed else part.get('media_info')
+            else:
+                info['final_media_info'] = info.get('media_info')
+        else:
+            info['final_media_info'] = None
+        for part in members:
+            cooperate()
+            if not part.get('_execution_info_prepared'):
+                part['newfilename'] = ToolExpandFileProcess.assemble_filename(config, part)
+                part['_execution_info_prepared'] = True
 
 
     @staticmethod
@@ -931,6 +938,51 @@ class Task:
 
 
     @staticmethod
+    def _vr_match_reason(category, meta_info, info, match_names):
+        """Read-only VR evidence for censored JAV/Western; never infer it from files."""
+        import unicodedata
+        if category not in ('jav_censored', 'western') or not isinstance(meta_info, dict) or not meta_info:
+            return None
+        def normalized(value):
+            return unicodedata.normalize('NFKC', value).strip().casefold() if isinstance(value, str) else ''
+        def values(value):
+            return (value,) if isinstance(value, str) else value or ()
+        raw = meta_info.get('original')
+        original = raw if isinstance(raw, dict) else {}
+        if category == 'jav_censored':
+            genres = original.get('genre') if isinstance(raw, dict) else meta_info.get('genre')
+            vr_genres = {'vr専用', 'ハイクオリティvr', 'vr', 'virtual reality'}
+        else:
+            genres = list(values(original.get('genre'))) + list(values(meta_info.get('genre')))
+            vr_genres = {'vr', 'virtual reality'}
+        if any(normalized(genre) in vr_genres for genre in values(genres)):
+            return '장르'
+        if category == 'jav_censored':
+            title = original.get('tagline')
+            if not isinstance(title, str) or not title.strip():
+                title = meta_info.get('tagline')
+            if isinstance(title, str) and re.search(r'\[\s*VR\s*\]|【\s*VR\s*】', title, re.I):
+                return '원본 제목'
+        names = re.split(r'[,\r\n]', unicodedata.normalize('NFKC', match_names)) if isinstance(match_names, str) else match_names or ()
+        names = {normalized(name) for name in names if normalized(name)}
+        if not names:
+            return None
+        studios = [value for value in (meta_info.get('studio'), original.get('studio')) if normalized(value)]
+        if category == 'western':
+            candidates = studios or [info.get('studio')]
+        else:
+            label = None
+            for code in (meta_info.get('originaltitle'), meta_info.get('ui_code')):
+                parsed = re.fullmatch(r'([a-z0-9]+)\s*[-_]\s*\d[a-z0-9_-]*', normalized(code))
+                if parsed:
+                    label = parsed[1]
+                    break
+            candidates = studios + [label if label is not None else info.get('label')]
+        if any(normalized(value) in names for value in candidates):
+            return '사용자 지정 이름'
+        return None
+
+    @staticmethod
     def _get_final_target_path(config, info, task_context, do_meta_search=False, preloaded_meta=None):
         use_meta_option = config.get('메타사용', 'not_using')
         is_companion_pair = bool(info.get('companion_subs_list'))
@@ -974,17 +1026,16 @@ class Task:
                 final_move_type = "normal"
             
             # VR 처리
-            if meta_info:
+            if use_meta_option == 'using' and meta_info and config.get('VR별도처리') is True:
                 vr_path_setting = config.get('VR영상이동폴더', '').strip()
-                vr_genres = ["VR専用", "ハイクオリティVR", "VR", "Virtual Reality"]
-                original_data = meta_info.get('original')
-                genres_to_check = ((original_data.get('genre') if isinstance(original_data, dict) else meta_info.get('genre')) or [])
-                if vr_path_setting and any(x in genres_to_check for x in vr_genres):
+                vr_reason = Task._vr_match_reason('jav_censored', meta_info, info, config.get('VR폴백레이블스튜디오명', '')) if vr_path_setting else None
+                if vr_reason:
                     base, format_ = Task._resolve_path_template(config, info, meta_info, vr_path_setting)
                     if base is not None:
                         final_path_str = str(base)
                         if format_: final_format_str = format_
                         final_move_type = "vr"
+                        logger.debug('VR 기본 경로 선택: %s (%s)', info.get('pure_code'), vr_reason)
         else: 
             # 메타 실패 처리
             if config.get('메타매칭실패시이동', False):
@@ -1211,7 +1262,7 @@ class Task:
                 logger.error(traceback.format_exc())
                 
         if meta_info:
-            logger.info(f"'{info['pure_code']}' 메타 검색 성공: {meta_info.get('originaltitle')} (from: {match_site}, 공유모드:{is_shared})")
+            logger.info(f"'{info['pure_code']}' 메타 검색 성공: {meta_info.get('originaltitle')} (from: {match_site}{', 공유모드:True' if is_shared else ''})")
             return meta_info
         else:
             logger.info(f"'{info['pure_code']}'에 대한 유효한 메타 정보를 찾지 못했습니다.")
@@ -1265,6 +1316,7 @@ class Task:
         for pure_code, group_infos_iter in groupby(execution_plan, key=lambda x: x['pure_code']):
             cooperate()
             group_infos = list(group_infos_iter)
+            scan_targets = {}
             logger.debug(f"'{pure_code}' 그룹 처리 시작 ({len(group_infos)}개 파일)")
 
             first_info = next((i for i in group_infos if i.get('file_type') == 'video'), group_infos[0])
@@ -1290,10 +1342,6 @@ class Task:
                         info['label'] = meta_label
                         info['number'] = meta_number 
                         
-                        from .tool import ToolExpandFileProcess
-                        new_assembled_name = ToolExpandFileProcess.assemble_filename(config, info)
-                        info['newfilename'] = new_assembled_name
-                        
                     logger.info(f"메타 품번 동기화: '{pure_code}' -> '{meta_code_lower}'")
 
             processed_dirs_for_group = set()
@@ -1307,6 +1355,7 @@ class Task:
                     item_count += 1
                     log_prefix = f"[{item_count:03d}/{total_items_in_plan:03d}]"
                     logger.info(f"{log_prefix} 처리 시작: {source_path}")
+                    Task._prepare_execution_info(config, info, group_infos)
                     
                     target_dir, move_type, meta_info = None, None, meta_info_for_group
                     
@@ -1413,10 +1462,11 @@ class Task:
                                 continue
 
 
-                        # 4. 스캔 요청: 모든 파일 이동이 끝난 후, 대상이 '영상(video)'일 때만 1회 즉시 호출
+                        # Defer scans until this group's moves finish, one representative video per folder.
                         if scan_enabled and entity and entity.target_path and entity.move_type in valid_scan_types:
                             if info.get('file_type') == 'video':
-                                Task.__request_plex_mate_scan(config, Path(entity.target_path), entity)
+                                scan_path = Path(entity.target_path)
+                                scan_targets.setdefault(scan_path.parent, (scan_path, entity))
                 
                 except Exception as e:
                     logger.error(f"'{info.get('pure_code', '알 수 없음')}' 파일 처리 중 예외 발생: {e}")
@@ -1424,6 +1474,13 @@ class Task:
                 finally:
                     if bundle is not None:
                         bundle.close()
+
+            for scan_path, scan_entity in scan_targets.values():
+                try:
+                    Task.__request_plex_mate_scan(config, scan_path, scan_entity)
+                except Exception as e:
+                    logger.error(f"'{pure_code}' 그룹 스캔 요청 중 예외 발생: {e}")
+                    logger.debug(traceback.format_exc())
 
         logger.info("fp_av_jav_censored: 모든 작업이 완료되었습니다.")
         progress(current=item_count, item='', force=True)
