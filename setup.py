@@ -56,43 +56,12 @@ setting = {
                 ]
             },
             {
-                'uri': 'jav_censored_yaml',
-                'name': 'Jav Censored Yaml',
+                'uri': 'av_yaml',
+                'name': 'YAML 작업',
                 'list': [
                     {
                         'uri': 'setting',
                         'name': '설정',
-                    },
-                    {
-                        'uri': 'manual/files/jav_censored_yaml.md', 'name': '매뉴얼',
-                    },
-                ]
-            },
-            {
-                'uri': 'jav_uncensored_yaml',
-                'name': 'Jav Uncensored Yaml',
-                'list': [
-                    {
-                        'uri': 'setting',
-                        'name': '설정',
-                    },
-                    {
-                        'uri': 'files/jav_uncensored_yaml.md',
-                        'name': '매뉴얼',
-                    },
-                ]
-            },
-            {
-                'uri': 'western_yaml',
-                'name': 'Western Yaml',
-                'list': [
-                    {
-                        'uri': 'setting',
-                        'name': '설정',
-                    },
-                    {
-                        'uri': 'files/western_yaml.md',
-                        'name': '매뉴얼',
                     },
                 ]
             },
@@ -120,10 +89,8 @@ try:
     from .mod_jav_censored import ModuleJavCensored
     from .mod_jav_uncensored import ModuleJavUncensored
     from .mod_western import ModuleWestern
-    from .mod_jav_censored_yaml import ModuleJavCensoredYaml
-    from .mod_jav_uncensored_yaml import ModuleJavUncensoredYaml
-    from .mod_western_yaml import ModuleWesternYaml
-    P.set_module_list([ModuleJavCensored, ModuleJavUncensored, ModuleWestern, ModuleJavCensoredYaml, ModuleJavUncensoredYaml, ModuleWesternYaml])
+    from .mod_av_yaml import ModuleAvYaml
+    P.set_module_list([ModuleJavCensored, ModuleJavUncensored, ModuleWestern, ModuleAvYaml])
 except Exception as e:
     P.logger.error(f'Exception:{str(e)}')
     P.logger.error(traceback.format_exc())

@@ -83,6 +83,11 @@
 
     <div id="western_use_meta_on_div" class="collapse">
       {{ macros.setting_input_text('western_meta_path', '매칭 성공 시 이동 경로', value=arg['western_meta_path'], desc=['메타 검색을 성공한 파일이 이동할 경로입니다.']) }}
+      {{ macros.setting_checkbox('western_vr_separate_enable', 'VR 별도 처리', value=arg['western_vr_separate_enable'], desc=['ON: 메타데이터에서 VR로 판정된 영상을 아래 경로로 별도 이동합니다.', 'OFF: 경로가 입력돼 있어도 VR 분류와 별도 이동을 적용하지 않습니다. VR 이동 경로가 비어 있으면 ON이어도 일반 경로를 사용합니다.']) }}
+      <div id="western_vr_separate_enable_div" class="collapse">
+        {{ macros.setting_input_text('western_vr_path', 'VR 영상 이동 경로', value=arg['western_vr_path'], desc=['메타 장르 Virtual Reality/VR 또는 아래 폴백 이름으로 판정한 영상의 이동 경로입니다. 비우면 별도로 분리하지 않습니다.']) }}
+        {{ macros.setting_input_textarea('western_vr_match_names', 'VR 폴백 레이블/스튜디오명', value=arg['western_vr_match_names'], row='3', desc=['메타 장르로 VR을 찾지 못할 때 입력한 스튜디오명과 정확히 일치하면 VR 경로를 사용합니다.', '줄바꿈 또는 쉼표로 구분하며 대소문자를 구분하지 않습니다. 비우면 사용하지 않습니다. VR 이동 경로가 비어 있으면 적용하지 않습니다.']) }}
+      </div>
 
       {{ macros.m_hr() }}
       {{ macros.setting_checkbox('western_movie_type_use_separate_path', 'Movie 타입 별도 경로 처리', value=arg['western_movie_type_use_separate_path'], desc=['On: 메타데이터에서 content_type이 "movie"로 식별된 영상을 아래의 별도 경로와 폴더 구조로 분리합니다.', 'Off: Scene과 동일하게 기본 이동 경로와 기본 폴더 구조를 따릅니다.']) }}
@@ -187,12 +192,16 @@ $('#western_companion_use_separate_path').change(function() {
 $('#western_movie_type_use_separate_path').change(function() {
   use_collapse('western_movie_type_use_separate_path');
 });
+$('#western_vr_separate_enable').change(function() {
+  use_collapse('western_vr_separate_enable');
+});
 
 $('input[type=radio][name=western_use_meta]').change(function() {
   use_meta(this.value);
 });
 
 function use_meta(value) {
+  use_collapse('western_vr_separate_enable');
   if (value == 'not_using') {
     $('#western_use_meta_on_div').collapse('hide');
     $('#western_use_meta_off_div').collapse('show');

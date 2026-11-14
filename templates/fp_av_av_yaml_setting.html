@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block content %}
+{% set av_panel_module = 'av_yaml' %}
+<style>
+  .av-yaml-page .av-job-progress { line-height: 1.5rem; }
+  .av-yaml-page .progress { height: 1.5rem !important; }
+</style>
+<div class="av-yaml-page">
+<nav class="mb-3">
+  <div class="nav nav-tabs" role="tablist">
+    <a class="nav-item nav-link active" id="av-yaml-basic-tab" data-toggle="tab" href="#av-yaml-basic" role="tab" aria-controls="av-yaml-basic" aria-selected="true">기본</a>
+    <a class="nav-item nav-link" id="av-yaml-auto-tab" data-toggle="tab" href="#av-yaml-auto" role="tab" aria-controls="av-yaml-auto" aria-selected="false">자동 &amp; 기타</a>
+  </div>
+</nav>
+<form id="setting" name="setting">
+  <div class="tab-content mb-4">
+    <div class="tab-pane fade show active" id="av-yaml-basic" role="tabpanel" aria-labelledby="av-yaml-basic-tab">
+      <div class="mb-3">
+        <p class="mb-1"><strong>YAML 파일명 규칙:</strong> path_data/db 폴더의 <strong>fp_av_*.yaml</strong> 파일만 목록에 표시됩니다. (예: fp_av_censored.yaml)</p>
+        <p class="mb-0"><strong>작업 모듈:</strong> 각 작업에 모듈을 jav_censored · jav_uncensored · western 중 하나로 지정하세요. 파일명으로 모듈을 구분하지 않습니다.</p>
+      </div>
+      {% include "fp_av_job_panel.html" %}
+    </div>
+    <div class="tab-pane fade" id="av-yaml-auto" role="tabpanel" aria-labelledby="av-yaml-auto-tab">
+      <section class="mb-4">
+        <h5 class="font-weight-bold mb-3">예약 실행 설정</h5>
+        {{ macros.global_setting_scheduler_button(arg['is_include'], arg['is_running']) }}
+        <div class="border-top pt-3 mt-3">
+          {{ macros.setting_input_text('av_yaml_interval', '실행 주기 (분 / Cron)', value=arg.get('av_yaml_interval', '60'), col='3', desc=['간격(분) 또는 Cron 형식으로 입력하세요.']) }}
+          {{ macros.setting_checkbox('av_yaml_auto_start', '시작 시 자동 등록', value=arg.get('av_yaml_auto_start', 'False'), desc='ON: FF 시작 시 이 스케줄러를 자동 등록합니다.') }}
+        </div>
+      </section>
+      <section class="border-top pt-3 mb-4">
+        <input type="hidden" id="av_yaml_schedule_files" value="{{ arg.get('av_yaml_schedule_files', '[]') }}">
+        <h5 class="font-weight-bold mb-3" id="av_yaml_schedule_count">저장된 예약 파일: 0개</h5>
+        <ul id="av_yaml_schedule_list" class="pl-4 text-break"></ul>
+        <p>기본 탭에서 파일을 선택하고 ‘선택 항목 예약 저장’을 누르면 목록이 갱신됩니다.</p>
+      </section>
+      <button type="button" class="btn btn-success" id="globalSettingSaveBtn">설정 저장</button>
+    </div>
+  </div>
+</form>
+</div>
+{% endblock %}

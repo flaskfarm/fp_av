@@ -5,6 +5,68 @@
     if (!panel || panel.dataset.ready) return;
     panel.dataset.ready = 'true';
     function el(name) { return panel.querySelector('.av-job-' + name); }
+    var isYaml = panel.dataset.module.endsWith('_yaml');
+    var yamlFiles = isYaml ? Array.from(panel.querySelectorAll('.av-job-yaml-file')) : [];
+    var yamlRunButtons = isYaml ? Array.from(panel.querySelectorAll('.av-job-yaml-run')) : [];
+    var yamlAll = isYaml ? el('yaml-all') : null;
+    if (isYaml) {
+      var scheduleField = document.getElementById(panel.dataset.module + '_schedule_files');
+      var scheduled = [];
+      try { scheduled = JSON.parse(scheduleField.value); } catch (error) { /* Keep the saved value until edited. */ }
+      if (panel.dataset.module === 'av_yaml') {
+        var scheduleSave = el('schedule-save');
+        var scheduleNotice = panel.querySelector('.av-yaml-schedule-notice');
+        function showSavedSchedule(files) {
+          document.getElementById('av_yaml_schedule_count').textContent = '저장된 예약 파일: ' + files.length + '개';
+          var summary = document.getElementById('av_yaml_schedule_list');
+          summary.textContent = '';
+          files.forEach(function (filename) {
+            var item = document.createElement('li');
+            item.textContent = filename;
+            summary.appendChild(item);
+          });
+        }
+        showSavedSchedule(Array.isArray(scheduled) ? scheduled : []);
+        scheduleSave.addEventListener('click', function () {
+          if (scheduleSave.disabled) return;
+          var selected = yamlFiles.filter(function (file) { return file.checked; }).map(function (file) { return file.value; });
+          scheduleSave.disabled = true;
+          scheduleNotice.textContent = '예약 대상 저장 중…';
+          $.ajax({
+            url: '/' + encodeURIComponent(panel.dataset.package) + '/ajax/setting_save',
+            type: 'POST', dataType: 'json',
+            data: {av_yaml_schedule_files: JSON.stringify(selected)},
+            success: function (saved) {
+              if (saved === true) {
+                scheduleField.value = JSON.stringify(selected);
+                showSavedSchedule(selected);
+                scheduleNotice.textContent = '예약 대상을 저장했습니다.';
+              } else {
+                scheduleNotice.textContent = '예약 대상을 저장하지 못했습니다.';
+              }
+            },
+            error: function () { scheduleNotice.textContent = '예약 대상 저장 응답을 확인하지 못했습니다. 새로고침하여 저장 상태를 확인하세요.'; },
+            complete: function () { scheduleSave.disabled = false; }
+          });
+        });
+      } else {
+        var scheduleFiles = Array.from(document.querySelectorAll('.av-yaml-schedule-file'));
+        scheduleFiles.forEach(function (input) {
+          input.checked = Array.isArray(scheduled) && scheduled.indexOf(input.value) >= 0;
+          input.addEventListener('change', function () {
+            scheduleField.value = JSON.stringify(scheduleFiles.filter(function (file) { return file.checked; }).map(function (file) { return file.value; }));
+          });
+        });
+      }
+      yamlAll.addEventListener('change', function () {
+        yamlFiles.forEach(function (input) { input.checked = yamlAll.checked; });
+      });
+      yamlFiles.forEach(function (input) {
+        input.addEventListener('change', function () {
+          yamlAll.checked = yamlFiles.length > 0 && yamlFiles.every(function (file) { return file.checked; });
+        });
+      });
+    }
     var labels = {idle:'대기 중', queued:'실행 대기', running:'실행 중', stopping:'중단 요청됨', stopped:'중단됨', completed:'완료', failed:'오류', interrupted:'연결 중단으로 종료'};
     var status = {}, runId = null, cursor = 0, source = null, connected = false, disposed = false, pending = false;
     var list = window.AvJobList;
@@ -18,8 +80,8 @@
       if (!dryToggle) return;
       dryToggle.textContent = '드라이런 ' + (dryRun ? 'ON' : 'OFF');
       dryToggle.setAttribute('aria-pressed', String(dryRun));
-      dryToggle.className = 'btn btn-sm mr-2 av-job-dryrun ' + (dryRun ? 'btn-warning' : 'btn-outline-secondary');
-      el('start').textContent = dryRun ? '드라이런 실행' : '1회 실행';
+      dryToggle.className = 'btn btn-sm mr-2 av-job-dryrun ' + (dryRun ? 'btn-warning' : (panel.dataset.module === 'av_yaml' ? 'btn-secondary' : 'btn-outline-secondary'));
+      el('start').textContent = isYaml ? (dryRun ? '드라이런 선택 실행' : '선택 실행') : (dryRun ? '드라이런 실행' : '1회 실행');
     }
     if (dryToggle) dryToggle.addEventListener('click', function () {
       if (active() || pending) return;
@@ -37,6 +99,9 @@
       el('reset').disabled = active() || pending;
       el('stop').disabled = !active() || status.state === 'stopping';
       if (dryToggle) dryToggle.disabled = active() || pending;
+      if (isYaml) {
+        yamlFiles.concat(yamlRunButtons, [yamlAll]).forEach(function (input) { input.disabled = active() || pending; });
+      }
     }
     function clock() {
       if (!status.started_at) { el('time').textContent = ''; return; }
@@ -119,18 +184,29 @@
       };
       source.onerror = function () { connected = false; el('connection').textContent = '연결 재시도 중 · 상태 자동 갱신'; };
     }
-    el('start').addEventListener('click', function () {
+    function startJob(selectedFiles) {
+      if (active() || pending) return;
+      if (isYaml && selectedFiles.length === 0) {
+        el('notice').textContent = '실행할 YAML 파일을 선택하세요.';
+        return;
+      }
       pending = true; buttons();
       el('notice').textContent = '실행 요청 중…';
-      var pathId = panel.dataset.module.endsWith('_yaml') ? panel.dataset.module + '_filepath' : 'av-job-path';
-      var pathInput = document.getElementById(pathId);
-      command('job_start', pathInput ? pathInput.value : '', function (result) {
+      var pathInput = isYaml ? null : document.getElementById('av-job-path');
+      var target = isYaml ? JSON.stringify(selectedFiles) : (pathInput ? pathInput.value : '');
+      command('job_start', target, function (result) {
         pending = false;
         el('notice').textContent = result.msg || result.message || '';
         buttons(); poll();
       }, dryToggle ? String(dryRun) : '');
       // Recover the button after a dropped command response; the backend guards duplicates.
       window.setTimeout(function () { pending = false; buttons(); poll(); }, 10000);
+    }
+    el('start').addEventListener('click', function () {
+      startJob(yamlFiles.filter(function (file) { return file.checked; }).map(function (file) { return file.value; }));
+    });
+    yamlRunButtons.forEach(function (button) {
+      button.addEventListener('click', function () { startJob([button.dataset.filename]); });
     });
     el('stop').addEventListener('click', function () {
       el('stop').disabled = true;

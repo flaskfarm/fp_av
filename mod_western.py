@@ -40,6 +40,9 @@ class ModuleWestern(JobPanelMixin, PluginModuleBase):
             f"{self.name}_folder_format": "{studio}", 
             f"{self.name}_use_meta": "using",
             f"{self.name}_meta_path": "",
+            f"{self.name}_vr_path": "",
+            f"{self.name}_vr_separate_enable": "False",
+            f"{self.name}_vr_match_names": "JohnTronVR",
             f"{self.name}_target_path": "",
 
             f"{self.name}_meta_min_score": "80",

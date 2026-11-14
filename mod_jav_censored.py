@@ -39,6 +39,8 @@ class ModuleJavCensored(JobPanelMixin, PluginModuleBase):
             # folders w/ meta
             f"{self.name}_meta_dvd_path": "",
             f"{self.name}_meta_dvd_vr_path": "",
+            f"{self.name}_vr_separate_enable": "False",
+            f"{self.name}_vr_match_names": "",
             f"{self.name}_meta_dvd_use_dmm_only": "False",
             f"{self.name}_folder_format_actor": "",
             f"{self.name}_meta_dvd_labels_exclude": "",

@@ -44,6 +44,48 @@ class TaskBase:
         else:
             target_paths = ModelSetting.get(f"jav_uncensored_download_path").splitlines()
 
+        config = TaskBase._build_config(job_type, target_paths, dry_run=dry_run)
+
+        if is_manual_retry:
+            logger.info("수동 재처리 모드: 메타 매칭 실패 시 이동 설정을 강제로 False로 전환합니다.")
+            config["메타매칭실패시이동"] = False
+
+        if job_type in ['default', 'dry_run', 'manual_path', 'one_path']:
+            final_config = copy.deepcopy(config)
+            final_config["이름"] = job_type
+            if final_config.get('드라이런', False):
+                logger.warning(f"'{final_config['이름']}' 작업: Dry Run 모드가 활성화되었습니다.")
+
+            TaskBase.__task(final_config)
+
+        elif job_type == 'yaml':
+            yaml_filepaths = args[1] if isinstance(args[1], list) else [args[1]]
+            if isinstance(args[1], list) and (not yaml_filepaths or any(not Path(path).is_file() for path in yaml_filepaths)):
+                raise ValueError('선택한 YAML 파일이 없거나 실행 시점에 존재하지 않습니다.')
+            try:
+                for yaml_filepath in yaml_filepaths:
+                    cooperate()
+                    progress(stage=f'YAML 파일: {Path(yaml_filepath).name}', current=0, total=0, item='', force=True)
+                    logger.info('YAML 파일 실행 시작: %s', Path(yaml_filepath).name)
+                    yaml_data = SupportYaml.read_yaml(yaml_filepath)
+                    for job in yaml_data.get('작업', []):
+                        cooperate()
+                        if not job.get('사용', True): continue
+
+                        job_name = job.get('이름', '이름 없는 작업')
+                        progress(stage=f'YAML: {job_name}', current=0, total=0, item='', force=True)
+                        logger.info(f"=========================================")
+                        logger.info(f"YAML 작업 실행 시작: [{job_name}]")
+                        logger.info(f"=========================================")
+
+                        TaskBase.run_yaml_job(job, dry_run=dry_run, config=config)
+            except Exception as e:
+                logger.error(f"YAML 파일 처리 중 오류 발생: {e}")
+                raise
+
+
+    @staticmethod
+    def _build_config(job_type, target_paths, dry_run=None):
         config = {
             "이름": job_type,
             "사용": True,
@@ -105,69 +147,48 @@ class TaskBase:
         config['parse_mode'] = 'uncensored'
         CensoredTask._load_extended_settings(config)
 
-        if is_manual_retry:
-            logger.info("수동 재처리 모드: 메타 매칭 실패 시 이동 설정을 강제로 False로 전환합니다.")
-            config["메타매칭실패시이동"] = False
+        return config
 
-        if job_type in ['default', 'dry_run', 'manual_path', 'one_path']:
-            final_config = copy.deepcopy(config)
-            final_config["이름"] = job_type
-            if final_config.get('드라이런', False):
-                logger.warning(f"'{final_config['이름']}' 작업: Dry Run 모드가 활성화되었습니다.")
+    @staticmethod
+    def run_yaml_job(job, dry_run=None, config=None):
+        if config is None:
+            config = TaskBase._build_config('yaml', ModelSetting.get("jav_uncensored_download_path").splitlines())
+        final_config = copy.deepcopy(config)
 
-            TaskBase.__task(final_config)
+        for key, value in job.items():
+            if key == '모듈':
+                continue
+            if value is None or (isinstance(value, str) and not value.strip()):
+                # logger.warning(f"설정 무시: '{key}' 값이 비어있습니다.")
+                continue
 
-        elif job_type == 'yaml':
-            yaml_filepath = args[1]
-            try:
-                yaml_data = SupportYaml.read_yaml(yaml_filepath)
-                for job in yaml_data.get('작업', []):
-                    cooperate()
-                    if not job.get('사용', True): continue
+            if key == '원본파일명처리옵션':
+                valid_options = ['original', 'original_bytes', 'original_giga', 'bytes']
+                if value not in valid_options:
+                    logger.error(f"설정 오류: '{key}'의 값 '{value}'은 유효하지 않아 무시합니다. (허용값: {valid_options})")
+                    continue
 
-                    job_name = job.get('이름', '이름 없는 작업')
-                    progress(stage=f'YAML: {job_name}', current=0, total=0, item='', force=True)
-                    logger.info(f"=========================================")
-                    logger.info(f"YAML 작업 실행 시작: [{job_name}]")
-                    logger.info(f"=========================================")
+            final_config[key] = copy.deepcopy(value)
 
-                    final_config = copy.deepcopy(config)
+        if '자막우선처리활성화' in job:
+            final_config.setdefault('자막우선처리', {})['처리활성화'] = job['자막우선처리활성화']
 
-                    for key, value in job.items():
-                        if value is None or (isinstance(value, str) and not value.strip()):
-                            # logger.warning(f"설정 무시: '{key}' 값이 비어있습니다.")
-                            continue
-                        
-                        if key == '원본파일명처리옵션':
-                            valid_options = ['original', 'original_bytes', 'original_giga', 'bytes']
-                            if value not in valid_options:
-                                logger.error(f"설정 오류: '{key}'의 값 '{value}'은 유효하지 않아 무시합니다. (허용값: {valid_options})")
-                                continue
-                        
-                        final_config[key] = copy.deepcopy(value)
+        if '동반자막처리활성화' in job:
+            final_config.setdefault('동반자막처리', {})['처리활성화'] = job['동반자막처리활성화']
 
-                    if '자막우선처리활성화' in job:
-                        final_config.setdefault('자막우선처리', {})['처리활성화'] = job['자막우선처리활성화']
-                    
-                    if '동반자막처리활성화' in job:
-                        final_config.setdefault('동반자막처리', {})['처리활성화'] = job['동반자막처리활성화']
+        # 커스텀 경로 규칙 예외 처리
+        if '커스텀경로규칙' in job:
+            if isinstance(job.get('커스텀경로규칙'), list):
+                final_config['커스텀경로활성화'] = True
+            else:
+                final_config['커스텀경로활성화'] = False
 
-                    # 커스텀 경로 규칙 예외 처리
-                    if '커스텀경로규칙' in job:
-                        if isinstance(job.get('커스텀경로규칙'), list):
-                            final_config['커스텀경로활성화'] = True
-                        else:
-                            final_config['커스텀경로활성화'] = False 
+        if dry_run is not None:
+            final_config['드라이런'] = dry_run is True
+        if final_config.get('드라이런', False):
+            logger.warning(f"'{final_config.get('이름', 'YAML Job')}' 작업: Dry Run 모드가 활성화되었습니다.")
 
-                    if dry_run is not None:
-                        final_config['드라이런'] = dry_run is True
-                    if final_config.get('드라이런', False):
-                        logger.warning(f"'{final_config.get('이름', 'YAML Job')}' 작업: Dry Run 모드가 활성화되었습니다.")
-
-                    TaskBase.__task(final_config)
-            except Exception as e:
-                logger.error(f"YAML 파일 처리 중 오류 발생: {e}")
-                raise
+        TaskBase.__task(final_config)
 
 
     @staticmethod
@@ -421,7 +442,7 @@ class Task:
                 meta_info = meta_module.info(best_match["code"], extra_opts=extra_opts)
                 if meta_info:
                     match_site = best_match.get('site', 'N/A')
-                    logger.info(f"'{info['pure_code']}' 메타 검색 성공: {meta_info.get('originaltitle')} (from: {match_site}, 공유모드:{is_shared})")
+                    logger.info(f"'{info['pure_code']}' 메타 검색 성공: {meta_info.get('originaltitle')} (from: {match_site}{', 공유모드:True' if is_shared else ''})")
                     return meta_info
 
         except Exception as e:
@@ -477,12 +498,25 @@ class Task:
         for pure_code, group_infos_iter in groupby(execution_plan, key=lambda x: x['pure_code']):
             cooperate()
             group_infos = list(group_infos_iter)
+            scan_targets = {}
             logger.debug(f"'{pure_code}' 그룹 처리 시작 ({len(group_infos)}개 파일)")
 
             first_info = next((i for i in group_infos if i.get('file_type') == 'video'), group_infos[0])
             progress(item=UtilFunc.display_relative_path(first_info['original_file'], config.get('다운로드폴더', [])), force=True)
             
             target_dir_for_group, _, meta_info_for_group = Task._get_final_target_path(config, first_info, task_context, do_meta_search=True)
+
+            if meta_info_for_group and meta_info_for_group.get('originaltitle'):
+                meta_code_lower = meta_info_for_group['originaltitle'].lower()
+                if pure_code != meta_code_lower:
+                    if '-' in meta_code_lower:
+                        meta_label, meta_number = meta_code_lower.rsplit('-', 1)
+                    else:
+                        meta_label, meta_number = meta_code_lower, ''
+                    for info in group_infos:
+                        cooperate()
+                        info.update(pure_code=meta_code_lower, label=meta_label, number=meta_number)
+                    logger.info(f"메타 품번 동기화: '{pure_code}' -> '{meta_code_lower}'")
 
             processed_dirs_for_group = set()
 
@@ -495,6 +529,7 @@ class Task:
                     item_count += 1
                     log_prefix = f"[{item_count:03d}/{total_items_in_plan:03d}]"
                     logger.info(f"{log_prefix} 처리 시작: {source_path}")
+                    CensoredTask._prepare_execution_info(config, info, group_infos)
                     
                     target_dir, move_type, meta_info = None, None, meta_info_for_group
                     
@@ -601,10 +636,11 @@ class Task:
                                 continue
 
 
-                        # 4. 스캔 요청
+                        # Defer scans until this group's moves finish, one representative video per folder.
                         if scan_enabled and entity and entity.target_path and entity.move_type in valid_scan_types:
                             if info.get('file_type') == 'video':
-                                CensoredTask.__request_plex_mate_scan(config, Path(entity.target_path), entity)
+                                scan_path = Path(entity.target_path)
+                                scan_targets.setdefault(scan_path.parent, (scan_path, entity))
                 
                 except Exception as e:
                     logger.error(f"'{info.get('pure_code', '알 수 없음')}' 파일 처리 중 예외 발생: {e}")
@@ -612,6 +648,13 @@ class Task:
                 finally:
                     if bundle is not None:
                         bundle.close()
+
+            for scan_path, scan_entity in scan_targets.values():
+                try:
+                    CensoredTask.__request_plex_mate_scan(config, scan_path, scan_entity)
+                except Exception as e:
+                    logger.error(f"'{pure_code}' 그룹 스캔 요청 중 예외 발생: {e}")
+                    logger.debug(traceback.format_exc())
 
         logger.info("fp_av_jav_uncensored: 모든 작업이 완료되었습니다.")
         progress(current=item_count, item='', force=True)
