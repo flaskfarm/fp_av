@@ -48,6 +48,8 @@
       {{ macros.setting_radio_with_value('western_change_filename_type', '변경 방식', [['folder', '서브 폴더명으로 변경'], ['meta', '메타데이터 템플릿 변경']], value=arg['western_change_filename_type'], desc=['서브 폴더명: 하위 폴더에 영상이 단 1개일 경우 폴더명을 파일명으로 교체합니다.', '메타데이터 템플릿: 원본 파일명을 무시하고 메타데이터 및 템플릿 규칙으로 파일명을 생성합니다.']) }}
 
       <div id="western_filename_template_div" class="collapse">
+        {{ macros.setting_checkbox('western_rename_fingerprint_only', '지문 매칭일 때만 파일명 변경', value=arg.get('western_rename_fingerprint_only', 'False'), desc=['ON: 공식 또는 수동 확인 지문이 실제 일치할 때만 메타 템플릿을 적용합니다. 그 외에는 원본 영상 파일명과 확장자를 유지합니다.', '폴더명 기반 변경에는 적용하지 않습니다. 기본 OFF. YAML: 지문매칭시만파일명변경']) }}
+        <p class="small text-muted">템플릿 추가 변수: {orig_name}은 항상 원본 stem, {orig_name_if_filename}은 파일명 매칭 때만 원본 stem입니다. 예: {title} [[- {orig_name_if_filename}]]</p>
         {{ macros.setting_input_text_and_buttons('western_filename_template', '파일명 템플릿', [['western_filename_template_default_btn', '기본값']], value=arg['western_filename_template'], desc=[
           '메타데이터를 기반으로 생성할 파일명 서식을 지정합니다. (확장자 제외)',
           '• {studio}: 스튜디오명 (예: WowGirls) | {studio_1}: 스튜디오 첫 글자 (A-Z, 09, #)',
