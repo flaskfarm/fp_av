@@ -121,6 +121,7 @@ class TaskBase:
             "폴더명으로파일명변경": rename_from_folder,
             "메타데이터기반파일명변경": use_meta_filename,
             "파일명템플릿": ModelSetting.get("western_filename_template"),
+            "지문매칭시만파일명변경": ModelSetting.get_bool("western_rename_fingerprint_only"),
 
             # 서양에서 사용되지 않는 옵션 생략/False 처리
             "파일명에미디어정보포함": False,
@@ -196,7 +197,7 @@ class TaskBase:
                 continue
             if value is None or (isinstance(value, str) and not value.strip()):
                 continue
-            if key == 'VR별도처리':
+            if key in ('VR별도처리', '지문매칭시만파일명변경'):
                 value = value is True or (isinstance(value, str) and value.strip().casefold() == 'true')
             final_config[key] = copy.deepcopy(value)
 
@@ -764,8 +765,10 @@ class Task:
 
     @staticmethod
     def _get_metadata(config, info):
+        info['metadata_match'] = {'match_type': 'unknown', 'fingerprint_source': 'none', 'score': None}
         local_meta = info.get('local_meta_json')
         if local_meta:
+            info['metadata_match']['match_type'] = 'local_json'
             logger.info(f"'{info.get('pure_code', '')}' 로컬 JSON 메타데이터를 사용하여 검색을 건너뜁니다.")
             return local_meta
 
@@ -804,6 +807,7 @@ class Task:
                 if forced_code:
                     meta_info = meta_module.info(forced_code, extra_opts=extra_opts)
                     if meta_info:
+                        info['metadata_match']['match_type'] = 'manual'
                         logger.info(f"'{search_name}' 수동 매칭 성공!: {meta_info.get('originaltitle')}{' (공유모드:True)' if is_shared else ''}")
                         return meta_info
                     else:
@@ -818,6 +822,8 @@ class Task:
             if best_match and best_match.get('code') and (best_match.get('site') or best_match.get('site_key')):
                 meta_info = meta_module.info(best_match["code"], extra_opts=extra_opts)
                 if meta_info:
+                    info['metadata_match'] = {key: best_match.get(key, default) for key, default in
+                        (('match_type', 'unknown'), ('fingerprint_source', 'none'), ('score', None))}
                     match_site = best_match.get('site', 'N/A')
                     logger.info(f"'{search_name}' 메타 검색 성공: {meta_info.get('originaltitle')} (from: {match_site}{', 공유모드:True' if is_shared else ''})")
                     return meta_info
@@ -836,6 +842,10 @@ class Task:
         """서양 메타데이터 기반 파일명 조립 (남자 배우 배제, actor_N 지원, res_tag 연동)"""
         template = config.get('파일명템플릿') or "{studio} - {actor_3} - {title} ({year}) [{res_tag}]"
         file_path = info['original_file']
+        match_context = info.get('metadata_match') or {}
+        if (config.get('지문매칭시만파일명변경', False) and not (
+                match_context.get('match_type') == 'fingerprint' and match_context.get('fingerprint_source') in ('site', 'user_verified'))):
+            return file_path.name
         safe_fn = ToolExpandFileProcess.get_safe_filename
 
         # 배우 필터링 (남자 배우 배제)
@@ -918,6 +928,8 @@ class Task:
             'year': year_str,
             'code': code_str,
             'filename': safe_fn(file_path.stem),
+            'orig_name': safe_fn(file_path.stem),
+            'orig_name_if_filename': safe_fn(file_path.stem) if match_context.get('match_type') == 'filename' else '',
             'res_tag': res_tag,
             'v_codec': v_codec,
             'a_codec': a_codec,
@@ -1166,6 +1178,12 @@ class Task:
             logger.info(f"{group_log_prefix} 메타 검색 및 경로 계산: {first_path}")
 
             target_dir_for_group, _, meta_info_for_group = Task._get_final_target_path(config, first_info, task_context, do_meta_search=True)
+            group_match = dict(first_info.get('metadata_match') or {'match_type': 'unknown', 'fingerprint_source': 'none'})
+            for info in group_infos:
+                info['metadata_match'] = dict(group_match)
+            logger.info('Western 매칭 근거: %s / %s (%s점), 파일명 정책: %s',
+                group_match.get('match_type'), group_match.get('fingerprint_source'), group_match.get('score'),
+                '확정 지문만 메타 이름 적용' if config.get('지문매칭시만파일명변경', False) else '기존 템플릿')
 
             if meta_info_for_group and config.get('메타데이터기반파일명변경', False):
                 for info in group_infos:

@@ -35,6 +35,7 @@ class ModuleWestern(JobPanelMixin, PluginModuleBase):
             f"{self.name}_change_filename": "False",
             f"{self.name}_change_filename_type": "folder",
             f"{self.name}_filename_template": "{studio} - {actor_3} - {title} ({year}) [{res_tag}]",
+            f"{self.name}_rename_fingerprint_only": "False",
 
             # folders
             f"{self.name}_folder_format": "{studio}", 
